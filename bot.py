@@ -11,7 +11,7 @@ load_dotenv()
 DISCORD_TOKEN = os.getenv("DISCORD_BOT_TOKEN")
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
 MAX_DISCORD_LENGTH = 2000
-CONTEXT_MESSAGE_COUNT = 15
+CONTEXT_MESSAGE_COUNT = int(os.getenv("CONTEXT_MESSAGE_COUNT", "15"))
 
 MODEL = os.getenv("GEMINI_MODEL", "gemini-3.1-flash-lite-preview")
 SYSTEM_INSTRUCTION = (
