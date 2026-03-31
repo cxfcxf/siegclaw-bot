@@ -19,7 +19,8 @@ def web_search(query: str) -> str | None:
         response = tavily_client.search(
             query=query,
             max_results=TAVILY_MAX_RESULTS,
-            search_depth="basic",
+            search_depth="advanced",
+            topic="general",
         )
     except Exception as e:
         log.error("Tavily search failed: %s", e)

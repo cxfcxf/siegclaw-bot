@@ -60,3 +60,46 @@ async def classify_query(query: str, recent_context: str = "") -> str:
         log.error("Classification failed: %s — defaulting to direct", e)
 
     return "direct"
+
+
+CERTAINTY_PROMPT = """\
+You are evaluating whether an AI assistant's response is certain or uncertain.
+
+A response is UNCERTAIN if it:
+- Says it doesn't have information, access, or data
+- Says the topic is not mentioned or not found
+- Admits it cannot verify, find, or confirm something
+- Expresses significant doubt about the answer
+
+A response is CERTAIN if it:
+- Directly answers the question with confidence
+- Provides factual information without caveats about missing data
+- Gives an opinion, explanation, or creative response
+
+Return a JSON object: {"certain": true} or {"certain": false}"""
+
+
+async def is_response_certain(response_text: str) -> bool:
+    """Check if a response is certain or needs a fallback search."""
+    try:
+        result = await asyncio.to_thread(
+            gemini_client.models.generate_content,
+            model=MODEL,
+            contents=f"AI response to evaluate:\n\n{response_text}",
+            config=types.GenerateContentConfig(
+                system_instruction=CERTAINTY_PROMPT,
+                response_mime_type="application/json",
+                max_output_tokens=600,
+                thinking_config=types.ThinkingConfig(thinking_budget=512),
+            ),
+        )
+        text = (result.text or "").strip()
+        if not text:
+            return True
+        data = json.loads(text)
+        certain = data.get("certain", True)
+        log.info("Certainty check: %s", "CERTAIN" if certain else "UNCERTAIN")
+        return bool(certain)
+    except Exception as e:
+        log.error("Certainty check failed: %s", e)
+        return True
