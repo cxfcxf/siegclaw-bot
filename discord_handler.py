@@ -1,5 +1,6 @@
 import asyncio
 import logging
+from datetime import datetime, timezone
 
 import discord
 import httpx
@@ -72,6 +73,12 @@ def setup_events(client: discord.Client):
 
             if route in ("search", "finance") and not replied_to_bot:
                 prompt = user_text
+            elif route == "direct" and not replied_to_bot:
+                trimmed = "\n".join(
+                    f"{m.author.display_name}: {m.content}"
+                    for m in raw_messages[-10:]
+                )
+                prompt = f"{trimmed}\n\n[Current question from {message.author.display_name}]: {user_text}"
             else:
                 prompt = f"{prompt}\n\n[Current question from {message.author.display_name}]: {user_text}"
 
@@ -157,7 +164,8 @@ def setup_events(client: discord.Client):
 
 
 def _build_system(memories: list, finance_data: str | None, search_results: str | None) -> str:
-    system = SYSTEM_INSTRUCTION
+    today = datetime.now(timezone.utc).strftime("%A, %B %-d, %Y")
+    system = SYSTEM_INSTRUCTION + f"\n\nToday's date is {today} (UTC)."
     if memories:
         memory_text = "\n".join(f"- {m}" for m in memories)
         system += (

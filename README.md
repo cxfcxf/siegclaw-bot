@@ -5,12 +5,15 @@ A Discord AI assistant powered by Gemini with real-time web search, financial da
 ## Features
 
 - **Smart query routing** — classifies every message as search, finance, memory, or direct using Gemini with thinking
-- **Web search** — Tavily for real-time news, weather, and current events
+- **Certainty fallback** — if bot is uncertain on a direct answer, automatically triggers a web search and retries
+- **Reply-aware context** — replying to the bot uses focused thread context instead of full channel history
+- **Web search** — Tavily (advanced depth) for real-time news, weather, and current events
 - **Financial data** — live prices via CoinGecko (crypto) and Yahoo Finance (stocks, indices, commodities, forex)
 - **Vector memory** — extracts and stores facts from conversations using SQLite + numpy cosine similarity
 - **Multi-turn awareness** — router uses recent conversation context for follow-up questions
 - **Image support** — pass images alongside your message for multimodal responses
 - **Hybrid context window** — adapts between count-based and time-based message fetching
+- **Date-aware** — today's date injected into every prompt so relative dates ("this Friday") are always correct
 
 ## Setup
 
@@ -64,17 +67,21 @@ python bot.py
 ## Architecture
 
 ```
-User @mentions bot
+User @mentions bot (or replies to bot's message)
         │
-        ├── fetch_context()     Discord message history (hybrid window)
+        ├── Reply? → focused thread context
+        │   else  → fetch_context() hybrid window
+        │
         ├── classify_query()    Gemini router → SEARCH / FINANCE / MEMORY / DIRECT
         │
         ├── SEARCH   → Tavily web search
         ├── FINANCE  → CoinGecko + Yahoo Finance (fallback to Tavily)
         ├── MEMORY   → SQLite cosine similarity search
-        └── DIRECT   → Gemini only (chat history as context)
+        └── DIRECT   → last 10 messages as context
         │
-        └── Gemini generates response (augmented prompt)
+        └── Gemini generates response (augmented prompt + today's date)
+            │
+            ├── DIRECT: is_response_certain() → UNCERTAIN → fallback search → retry
             │
             └── Background: extract facts → embed → store in SQLite
 ```
