@@ -20,6 +20,7 @@ log = logging.getLogger("siegclaw.memory")
 
 EMBEDDING_MODEL = "gemini-embedding-2-preview"
 EMBEDDING_DIM = 3072
+DEDUP_THRESHOLD = 0.95
 
 _conn: sqlite3.Connection | None = None
 
@@ -113,6 +114,21 @@ def search_memories(
     return results
 
 
+def _is_duplicate(embedding: np.ndarray, channel_id: str) -> bool:
+    """Return True if a near-identical fact already exists (similarity >= DEDUP_THRESHOLD)."""
+    conn = _get_conn()
+    rows = conn.execute(
+        "SELECT embedding FROM memories WHERE channel_id = ?",
+        (channel_id,),
+    ).fetchall()
+
+    for (emb_blob,) in rows:
+        existing = np.frombuffer(emb_blob, dtype=np.float32)
+        if _cosine_similarity(embedding, existing) >= DEDUP_THRESHOLD:
+            return True
+    return False
+
+
 def _store_memories(channel_id: str, user_id: str, facts: list[str]):
     if not facts:
         return
@@ -120,15 +136,20 @@ def _store_memories(channel_id: str, user_id: str, facts: list[str]):
     now = time.time()
 
     embeddings = _get_embeddings_batch(facts)
-    conn.executemany(
-        "INSERT INTO memories (fact, channel_id, user_id, created_at, embedding) VALUES (?, ?, ?, ?, ?)",
-        [
-            (fact, channel_id, user_id, now, emb.tobytes())
-            for fact, emb in zip(facts, embeddings)
-        ],
-    )
+    stored = 0
+    for fact, emb in zip(facts, embeddings):
+        if _is_duplicate(emb, channel_id):
+            log.debug("Skipping duplicate memory: '%s'", fact[:60])
+            continue
+        conn.execute(
+            "INSERT INTO memories (fact, channel_id, user_id, created_at, embedding) VALUES (?, ?, ?, ?, ?)",
+            (fact, channel_id, user_id, now, emb.tobytes()),
+        )
+        stored += 1
+
     conn.commit()
-    log.info("Stored %d memories for channel=%s user=%s", len(facts), channel_id, user_id)
+    if stored:
+        log.info("Stored %d memories (skipped %d duplicates) for channel=%s", stored, len(facts) - stored, channel_id)
 
 
 async def extract_and_store_memories(

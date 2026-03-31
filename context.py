@@ -20,8 +20,7 @@ async def fetch_context(
 ) -> tuple[str, list[discord.Message]]:
     """Fetch recent messages with hybrid time/count windowing.
 
-    Returns (formatted_prompt, raw_messages) so callers can reuse
-    the message list without a second Discord API call.
+    Returns (formatted_prompt, raw_messages).
     """
     messages = []
     async for msg in channel.history(limit=CONTEXT_MESSAGE_COUNT):

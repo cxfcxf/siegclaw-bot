@@ -55,28 +55,48 @@ def setup_events(client: discord.Client):
 
             route = await classify_query(user_text, recent_context)
 
+            # For search/finance, skip the chat history — it's just noise
+            if route in ("search", "finance"):
+                prompt = user_text
+            else:
+                # Clearly separate history from the current question
+                prompt = f"{prompt}\n\n[Current question from {message.author.display_name}]: {user_text}"
+
             memories = []
             search_results = None
             finance_data = None
 
+            errors = []
+
             if route == "finance":
-                finance_data = await _safe(asyncio.to_thread(get_financial_data, user_text))
+                finance_data, err = await _safe_named(asyncio.to_thread(get_financial_data, user_text))
+                if err:
+                    errors.append("live price data")
                 if not finance_data:
-                    search_results = await _safe(asyncio.to_thread(web_search, user_text))
+                    search_results, err = await _safe_named(asyncio.to_thread(web_search, user_text))
+                    if err:
+                        errors.append("web search")
             elif route == "search":
-                search_results = await _safe(asyncio.to_thread(web_search, user_text))
+                search_results, err = await _safe_named(asyncio.to_thread(web_search, user_text))
+                if err:
+                    errors.append("web search")
             elif route == "memory":
-                memories = await _safe(
-                    asyncio.to_thread(search_memories, channel_id, user_text, user_id),
-                    default=[],
+                memories, err = await _safe_named(
+                    asyncio.to_thread(search_memories, channel_id, user_text, user_id)
                 )
+                memories = memories or []
+                if err:
+                    errors.append("memory recall")
             elif route == "both":
-                mem_task = _safe(
-                    asyncio.to_thread(search_memories, channel_id, user_text, user_id),
-                    default=[],
+                (memories, merr), (search_results, serr) = await asyncio.gather(
+                    _safe_named(asyncio.to_thread(search_memories, channel_id, user_text, user_id)),
+                    _safe_named(asyncio.to_thread(web_search, user_text)),
                 )
-                search_task = _safe(asyncio.to_thread(web_search, user_text))
-                memories, search_results = await asyncio.gather(mem_task, search_task)
+                memories = memories or []
+                if merr:
+                    errors.append("memory recall")
+                if serr:
+                    errors.append("web search")
 
             system = SYSTEM_INSTRUCTION
             if memories:
@@ -117,9 +137,12 @@ def setup_events(client: discord.Client):
                     ),
                 )
                 reply_text = response.text
+                if errors:
+                    failed = " and ".join(errors)
+                    reply_text += f"\n\n⚠️ *Note: {failed} unavailable, response may be incomplete.*"
             except Exception as e:
                 log.error("Gemini API call failed: %s", e)
-                reply_text = "Sorry, I hit an error generating a response. Please try again."
+                reply_text = f"Sorry, I couldn't generate a response (Gemini API error: {type(e).__name__}). Please try again."
 
         await _send_long_message(message, reply_text)
 
@@ -128,13 +151,13 @@ def setup_events(client: discord.Client):
         )
 
 
-async def _safe(coro, default=None):
-    """Run a coroutine with graceful error handling."""
+async def _safe_named(coro) -> tuple:
+    """Run a coroutine, returning (result, error_or_None)."""
     try:
-        return await coro
+        return await coro, None
     except Exception as e:
         log.warning("Non-critical operation failed: %s", e)
-        return default
+        return None, e
 
 
 async def _download_images(message: discord.Message) -> list[dict]:
@@ -159,6 +182,7 @@ async def _download_images(message: discord.Message) -> list[dict]:
     except Exception as e:
         log.warning("Failed to download images: %s", e)
     return images
+
 
 
 async def _send_long_message(message: discord.Message, text: str):

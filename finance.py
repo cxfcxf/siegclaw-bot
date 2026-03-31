@@ -27,12 +27,18 @@ CRYPTO_ALIASES = {
     "usdc": "usd-coin",
 }
 
-# Common commodity/forex tickers for Yahoo Finance
+# Common commodity/forex/index tickers for Yahoo Finance
 COMMODITY_ALIASES = {
     "gold": "GC=F", "silver": "SI=F", "platinum": "PL=F",
     "oil": "CL=F", "crude": "CL=F", "brent": "BZ=F",
     "natural gas": "NG=F", "copper": "HG=F",
     "wheat": "ZW=F", "corn": "ZC=F", "soybean": "ZS=F",
+    # Major indices
+    "dow": "%5EDJI", "dow jones": "%5EDJI", "dji": "%5EDJI",
+    "s&p": "%5EGSPC", "s&p 500": "%5EGSPC", "sp500": "%5EGSPC", "spx": "%5EGSPC",
+    "nasdaq": "%5EIXIC", "ixic": "%5EIXIC",
+    "russell": "%5ERUT", "russell 2000": "%5ERUT",
+    "ftse": "%5EFTSE", "nikkei": "%5EN225", "hang seng": "%5EHSI",
 }
 
 CURRENCY_ALIASES = {
@@ -64,8 +70,10 @@ def _fetch_crypto_prices(ids: list[str]) -> dict | None:
 
 def _fetch_yahoo_quote(symbol: str) -> dict | None:
     try:
+        # %5E is URL-encoded ^ for index symbols; decode back for the path
+        clean_symbol = symbol.replace("%5E", "^")
         resp = _http.get(
-            "https://query1.finance.yahoo.com/v8/finance/chart/" + symbol,
+            "https://query1.finance.yahoo.com/v8/finance/chart/" + clean_symbol,
             params={"interval": "1d", "range": "1d"},
         )
         resp.raise_for_status()
@@ -94,20 +102,25 @@ def _detect_assets(query: str) -> tuple[list[str], list[tuple[str, str]]]:
     crypto_ids = []
     yahoo_assets = []
 
+    # Generic "indices/indexes" → expand to all 3 major US indices
+    if words & {"indices", "indexes", "index"}:
+        for sym in ("%5EDJI", "%5EGSPC", "%5EIXIC"):
+            yahoo_assets.append((sym.replace("%5E", "^"), sym))
+
     for alias, cg_id in CRYPTO_ALIASES.items():
         if alias in words and cg_id not in crypto_ids:
             crypto_ids.append(cg_id)
 
     for alias, symbol in {**COMMODITY_ALIASES, **CURRENCY_ALIASES}.items():
-        # Multi-word aliases (e.g. "natural gas") use substring, single-word use token match
-        if " " in alias:
+        # Multi-word or special-char aliases use substring match; single words use token match
+        if " " in alias or "&" in alias:
             if alias in q:
                 yahoo_assets.append((alias, symbol))
         elif alias in words:
             yahoo_assets.append((alias, symbol))
 
     for word in query.split():
-        clean = word.strip("?!.,")
+        clean = word.strip("?!.,$")
         if (
             clean.isupper()
             and 1 <= len(clean) <= 5

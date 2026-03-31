@@ -28,10 +28,10 @@ MODEL = os.getenv("GEMINI_MODEL", "gemini-3.1-flash-lite-preview")
 MAX_DISCORD_LENGTH = 2000
 
 # --- Context window ---
-CONTEXT_MESSAGE_COUNT = int(os.getenv("CONTEXT_MESSAGE_COUNT", "60"))
+CONTEXT_MESSAGE_COUNT = int(os.getenv("CONTEXT_MESSAGE_COUNT", "30"))
 CONTEXT_TIME_WINDOW_HOURS = int(os.getenv("CONTEXT_TIME_WINDOW_HOURS", "24"))
-CONTEXT_ACTIVITY_THRESHOLD = int(os.getenv("CONTEXT_ACTIVITY_THRESHOLD", "40"))
-CONTEXT_MAX_MESSAGES = int(os.getenv("CONTEXT_MAX_MESSAGES", "100"))
+CONTEXT_ACTIVITY_THRESHOLD = int(os.getenv("CONTEXT_ACTIVITY_THRESHOLD", "20"))
+CONTEXT_MAX_MESSAGES = int(os.getenv("CONTEXT_MAX_MESSAGES", "50"))
 
 # --- Memory ---
 MEMORY_DB_PATH = os.getenv("MEMORY_DB_PATH", "data/memories.db")
@@ -45,10 +45,16 @@ ROUTER_ENABLED = os.getenv("ROUTER_ENABLED", "true").lower() == "true"
 
 # --- Prompts ---
 SYSTEM_INSTRUCTION = (
-    "You are SiegClaw, a helpful AI assistant in a Discord chat. "
-    "Keep responses concise and conversational. "
+    "You are SiegClaw, a helpful AI assistant in a Discord server with multiple users. "
+    "You will receive recent conversation history followed by the current question. "
+    "Use the conversation history when it is relevant to the question (e.g. summaries, follow-ups, context). "
+    "Do not bring up unrelated topics from the history unprompted. "
+    "When referring to people, always use their name (e.g. 'siegfried said...', 'ED asked...') — "
+    "never use 'you' or 'we' since there are multiple participants. "
+    "Be concise. Do not add commentary, jokes, or tangents. "
     "Use Discord markdown formatting when helpful. "
-    "If a conversation has multiple participants, be aware of who said what."
+    "Never fabricate financial data, prices, or market numbers. "
+    "If real-time data is not provided in this prompt, say you don't have current data for that."
 )
 
 MEMORY_EXTRACTION_PROMPT = """\
