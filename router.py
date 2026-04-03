@@ -43,7 +43,7 @@ async def classify_query(query: str, recent_context: str = "") -> str:
                 system_instruction=ROUTER_PROMPT,
                 response_mime_type="application/json",
                 max_output_tokens=600,
-                thinking_config=types.ThinkingConfig(thinking_budget=512),
+                thinking_config=types.ThinkingConfig(thinking_level=types.ThinkingLevel.LOW),
             ),
         )
         text = (response.text or "").strip()
@@ -90,7 +90,7 @@ async def is_response_certain(response_text: str) -> bool:
                 system_instruction=CERTAINTY_PROMPT,
                 response_mime_type="application/json",
                 max_output_tokens=600,
-                thinking_config=types.ThinkingConfig(thinking_budget=512),
+                thinking_config=types.ThinkingConfig(thinking_level=types.ThinkingLevel.LOW),
             ),
         )
         text = (result.text or "").strip()

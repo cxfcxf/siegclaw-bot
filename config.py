@@ -34,7 +34,7 @@ CONTEXT_ACTIVITY_THRESHOLD = int(os.getenv("CONTEXT_ACTIVITY_THRESHOLD", "20"))
 CONTEXT_MAX_MESSAGES = int(os.getenv("CONTEXT_MAX_MESSAGES", "50"))
 
 # --- Memory ---
-MEMORY_DB_PATH = os.getenv("MEMORY_DB_PATH", "data/memories.db")
+LANCEDB_PATH = os.getenv("LANCEDB_PATH", "data/lancedb")
 MEMORY_DECAY_DAYS = int(os.getenv("MEMORY_DECAY_DAYS", "90"))
 
 # --- Search ---

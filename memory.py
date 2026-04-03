@@ -1,15 +1,13 @@
 import asyncio
 import json
 import logging
-import os
-import sqlite3
 import time
 
-import numpy as np
+import pyarrow as pa
 from google.genai import types
 
 from config import (
-    MEMORY_DB_PATH,
+    LANCEDB_PATH,
     MEMORY_DECAY_DAYS,
     MEMORY_EXTRACTION_PROMPT,
     MODEL,
@@ -22,53 +20,52 @@ EMBEDDING_MODEL = "gemini-embedding-2-preview"
 EMBEDDING_DIM = 3072
 DEDUP_THRESHOLD = 0.95
 
-_conn: sqlite3.Connection | None = None
+_table = None
 
 
-def _get_conn() -> sqlite3.Connection:
-    global _conn
-    if _conn is None:
-        os.makedirs(os.path.dirname(MEMORY_DB_PATH), exist_ok=True)
-        _conn = sqlite3.connect(MEMORY_DB_PATH, check_same_thread=False)
-        _conn.execute("""
-            CREATE TABLE IF NOT EXISTS memories (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                fact TEXT NOT NULL,
-                channel_id TEXT NOT NULL,
-                user_id TEXT NOT NULL,
-                created_at REAL NOT NULL,
-                embedding BLOB NOT NULL
-            )
-        """)
-        _conn.execute("CREATE INDEX IF NOT EXISTS idx_channel ON memories(channel_id)")
-        _conn.execute("CREATE INDEX IF NOT EXISTS idx_user ON memories(user_id)")
-        _conn.commit()
-    return _conn
+def _get_table():
+    global _table
+    if _table is None:
+        raise RuntimeError("Memory DB not initialized — call init_db() first")
+    return _table
 
 
-def _get_embedding(text: str) -> np.ndarray:
+def _get_embedding(text: str) -> list[float]:
     response = gemini_client.models.embed_content(
         model=EMBEDDING_MODEL,
         contents=text,
     )
-    return np.array(response.embeddings[0].values, dtype=np.float32)
+    return response.embeddings[0].values
 
 
-def _get_embeddings_batch(texts: list[str]) -> list[np.ndarray]:
+def _get_embeddings_batch(texts: list[str]) -> list[list[float]]:
     response = gemini_client.models.embed_content(
         model=EMBEDDING_MODEL,
         contents=texts,
     )
-    return [np.array(e.values, dtype=np.float32) for e in response.embeddings]
-
-
-def _cosine_similarity(a: np.ndarray, b: np.ndarray) -> float:
-    return float(np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b) + 1e-10))
+    return [e.values for e in response.embeddings]
 
 
 def init_db():
-    _get_conn()
-    log.info("SQLite memory DB initialized at %s", MEMORY_DB_PATH)
+    import lancedb
+
+    global _table
+    db = lancedb.connect(LANCEDB_PATH)
+
+    schema = pa.schema([
+        pa.field("fact", pa.utf8()),
+        pa.field("channel_id", pa.utf8()),
+        pa.field("user_id", pa.utf8()),
+        pa.field("created_at", pa.float64()),
+        pa.field("vector", pa.list_(pa.float32(), EMBEDDING_DIM)),
+    ])
+
+    if "memories" in db.table_names():
+        _table = db.open_table("memories")
+    else:
+        _table = db.create_table("memories", schema=schema)
+
+    log.info("LanceDB memory initialized at %s", LANCEDB_PATH)
 
 
 def search_memories(
@@ -77,79 +74,95 @@ def search_memories(
     user_id: str | None = None,
     limit: int = 10,
 ) -> list[str]:
-    """Cosine similarity search with recency weighting."""
-    conn = _get_conn()
-
-    if user_id:
-        rows = conn.execute(
-            "SELECT fact, created_at, embedding FROM memories "
-            "WHERE channel_id = ? OR user_id = ?",
-            (channel_id, user_id),
-        ).fetchall()
-    else:
-        rows = conn.execute(
-            "SELECT fact, created_at, embedding FROM memories WHERE channel_id = ?",
-            (channel_id,),
-        ).fetchall()
-
-    if not rows:
-        return []
+    """Vector search with recency weighting."""
+    table = _get_table()
 
     query_embedding = _get_embedding(query)
+
+    if user_id:
+        results = (
+            table.search(query_embedding)
+            .where(f"channel_id = '{channel_id}' OR user_id = '{user_id}'", prefilter=True)
+            .limit(limit * 3)
+            .to_list()
+        )
+    else:
+        results = (
+            table.search(query_embedding)
+            .where(f"channel_id = '{channel_id}'", prefilter=True)
+            .limit(limit * 3)
+            .to_list()
+        )
+
+    if not results:
+        return []
+
     now = time.time()
     decay_seconds = MEMORY_DECAY_DAYS * 86400
 
     scored = []
-    for fact, created_at, emb_blob in rows:
-        emb = np.frombuffer(emb_blob, dtype=np.float32)
-        similarity = _cosine_similarity(query_embedding, emb)
-        age = now - created_at
+    for row in results:
+        # LanceDB returns _distance (lower = more similar), convert to similarity
+        similarity = max(0.0, 1.0 - row.get("_distance", 1.0))
+        age = now - row["created_at"]
         decay = max(0.3, 1.0 - (age / decay_seconds))
-        scored.append((fact, similarity * decay))
+        scored.append((row["fact"], similarity * decay))
 
     scored.sort(key=lambda x: x[1], reverse=True)
-    results = [fact for fact, _ in scored[:limit]]
+    facts = [fact for fact, _ in scored[:limit]]
 
-    log.debug("Memory search for '%s': %d results", query[:50], len(results))
-    return results
+    log.debug("Memory search for '%s': %d results", query[:50], len(facts))
+    return facts
 
 
-def _is_duplicate(embedding: np.ndarray, channel_id: str) -> bool:
+def _is_duplicate(embedding: list[float], channel_id: str) -> bool:
     """Return True if a near-identical fact already exists (similarity >= DEDUP_THRESHOLD)."""
-    conn = _get_conn()
-    rows = conn.execute(
-        "SELECT embedding FROM memories WHERE channel_id = ?",
-        (channel_id,),
-    ).fetchall()
+    table = _get_table()
 
-    for (emb_blob,) in rows:
-        existing = np.frombuffer(emb_blob, dtype=np.float32)
-        if _cosine_similarity(embedding, existing) >= DEDUP_THRESHOLD:
-            return True
-    return False
+    try:
+        results = (
+            table.search(embedding)
+            .where(f"channel_id = '{channel_id}'", prefilter=True)
+            .limit(1)
+            .to_list()
+        )
+    except Exception:
+        return False
+
+    if not results:
+        return False
+
+    distance = results[0].get("_distance", 1.0)
+    similarity = max(0.0, 1.0 - distance)
+    return similarity >= DEDUP_THRESHOLD
 
 
 def _store_memories(channel_id: str, user_id: str, facts: list[str]):
     if not facts:
         return
-    conn = _get_conn()
+
+    table = _get_table()
     now = time.time()
 
     embeddings = _get_embeddings_batch(facts)
-    stored = 0
+    rows = []
+    skipped = 0
     for fact, emb in zip(facts, embeddings):
         if _is_duplicate(emb, channel_id):
             log.debug("Skipping duplicate memory: '%s'", fact[:60])
+            skipped += 1
             continue
-        conn.execute(
-            "INSERT INTO memories (fact, channel_id, user_id, created_at, embedding) VALUES (?, ?, ?, ?, ?)",
-            (fact, channel_id, user_id, now, emb.tobytes()),
-        )
-        stored += 1
+        rows.append({
+            "fact": fact,
+            "channel_id": channel_id,
+            "user_id": user_id,
+            "created_at": now,
+            "vector": emb,
+        })
 
-    conn.commit()
-    if stored:
-        log.info("Stored %d memories (skipped %d duplicates) for channel=%s", stored, len(facts) - stored, channel_id)
+    if rows:
+        table.add(rows)
+        log.info("Stored %d memories (skipped %d duplicates) for channel=%s", len(rows), skipped, channel_id)
 
 
 async def extract_and_store_memories(

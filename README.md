@@ -35,7 +35,7 @@ A Discord AI assistant powered by Gemini with real-time web search, financial da
 | `CONTEXT_TIME_WINDOW_HOURS` | No | `24` | Time window for active channels |
 | `CONTEXT_ACTIVITY_THRESHOLD` | No | `20` | Messages needed to trigger time-based mode |
 | `CONTEXT_MAX_MESSAGES` | No | `50` | Hard cap on messages fetched |
-| `MEMORY_DB_PATH` | No | `data/memories.db` | SQLite database path |
+| `LANCEDB_PATH` | No | `data/lancedb` | LanceDB directory path |
 | `MEMORY_DECAY_DAYS` | No | `90` | Days before memories score lower in search |
 | `TAVILY_MAX_RESULTS` | No | `5` | Number of search results per query |
 | `ROUTER_ENABLED` | No | `true` | Toggle query router (false = always search + memory) |
