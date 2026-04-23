@@ -3,7 +3,8 @@ import os
 import sys
 
 from dotenv import load_dotenv
-from google import genai
+from openai import OpenAI
+from tenacity import retry, stop_after_attempt, wait_exponential
 
 load_dotenv()
 
@@ -20,12 +21,18 @@ log = logging.getLogger("siegclaw")
 
 # --- Required ---
 DISCORD_TOKEN = os.getenv("DISCORD_BOT_TOKEN")
-GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
-TAVILY_API_KEY = os.getenv("TAVILY_API_KEY")
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "dummy")
 
 # --- Model & Discord ---
-MODEL = os.getenv("GEMINI_MODEL", "gemini-3.1-flash-lite-preview")
+MODEL = os.getenv("MODEL", "anthropic/claude-haiku-4-5")
+EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "openai/text-embedding-3-small")
 MAX_DISCORD_LENGTH = 2000
+
+# --- OR Proxy ---
+OR_PROXY_URL = os.getenv("OR_PROXY_URL", "http://localhost:8787")
+
+# --- Browser ---
+CAMOFOX_URL = os.getenv("CAMOFOX_URL", "http://localhost:9377")
 
 # --- Context window ---
 CONTEXT_MESSAGE_COUNT = int(os.getenv("CONTEXT_MESSAGE_COUNT", "30"))
@@ -38,10 +45,8 @@ LANCEDB_PATH = os.getenv("LANCEDB_PATH", "data/lancedb")
 MEMORY_DECAY_DAYS = int(os.getenv("MEMORY_DECAY_DAYS", "90"))
 
 # --- Search ---
-TAVILY_MAX_RESULTS = int(os.getenv("TAVILY_MAX_RESULTS", "5"))
-
-# --- Router ---
-ROUTER_ENABLED = os.getenv("ROUTER_ENABLED", "true").lower() == "true"
+FIRECRAWL_URL = os.getenv("FIRECRAWL_API_URL", "http://localhost:3002")
+FIRECRAWL_MAX_RESULTS = int(os.getenv("FIRECRAWL_MAX_RESULTS", "5"))
 
 # --- Prompts ---
 SYSTEM_INSTRUCTION = (
@@ -51,10 +56,12 @@ SYSTEM_INSTRUCTION = (
     "Do not bring up unrelated topics from the history unprompted. "
     "When referring to people, always use their name (e.g. 'siegfried said...', 'ED asked...') — "
     "never use 'you' or 'we' since there are multiple participants. "
-    "Be concise. Do not add commentary, jokes, or tangents. "
+    "Be concise. Occasionally add a brief witty remark or light commentary at the end if it fits naturally — but keep it short and don't force it. "
     "Use Discord markdown formatting when helpful. "
     "Never fabricate financial data, prices, or market numbers. "
-    "If real-time data is not provided in this prompt, say you don't have current data for that."
+    "You have tools available — use them. If a question requires current information, prices, news, "
+    "or anything you're not certain about, call web_search or get_financial_data instead of saying you don't know. "
+    "Only say you lack information if a search also fails to find it."
 )
 
 MEMORY_EXTRACTION_PROMPT = """\
@@ -75,5 +82,21 @@ Conversation:
 Bot's reply:
 {bot_reply}"""
 
-# --- Clients ---
-gemini_client = genai.Client(api_key=GOOGLE_API_KEY)
+# --- Client ---
+openai_client = OpenAI(
+    api_key=OPENROUTER_API_KEY,
+    base_url=f"{OR_PROXY_URL}/v1",
+)
+
+
+@retry(
+    wait=wait_exponential(multiplier=1, min=2, max=30),
+    stop=stop_after_attempt(3),
+    reraise=True,
+)
+def openai_generate(model: str, messages: list, **kwargs):
+    return openai_client.chat.completions.create(
+        model=model,
+        messages=messages,
+        **kwargs,
+    )

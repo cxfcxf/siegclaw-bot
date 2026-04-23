@@ -1,23 +1,24 @@
 import asyncio
 import json
 import logging
+import math
 import time
 
 import pyarrow as pa
-from google.genai import types
 
 from config import (
+    EMBEDDING_MODEL,
     LANCEDB_PATH,
     MEMORY_DECAY_DAYS,
     MEMORY_EXTRACTION_PROMPT,
     MODEL,
-    gemini_client,
+    openai_client,
+    openai_generate,
 )
 
 log = logging.getLogger("siegclaw.memory")
 
-EMBEDDING_MODEL = "gemini-embedding-2-preview"
-EMBEDDING_DIM = 3072
+EMBEDDING_DIM = 1536
 DEDUP_THRESHOLD = 0.95
 
 _table = None
@@ -30,20 +31,20 @@ def _get_table():
     return _table
 
 
+def _validate_id(id_str: str) -> str:
+    if not id_str.isdigit():
+        raise ValueError(f"Invalid ID format: {id_str!r}")
+    return id_str
+
+
 def _get_embedding(text: str) -> list[float]:
-    response = gemini_client.models.embed_content(
-        model=EMBEDDING_MODEL,
-        contents=text,
-    )
-    return response.embeddings[0].values
+    response = openai_client.embeddings.create(model=EMBEDDING_MODEL, input=text)
+    return response.data[0].embedding
 
 
 def _get_embeddings_batch(texts: list[str]) -> list[list[float]]:
-    response = gemini_client.models.embed_content(
-        model=EMBEDDING_MODEL,
-        contents=texts,
-    )
-    return [e.values for e in response.embeddings]
+    response = openai_client.embeddings.create(model=EMBEDDING_MODEL, input=texts)
+    return [item.embedding for item in response.data]
 
 
 def init_db():
@@ -61,7 +62,17 @@ def init_db():
     ])
 
     if "memories" in db.table_names():
-        _table = db.open_table("memories")
+        existing = db.open_table("memories")
+        existing_dim = existing.schema.field("vector").type.list_size
+        if existing_dim != EMBEDDING_DIM:
+            log.warning(
+                "Embedding dimension mismatch (existing=%d, new=%d) — recreating memories table",
+                existing_dim, EMBEDDING_DIM,
+            )
+            db.drop_table("memories")
+            _table = db.create_table("memories", schema=schema)
+        else:
+            _table = existing
     else:
         _table = db.create_table("memories", schema=schema)
 
@@ -74,12 +85,12 @@ def search_memories(
     user_id: str | None = None,
     limit: int = 10,
 ) -> list[str]:
-    """Vector search with recency weighting."""
     table = _get_table()
-
     query_embedding = _get_embedding(query)
+    channel_id = _validate_id(channel_id)
 
     if user_id:
+        user_id = _validate_id(user_id)
         results = (
             table.search(query_embedding)
             .where(f"channel_id = '{channel_id}' OR user_id = '{user_id}'", prefilter=True)
@@ -102,10 +113,9 @@ def search_memories(
 
     scored = []
     for row in results:
-        # LanceDB returns _distance (lower = more similar), convert to similarity
         similarity = max(0.0, 1.0 - row.get("_distance", 1.0))
         age = now - row["created_at"]
-        decay = max(0.3, 1.0 - (age / decay_seconds))
+        decay = math.exp(-age / decay_seconds)
         scored.append((row["fact"], similarity * decay))
 
     scored.sort(key=lambda x: x[1], reverse=True)
@@ -116,10 +126,9 @@ def search_memories(
 
 
 def _is_duplicate(embedding: list[float], channel_id: str) -> bool:
-    """Return True if a near-identical fact already exists (similarity >= DEDUP_THRESHOLD)."""
     table = _get_table()
-
     try:
+        channel_id = _validate_id(channel_id)
         results = (
             table.search(embedding)
             .where(f"channel_id = '{channel_id}'", prefilter=True)
@@ -141,6 +150,8 @@ def _store_memories(channel_id: str, user_id: str, facts: list[str]):
     if not facts:
         return
 
+    channel_id = _validate_id(channel_id)
+    user_id = _validate_id(user_id)
     table = _get_table()
     now = time.time()
 
@@ -173,15 +184,19 @@ async def extract_and_store_memories(
             conversation=conversation, bot_reply=bot_reply
         )
         response = await asyncio.to_thread(
-            gemini_client.models.generate_content,
-            model=MODEL,
-            contents=prompt,
-            config=types.GenerateContentConfig(
-                system_instruction="You extract facts from conversations. Return only valid JSON arrays.",
-                response_mime_type="application/json",
-            ),
+            openai_generate,
+            MODEL,
+            [
+                {"role": "system", "content": "You extract facts from conversations. Return only valid JSON arrays."},
+                {"role": "user", "content": prompt},
+            ],
+            response_format={"type": "json_object"},
         )
-        facts = json.loads(response.text)
+        try:
+            facts = json.loads(response.choices[0].message.content)
+        except json.JSONDecodeError as e:
+            log.warning("Memory extraction returned invalid JSON: %s", e)
+            return
         if not isinstance(facts, list) or not facts:
             return
 

@@ -1,32 +1,27 @@
 import logging
 
-from tavily import TavilyClient
+import httpx
 
-from config import TAVILY_API_KEY, TAVILY_MAX_RESULTS
+from config import FIRECRAWL_MAX_RESULTS, FIRECRAWL_URL
 
 log = logging.getLogger("siegclaw.search")
 
-tavily_client = TavilyClient(api_key=TAVILY_API_KEY) if TAVILY_API_KEY else None
-
 
 def web_search(query: str) -> str | None:
-    """Search the web via Tavily and return formatted results."""
-    if not tavily_client:
-        log.warning("Tavily not configured, skipping web search")
-        return None
-
+    """Search the web via local Firecrawl instance and return formatted results."""
     try:
-        response = tavily_client.search(
-            query=query,
-            max_results=TAVILY_MAX_RESULTS,
-            search_depth="advanced",
-            topic="general",
+        resp = httpx.post(
+            f"{FIRECRAWL_URL}/v1/search",
+            json={"query": query, "limit": FIRECRAWL_MAX_RESULTS},
+            timeout=15,
         )
+        resp.raise_for_status()
+        data = resp.json()
     except Exception as e:
-        log.error("Tavily search failed: %s", e)
+        log.error("Firecrawl search failed: %s", e)
         return None
 
-    results = response.get("results", [])
+    results = data.get("data", [])
     if not results:
         return None
 
@@ -34,7 +29,7 @@ def web_search(query: str) -> str | None:
     for r in results:
         title = r.get("title", "")
         url = r.get("url", "")
-        content = r.get("content", "")
+        content = r.get("description") or r.get("markdown", "")
         parts.append(f"**{title}** ({url})\n{content}")
 
     log.info("Web search returned %d results for '%s'", len(results), query[:60])
