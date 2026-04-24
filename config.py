@@ -23,6 +23,10 @@ log = logging.getLogger("siegclaw")
 DISCORD_TOKEN = os.getenv("DISCORD_BOT_TOKEN")
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "dummy")
 
+# --- Webhook ---
+WEBHOOK_PORT = int(os.getenv("WEBHOOK_PORT", "8643"))
+WEBHOOK_CHANNEL_ID = int(os.getenv("WEBHOOK_CHANNEL_ID", "0"))
+
 # --- Model & Discord ---
 MODEL = os.getenv("MODEL", "anthropic/claude-haiku-4-5")
 EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "openai/text-embedding-3-small")

@@ -14,6 +14,7 @@ A Discord AI assistant powered by Gemini with real-time web search, financial da
 - **Image support** — pass images alongside your message for multimodal responses
 - **Hybrid context window** — adapts between count-based and time-based message fetching
 - **Date-aware** — today's date injected into every prompt so relative dates ("this Friday") are always correct
+- **Webhook endpoint** — `POST /notify` lets external services (e.g. hermes-agent cron jobs) push messages to a Discord channel
 
 ## Setup
 
@@ -40,6 +41,8 @@ A Discord AI assistant powered by Gemini with real-time web search, financial da
 | `TAVILY_MAX_RESULTS` | No | `5` | Number of search results per query |
 | `ROUTER_ENABLED` | No | `true` | Toggle query router (false = always search + memory) |
 | `LOG_LEVEL` | No | `INFO` | Logging level (DEBUG, INFO, WARNING, ERROR) |
+| `WEBHOOK_PORT` | No | `8643` | Port for the incoming webhook server |
+| `WEBHOOK_CHANNEL_ID` | No | — | Default Discord channel ID for webhook messages |
 
 ### Docker (recommended)
 
@@ -86,17 +89,48 @@ User @mentions bot (or replies to bot's message)
             └── Background: extract facts → embed → store in SQLite
 ```
 
+## Webhook
+
+The bot exposes a `POST /notify` endpoint (default port 8643) so external services can push messages into Discord.
+
+**Request:**
+```
+POST http://localhost:8643/notify
+Content-Type: application/json
+
+{
+  "content": "your message here",
+  "channel_id": "optional — overrides WEBHOOK_CHANNEL_ID"
+}
+```
+
+Messages longer than 2000 characters are automatically split into multiple Discord messages.
+
+**From another Docker container (e.g. hermes-agent):**
+```python
+import urllib.request, json
+
+r = urllib.request.urlopen(urllib.request.Request(
+    'http://host.docker.internal:8643/notify',
+    data=json.dumps({'content': 'your message here'}).encode(),
+    headers={'Content-Type': 'application/json'}
+))
+```
+
+Remember to expose the port in your `docker run` command: `-p 127.0.0.1:8643:8643`
+
 ## File Structure
 
 ```
-bot.py              — entrypoint
+bot.py              — entrypoint, runs Discord client + webhook server
 config.py           — env vars, clients, prompts
 context.py          — hybrid context window logic
 discord_handler.py  — Discord event handling
-router.py           — query classification
-search.py           — Tavily web search
+webhook.py          — aiohttp webhook server
+search.py           — web search
 finance.py          — CoinGecko + Yahoo Finance
-memory.py           — SQLite vector memory
+memory.py           — LanceDB vector memory
+browser.py          — browser automation
 ```
 
 ## Memory System
