@@ -221,8 +221,15 @@ async def _run_with_tools(
 
         contents.append(genai_types.Content(role="user", parts=fn_response_parts))
 
-    # Max iterations hit — final call without tools
-    response = await genai_client.aio.models.generate_content(model=MODEL, contents=contents, config=config)
+    # Max iterations hit — force a final answer with no tools
+    contents.append(genai_types.Content(role="user", parts=[
+        genai_types.Part(text="You have reached the maximum number of tool calls. Based on everything gathered so far, give your best answer now.")
+    ]))
+    final_config = genai_types.GenerateContentConfig(
+        system_instruction=config.system_instruction,
+        thinking_config=config.thinking_config,
+    )
+    response = await genai_client.aio.models.generate_content(model=MODEL, contents=contents, config=final_config)
     return response.text or ""
 
 
