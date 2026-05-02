@@ -1,56 +1,51 @@
 # SiegClaw Bot
 
-A Discord AI assistant powered by Gemini with real-time web search, financial data, and persistent vector memory.
+A Discord AI assistant powered by Gemini with web search, browser automation, and persistent vector memory.
 
 ## Features
 
-- **Smart query routing** — classifies every message as search, finance, memory, or direct using Gemini with thinking
-- **Certainty fallback** — if bot is uncertain on a direct answer, automatically triggers a web search and retries
+- **Tool-calling** — Gemini autonomously decides when to search, browse, recall memories, or fetch user history
+- **Web search** — real-time search via local Firecrawl instance
+- **Browser automation** — opens real browser pages (via Camofox), supports click, type, snapshot, and screenshot
+- **Vector memory** — extracts and stores facts from conversations using LanceDB + Gemini embeddings
+- **Image support** — attach images or reply to image messages for multimodal responses
+- **User message lookup** — fetch and summarise what a specific person said in recent channel history
 - **Reply-aware context** — replying to the bot uses focused thread context instead of full channel history
-- **Web search** — Tavily (advanced depth) for real-time news, weather, and current events
-- **Financial data** — live prices via CoinGecko (crypto) and Yahoo Finance (stocks, indices, commodities, forex)
-- **Vector memory** — extracts and stores facts from conversations using SQLite + numpy cosine similarity
-- **Multi-turn awareness** — router uses recent conversation context for follow-up questions
-- **Image support** — pass images alongside your message for multimodal responses
-- **Hybrid context window** — adapts between count-based and time-based message fetching
-- **Date-aware** — today's date injected into every prompt so relative dates ("this Friday") are always correct
-- **Webhook endpoint** — `POST /notify` lets external services (e.g. hermes-agent cron jobs) push messages to a Discord channel
+- **Hybrid context window** — adapts between count-based and time-based message fetching for active channels
+- **Date-aware** — current PT timestamp injected into every prompt
+- **Webhook endpoint** — `POST /notify` lets external services push messages into a Discord channel
+- **Personality via SOUL.md** — edit `SOUL.md` to change the bot's behaviour without touching code
 
 ## Setup
 
 ### Requirements
 
 - Docker (recommended) or Python 3.12+
-- Google API key (Gemini)
-- Tavily API key
+- Google AI Studio API key
+- Local [Firecrawl](https://github.com/mendableai/firecrawl) instance
+- Local [Camofox](https://github.com/siegfried/camofox) instance (optional, for browser tools)
 
 ### Environment Variables
 
 | Variable | Required | Default | Description |
 |---|---|---|---|
 | `DISCORD_BOT_TOKEN` | Yes | — | Discord bot token |
-| `GOOGLE_API_KEY` | Yes | — | Google API key for Gemini + embeddings |
-| `TAVILY_API_KEY` | Yes | — | Tavily search API key |
-| `GEMINI_MODEL` | No | `gemini-3.1-flash-lite-preview` | Gemini model to use |
-| `CONTEXT_MESSAGE_COUNT` | No | `30` | Baseline messages to fetch |
-| `CONTEXT_TIME_WINDOW_HOURS` | No | `24` | Time window for active channels |
-| `CONTEXT_ACTIVITY_THRESHOLD` | No | `20` | Messages needed to trigger time-based mode |
-| `CONTEXT_MAX_MESSAGES` | No | `50` | Hard cap on messages fetched |
-| `LANCEDB_PATH` | No | `data/lancedb` | LanceDB directory path |
-| `MEMORY_DECAY_DAYS` | No | `90` | Days before memories score lower in search |
-| `TAVILY_MAX_RESULTS` | No | `5` | Number of search results per query |
-| `ROUTER_ENABLED` | No | `true` | Toggle query router (false = always search + memory) |
-| `LOG_LEVEL` | No | `INFO` | Logging level (DEBUG, INFO, WARNING, ERROR) |
-| `WEBHOOK_PORT` | No | `8643` | Port for the incoming webhook server |
+| `GOOGLE_API_KEY` | Yes | — | Google AI Studio API key |
+| `FIRECRAWL_API_URL` | No | `http://localhost:3002` | Firecrawl instance URL |
+| `CAMOFOX_URL` | No | `http://localhost:9377` | Camofox browser instance URL |
 | `WEBHOOK_CHANNEL_ID` | No | — | Default Discord channel ID for webhook messages |
+| `LANCEDB_PATH` | No | `data/lancedb` | LanceDB directory path |
+| `MODEL` | No | `gemini-3-flash-preview` | Gemini model to use |
+| `EMBEDDING_MODEL` | No | `gemini-embedding-2` | Embedding model |
+| `MEMORY_DECAY_DAYS` | No | `90` | Days before memories score lower in search |
+| `LOG_LEVEL` | No | `INFO` | Logging level |
+| `WEBHOOK_PORT` | No | `8643` | Port for the incoming webhook server |
 
 ### Docker (recommended)
 
 ```bash
-# Build on the target machine
 docker build -t siegclaw-bot .
 
-# Run
 docker run -d \
   --name siegclaw-bot \
   --env-file .env \
@@ -70,30 +65,41 @@ python bot.py
 ## Architecture
 
 ```
-User @mentions bot (or replies to bot's message)
+User @mentions bot (or replies to bot message)
         │
-        ├── Reply? → focused thread context
-        │   else  → fetch_context() hybrid window
+        ├── Reply to bot? → focused 2-message thread context
+        │   else          → fetch_context() hybrid window
         │
-        ├── classify_query()    Gemini router → SEARCH / FINANCE / MEMORY / DIRECT
+        ├── Download attached images (parallel)
         │
-        ├── SEARCH   → Tavily web search
-        ├── FINANCE  → CoinGecko + Yahoo Finance (fallback to Tavily)
-        ├── MEMORY   → SQLite cosine similarity search
-        └── DIRECT   → last 10 messages as context
-        │
-        └── Gemini generates response (augmented prompt + today's date)
-            │
-            ├── DIRECT: is_response_certain() → UNCERTAIN → fallback search → retry
-            │
-            └── Background: extract facts → embed → store in SQLite
+        └── _run_with_tools() — Gemini tool-calling loop (max 5 iterations)
+                │
+                ├── web_search        → Firecrawl
+                ├── browse_page       → Camofox (real browser)
+                ├── browser_click/type/snapshot/screenshot
+                ├── recall_memories   → LanceDB vector search
+                └── fetch_user_messages → channel history filtered by author
+                │
+                └── Background: extract facts → embed → store in LanceDB
 ```
+
+## Tools
+
+| Tool | Description |
+|---|---|
+| `web_search` | Search the web via Firecrawl |
+| `browse_page` | Open a URL in a real browser |
+| `browser_click` | Click an element by ARIA ref |
+| `browser_type` | Type into an input field |
+| `browser_snapshot` | Get current page as accessibility tree |
+| `browser_screenshot` | Take a visual screenshot |
+| `recall_memories` | Search stored facts from past conversations |
+| `fetch_user_messages` | Fetch recent messages from a specific user in the channel |
 
 ## Webhook
 
-The bot exposes a `POST /notify` endpoint (default port 8643) so external services can push messages into Discord.
+The bot exposes a `POST /notify` endpoint (default port 8643) for external services to push messages into Discord.
 
-**Request:**
 ```
 POST http://localhost:8643/notify
 Content-Type: application/json
@@ -104,49 +110,36 @@ Content-Type: application/json
 }
 ```
 
-Messages longer than 2000 characters are automatically split into multiple Discord messages.
+From another Docker container:
 
-**From another Docker container (e.g. hermes-agent):**
 ```python
 import urllib.request, json
 
-r = urllib.request.urlopen(urllib.request.Request(
+urllib.request.urlopen(urllib.request.Request(
     'http://host.docker.internal:8643/notify',
     data=json.dumps({'content': 'your message here'}).encode(),
     headers={'Content-Type': 'application/json'}
 ))
 ```
 
-Remember to expose the port in your `docker run` command: `-p 127.0.0.1:8643:8643`
-
 ## File Structure
 
 ```
 bot.py              — entrypoint, runs Discord client + webhook server
-config.py           — env vars, clients, prompts
+config.py           — env vars, API client, prompts
+SOUL.md             — system prompt / bot personality
 context.py          — hybrid context window logic
-discord_handler.py  — Discord event handling
+discord_handler.py  — Discord events, tool loop, message handling
 webhook.py          — aiohttp webhook server
-search.py           — web search
-finance.py          — CoinGecko + Yahoo Finance
+search.py           — Firecrawl web search
 memory.py           — LanceDB vector memory
-browser.py          — browser automation
+browser.py          — Camofox browser automation
 ```
 
 ## Memory System
 
-Facts are automatically extracted from every conversation by Gemini and stored as embeddings in SQLite. Memories are:
+Facts are automatically extracted from every conversation and stored as vector embeddings in LanceDB using `gemini-embedding-2` (768 dimensions). Memories are:
 
 - **Per-channel and per-user** — channel memories stay local, user preferences follow them across channels
 - **Decay-weighted** — older memories score lower in search results (configurable via `MEMORY_DECAY_DAYS`)
 - **Deduplicated** — near-identical facts (≥0.95 cosine similarity) are skipped on insert
-
-## Finance Support
-
-Supported assets out of the box:
-
-- **Crypto** — BTC, ETH, SOL, XRP, ADA, DOGE, and more
-- **Indices** — Dow Jones, S&P 500, Nasdaq, Russell 2000, FTSE, Nikkei, Hang Seng
-- **Commodities** — Gold, Silver, Oil, Natural Gas, Copper, Wheat, Corn
-- **Forex** — Major USD pairs (JPY, EUR, GBP, CNY, MYR, SGD, THB, IDR, PHP)
-- **Stocks** — Any uppercase ticker symbol (e.g. AAPL, TSLA, MGNI, $PLTR)

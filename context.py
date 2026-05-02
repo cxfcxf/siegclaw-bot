@@ -47,10 +47,7 @@ async def fetch_context(
             channel.id, len(messages),
         )
     else:
-        log.debug(
-            "Channel %s: using %d messages (count-based)",
-            channel.id, len(messages),
-        )
+        log.debug("Channel %s: using %d messages (count-based)", channel.id, len(messages))
 
     return _format_messages(messages, bot_user_id, trigger_message_id), messages
 

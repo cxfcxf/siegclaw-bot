@@ -3,7 +3,7 @@ import logging
 import discord
 from aiohttp import web
 
-from config import WEBHOOK_CHANNEL_ID
+from config import MAX_DISCORD_LENGTH, WEBHOOK_CHANNEL_ID
 
 log = logging.getLogger("siegclaw.webhook")
 
@@ -30,8 +30,10 @@ def create_webhook_app(client: discord.Client) -> web.Application:
             return web.Response(status=404, text=f"Channel {channel_id} not found")
 
         chunks = []
-        while len(content) > 2000:
-            split_at = content.rfind("\n", 0, 2000) or 2000
+        while len(content) > MAX_DISCORD_LENGTH:
+            split_at = content.rfind("\n", 0, MAX_DISCORD_LENGTH)
+            if split_at == -1:
+                split_at = MAX_DISCORD_LENGTH
             chunks.append(content[:split_at])
             content = content[split_at:].lstrip("\n")
         chunks.append(content)

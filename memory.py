@@ -18,7 +18,7 @@ from config import (
 
 log = logging.getLogger("siegclaw.memory")
 
-EMBEDDING_DIM = 1536
+EMBEDDING_DIM = 768
 DEDUP_THRESHOLD = 0.95
 
 _table = None
@@ -38,12 +38,12 @@ def _validate_id(id_str: str) -> str:
 
 
 def _get_embedding(text: str) -> list[float]:
-    response = openai_client.embeddings.create(model=EMBEDDING_MODEL, input=text)
+    response = openai_client.embeddings.create(model=EMBEDDING_MODEL, input=text, dimensions=EMBEDDING_DIM)
     return response.data[0].embedding
 
 
 def _get_embeddings_batch(texts: list[str]) -> list[list[float]]:
-    response = openai_client.embeddings.create(model=EMBEDDING_MODEL, input=texts)
+    response = openai_client.embeddings.create(model=EMBEDDING_MODEL, input=texts, dimensions=EMBEDDING_DIM)
     return [item.embedding for item in response.data]
 
 
@@ -91,19 +91,16 @@ def search_memories(
 
     if user_id:
         user_id = _validate_id(user_id)
-        results = (
-            table.search(query_embedding)
-            .where(f"channel_id = '{channel_id}' OR user_id = '{user_id}'", prefilter=True)
-            .limit(limit * 3)
-            .to_list()
-        )
+        where = f"channel_id = '{channel_id}' OR user_id = '{user_id}'"
     else:
-        results = (
-            table.search(query_embedding)
-            .where(f"channel_id = '{channel_id}'", prefilter=True)
-            .limit(limit * 3)
-            .to_list()
-        )
+        where = f"channel_id = '{channel_id}'"
+
+    results = (
+        table.search(query_embedding)
+        .where(where, prefilter=True)
+        .limit(limit * 3)
+        .to_list()
+    )
 
     if not results:
         return []

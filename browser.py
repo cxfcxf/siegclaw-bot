@@ -15,6 +15,8 @@ _SNAP_MAX_CHARS = 6000
 
 def browse_page(url: str, user_id: str) -> str:
     """Open URL in real browser, return page title + ARIA snapshot."""
+    if user_id in _sessions:
+        close_browser_session(user_id)
     resp = httpx.post(
         f"{CAMOFOX_URL}/tabs/open",
         json={"userId": user_id, "url": url},

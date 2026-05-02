@@ -21,19 +21,16 @@ log = logging.getLogger("siegclaw")
 
 # --- Required ---
 DISCORD_TOKEN = os.getenv("DISCORD_BOT_TOKEN")
-OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "dummy")
+GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
 
 # --- Webhook ---
 WEBHOOK_PORT = int(os.getenv("WEBHOOK_PORT", "8643"))
 WEBHOOK_CHANNEL_ID = int(os.getenv("WEBHOOK_CHANNEL_ID", "0"))
 
 # --- Model & Discord ---
-MODEL = os.getenv("MODEL", "anthropic/claude-haiku-4-5")
-EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "openai/text-embedding-3-small")
+MODEL = os.getenv("MODEL", "gemini-3-flash-preview")
+EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "gemini-embedding-2")
 MAX_DISCORD_LENGTH = 2000
-
-# --- OR Proxy ---
-OR_PROXY_URL = os.getenv("OR_PROXY_URL", "http://localhost:8787")
 
 # --- Browser ---
 CAMOFOX_URL = os.getenv("CAMOFOX_URL", "http://localhost:9377")
@@ -53,20 +50,8 @@ FIRECRAWL_URL = os.getenv("FIRECRAWL_API_URL", "http://localhost:3002")
 FIRECRAWL_MAX_RESULTS = int(os.getenv("FIRECRAWL_MAX_RESULTS", "5"))
 
 # --- Prompts ---
-SYSTEM_INSTRUCTION = (
-    "You are SiegClaw, a helpful AI assistant in a Discord server with multiple users. "
-    "You will receive recent conversation history followed by the current question. "
-    "Use the conversation history when it is relevant to the question (e.g. summaries, follow-ups, context). "
-    "Do not bring up unrelated topics from the history unprompted. "
-    "When referring to people, always use their name (e.g. 'siegfried said...', 'ED asked...') — "
-    "never use 'you' or 'we' since there are multiple participants. "
-    "Be concise. Occasionally add a brief witty remark or light commentary at the end if it fits naturally — but keep it short and don't force it. "
-    "Use Discord markdown formatting when helpful. "
-    "Never fabricate financial data, prices, or market numbers. "
-    "You have tools available — use them. If a question requires current information, prices, news, "
-    "or anything you're not certain about, call web_search or get_financial_data instead of saying you don't know. "
-    "Only say you lack information if a search also fails to find it."
-)
+with open(os.path.join(os.path.dirname(__file__), "SOUL.md")) as _f:
+    SYSTEM_INSTRUCTION = _f.read().strip()
 
 MEMORY_EXTRACTION_PROMPT = """\
 Analyze the following conversation and extract important facts worth remembering \
@@ -88,8 +73,8 @@ Bot's reply:
 
 # --- Client ---
 openai_client = OpenAI(
-    api_key=OPENROUTER_API_KEY,
-    base_url=f"{OR_PROXY_URL}/v1",
+    api_key=GOOGLE_API_KEY,
+    base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
 )
 
 

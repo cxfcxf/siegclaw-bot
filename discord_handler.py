@@ -11,32 +11,43 @@ import httpx
 from browser import browse_page, browser_click, browser_snapshot, browser_type, close_browser_session, screenshot_bytes
 from config import MAX_DISCORD_LENGTH, MODEL, SYSTEM_INSTRUCTION, openai_generate
 from context import fetch_context
-from finance import get_financial_data
 from memory import extract_and_store_memories, init_db, search_memories
 from search import web_search
 
 log = logging.getLogger("siegclaw.handler")
 
+_TOOL_STATUS = {
+    "web_search":           lambda a: f"🔍 searching: *{a.get('query', '')}*",
+    "recall_memories":      lambda a: f"🧠 searching memories: *{a.get('query', '')}*",
+    "fetch_user_messages":  lambda a: f"📜 fetching messages from *{a.get('user_name', '')}*",
+    "browse_page":        lambda a: f"🌐 browsing: `{a.get('url', '')}`",
+    "browser_click":      lambda a: f"🖱️ clicking element `{a.get('ref', '')}`",
+    "browser_type":       lambda a: "⌨️ typing into page",
+    "browser_snapshot":   lambda a: "📄 reading page",
+    "browser_screenshot": lambda a: "📸 taking screenshot",
+}
+
 TOOLS = [
     {
         "type": "function",
         "function": {
-            "name": "web_search",
-            "description": "Search the web for current information, recent news, events, or factual lookups",
+            "name": "fetch_user_messages",
+            "description": "Fetch recent messages from a specific user in this channel. Use when asked to summarize, review, or analyse what a particular person has said.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "query": {"type": "string"},
+                    "user_name": {"type": "string", "description": "Display name of the user (partial match is fine)"},
+                    "limit": {"type": "integer", "description": "Max number of that user's messages to return (default 50, max 100)"},
                 },
-                "required": ["query"],
+                "required": ["user_name"],
             },
         },
     },
     {
         "type": "function",
         "function": {
-            "name": "get_financial_data",
-            "description": "Get live prices for stocks, crypto, commodities, market indices, or any financial instrument",
+            "name": "web_search",
+            "description": "Search the web for current information, recent news, events, or factual lookups",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -177,16 +188,6 @@ def setup_events(client: discord.Client):
 
             async def update_status(tool_name: str, args: dict):
                 nonlocal _status_msg
-                _TOOL_STATUS = {
-                    "web_search":        lambda a: f"🔍 searching: *{a.get('query', '')}*",
-                    "get_financial_data": lambda a: f"📈 fetching financial data: *{a.get('query', '')}*",
-                    "recall_memories":   lambda a: f"🧠 searching memories: *{a.get('query', '')}*",
-                    "browse_page":       lambda a: f"🌐 browsing: `{a.get('url', '')}`",
-                    "browser_click":     lambda a: f"🖱️ clicking element `{a.get('ref', '')}`",
-                    "browser_type":      lambda a: f"⌨️ typing into page",
-                    "browser_snapshot":  lambda a: f"📄 reading page",
-                    "browser_screenshot": lambda a: f"📸 taking screenshot",
-                }
                 fn = _TOOL_STATUS.get(tool_name, lambda a: f"⚙️ {tool_name}")
                 line = f"-# {fn(args)}"
                 if _status_msg is None:
@@ -195,7 +196,7 @@ def setup_events(client: discord.Client):
                     await _status_msg.edit(content=f"{_status_msg.content}\n{line}")
 
             try:
-                reply_text = await _run_with_tools(system, user_content, channel_id, user_id, update_status)
+                reply_text = await _run_with_tools(system, user_content, message.channel, channel_id, user_id, update_status)
                 if not reply_text:
                     raise ValueError("Empty response")
             except Exception as e:
@@ -210,7 +211,7 @@ def setup_events(client: discord.Client):
 
 
 async def _run_with_tools(
-    system: str, user_content, channel_id: str, user_id: str, status_fn=None, max_iters: int = 5
+    system: str, user_content, channel: discord.TextChannel, channel_id: str, user_id: str, status_fn=None, max_iters: int = 5
 ) -> str:
     msgs = [
         {"role": "system", "content": system},
@@ -246,7 +247,13 @@ async def _run_with_tools(
             if status_fn:
                 await status_fn(tc.function.name, args)
 
-            if tc.function.name == "browser_screenshot":
+            if tc.function.name == "fetch_user_messages":
+                result = await _fetch_user_messages(
+                    channel, args.get("user_name", ""), args.get("limit", 50)
+                )
+                log.info("Tool fetch_user_messages(%s) → %d chars", args.get("user_name"), len(result))
+                msgs.append({"role": "tool", "tool_call_id": tc.id, "content": result})
+            elif tc.function.name == "browser_screenshot":
                 img_bytes = await asyncio.to_thread(screenshot_bytes, user_id)
                 if img_bytes:
                     b64 = base64.b64encode(img_bytes).decode()
@@ -274,12 +281,6 @@ def _dispatch_tool(name: str, args: dict, channel_id: str, user_id: str) -> str:
     if name == "web_search":
         result = web_search(args.get("query", ""))
         return result or "No results found."
-    if name == "get_financial_data":
-        try:
-            result = get_financial_data(args.get("query", ""))
-            return result or "No financial data found."
-        except Exception as e:
-            return f"Financial data unavailable: {e}"
     if name == "recall_memories":
         try:
             facts = search_memories(channel_id, args.get("query", ""), user_id)
@@ -309,9 +310,23 @@ def _dispatch_tool(name: str, args: dict, channel_id: str, user_id: str) -> str:
     return f"Unknown tool: {name}"
 
 
+async def _fetch_user_messages(channel: discord.TextChannel, user_name: str, limit: int) -> str:
+    limit = min(max(limit, 1), 50)
+    matches = []
+    async for msg in channel.history(limit=100):
+        if user_name.lower() in msg.author.display_name.lower() and msg.content:
+            matches.append(f"{msg.author.display_name}: {msg.content}")
+            if len(matches) >= limit:
+                break
+    if not matches:
+        return f"No messages found from '{user_name}' in the last 100 channel messages."
+    matches.reverse()
+    return "\n".join(matches)
+
+
 def _build_system() -> str:
-    today = datetime.now(ZoneInfo("America/Los_Angeles")).strftime("%A, %B %-d, %Y")
-    return SYSTEM_INSTRUCTION + f"\n\nToday's date is {today} (Pacific Time)."
+    now = datetime.now(ZoneInfo("America/Los_Angeles")).strftime("%Y-%m-%d %H:%M:%S")
+    return SYSTEM_INSTRUCTION + f"\n\n## Today's date time\n{now} PT"
 
 
 def _build_user_content(prompt: str, images: list[dict]):
@@ -359,16 +374,18 @@ async def _download_images(message: discord.Message, ref_msg: discord.Message | 
     if not all_media:
         return []
 
-    images = []
-    try:
-        async with httpx.AsyncClient(timeout=10) as http:
-            for item in all_media:
-                resp = await http.get(item["url"])
-                if resp.status_code == 200:
-                    images.append({"mime_type": item["mime_type"], "data": resp.content})
-    except Exception as e:
-        log.warning("Failed to download images: %s", e)
-    return images
+    async def fetch_one(http: httpx.AsyncClient, item: dict) -> dict | None:
+        try:
+            resp = await http.get(item["url"])
+            if resp.status_code == 200:
+                return {"mime_type": item["mime_type"], "data": resp.content}
+        except Exception as e:
+            log.warning("Failed to download image: %s", e)
+        return None
+
+    async with httpx.AsyncClient(timeout=10) as http:
+        results = await asyncio.gather(*[fetch_one(http, item) for item in all_media])
+    return [r for r in results if r is not None]
 
 
 async def _send_long_message(message: discord.Message, text: str):
