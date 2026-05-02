@@ -1,17 +1,19 @@
 # SiegClaw Bot
 
-A Discord AI assistant powered by Gemini with web search, browser automation, and persistent vector memory.
+A Discord AI assistant powered by Gemini with web search, browser automation, YouTube understanding, and persistent vector memory.
 
 ## Features
 
 - **Tool-calling** — Gemini autonomously decides when to search, browse, recall memories, or fetch user history
 - **Web search** — real-time search via local Firecrawl instance
 - **Browser automation** — opens real browser pages (via Camofox), supports click, type, snapshot, and screenshot
+- **YouTube video understanding** — paste a YouTube URL and Gemini natively processes the video (no transcript scraping needed)
 - **Vector memory** — extracts and stores facts from conversations using LanceDB + Gemini embeddings
 - **Image support** — attach images or reply to image messages for multimodal responses
 - **User message lookup** — fetch and summarise what a specific person said in recent channel history
 - **Reply-aware context** — replying to the bot uses focused thread context instead of full channel history
 - **Hybrid context window** — adapts between count-based and time-based message fetching for active channels
+- **Dynamic thinking** — Gemini self-allocates thinking budget per query complexity
 - **Date-aware** — current PT timestamp injected into every prompt
 - **Webhook endpoint** — `POST /notify` lets external services push messages into a Discord channel
 - **Personality via SOUL.md** — edit `SOUL.md` to change the bot's behaviour without touching code
@@ -21,7 +23,7 @@ A Discord AI assistant powered by Gemini with web search, browser automation, an
 ### Requirements
 
 - Docker (recommended) or Python 3.12+
-- Google AI Studio API key
+- Google AI Studio API key (paid tier recommended — free tier is 20 req/day)
 - Local [Firecrawl](https://github.com/mendableai/firecrawl) instance
 - Local [Camofox](https://github.com/siegfried/camofox) instance (optional, for browser tools)
 
@@ -71,6 +73,8 @@ User @mentions bot (or replies to bot message)
         │   else          → fetch_context() hybrid window
         │
         ├── Download attached images (parallel)
+        │
+        ├── YouTube URLs in message? → attached as native file_data parts
         │
         └── _run_with_tools() — Gemini tool-calling loop (max 5 iterations)
                 │

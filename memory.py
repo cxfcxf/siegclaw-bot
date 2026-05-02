@@ -5,6 +5,7 @@ import math
 import time
 
 import pyarrow as pa
+from google.genai import types as genai_types
 
 from config import (
     EMBEDDING_MODEL,
@@ -12,8 +13,7 @@ from config import (
     MEMORY_DECAY_DAYS,
     MEMORY_EXTRACTION_PROMPT,
     MODEL,
-    openai_client,
-    openai_generate,
+    genai_client,
 )
 
 log = logging.getLogger("siegclaw.memory")
@@ -38,13 +38,21 @@ def _validate_id(id_str: str) -> str:
 
 
 def _get_embedding(text: str) -> list[float]:
-    response = openai_client.embeddings.create(model=EMBEDDING_MODEL, input=text, dimensions=EMBEDDING_DIM)
-    return response.data[0].embedding
+    response = genai_client.models.embed_content(
+        model=EMBEDDING_MODEL,
+        contents=text,
+        config=genai_types.EmbedContentConfig(output_dimensionality=EMBEDDING_DIM),
+    )
+    return list(response.embeddings[0].values)
 
 
 def _get_embeddings_batch(texts: list[str]) -> list[list[float]]:
-    response = openai_client.embeddings.create(model=EMBEDDING_MODEL, input=texts, dimensions=EMBEDDING_DIM)
-    return [item.embedding for item in response.data]
+    response = genai_client.models.embed_content(
+        model=EMBEDDING_MODEL,
+        contents=texts,
+        config=genai_types.EmbedContentConfig(output_dimensionality=EMBEDDING_DIM),
+    )
+    return [list(e.values) for e in response.embeddings]
 
 
 def init_db():
@@ -181,16 +189,16 @@ async def extract_and_store_memories(
             conversation=conversation, bot_reply=bot_reply
         )
         response = await asyncio.to_thread(
-            openai_generate,
-            MODEL,
-            [
-                {"role": "system", "content": "You extract facts from conversations. Return only valid JSON arrays."},
-                {"role": "user", "content": prompt},
-            ],
-            response_format={"type": "json_object"},
+            genai_client.models.generate_content,
+            model=MODEL,
+            contents=prompt,
+            config=genai_types.GenerateContentConfig(
+                system_instruction="You extract facts from conversations. Return only valid JSON arrays.",
+                response_mime_type="application/json",
+            ),
         )
         try:
-            facts = json.loads(response.choices[0].message.content)
+            facts = json.loads(response.text)
         except json.JSONDecodeError as e:
             log.warning("Memory extraction returned invalid JSON: %s", e)
             return

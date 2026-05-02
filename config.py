@@ -3,8 +3,7 @@ import os
 import sys
 
 from dotenv import load_dotenv
-from openai import OpenAI
-from tenacity import retry, stop_after_attempt, wait_exponential
+from google import genai
 
 load_dotenv()
 
@@ -72,20 +71,4 @@ Bot's reply:
 {bot_reply}"""
 
 # --- Client ---
-openai_client = OpenAI(
-    api_key=GOOGLE_API_KEY,
-    base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
-)
-
-
-@retry(
-    wait=wait_exponential(multiplier=1, min=2, max=30),
-    stop=stop_after_attempt(3),
-    reraise=True,
-)
-def openai_generate(model: str, messages: list, **kwargs):
-    return openai_client.chat.completions.create(
-        model=model,
-        messages=messages,
-        **kwargs,
-    )
+genai_client = genai.Client(api_key=GOOGLE_API_KEY)

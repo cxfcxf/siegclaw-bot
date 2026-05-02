@@ -1,15 +1,19 @@
 import asyncio
-import base64
-import json
 import logging
+import re
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
+_YOUTUBE_RE = re.compile(
+    r'https?://(?:www\.)?(?:youtube\.com/watch\?(?:[^&\s]*&)*v=|youtu\.be/)([a-zA-Z0-9_-]{11})[^\s]*'
+)
+
 import discord
 import httpx
+from google.genai import types as genai_types
 
 from browser import browse_page, browser_click, browser_snapshot, browser_type, close_browser_session, screenshot_bytes
-from config import MAX_DISCORD_LENGTH, MODEL, SYSTEM_INSTRUCTION, openai_generate
+from config import MAX_DISCORD_LENGTH, MODEL, SYSTEM_INSTRUCTION, genai_client
 from context import fetch_context
 from memory import extract_and_store_memories, init_db, search_memories
 from search import web_search
@@ -27,111 +31,65 @@ _TOOL_STATUS = {
     "browser_screenshot": lambda a: "📸 taking screenshot",
 }
 
-TOOLS = [
-    {
-        "type": "function",
-        "function": {
-            "name": "fetch_user_messages",
-            "description": "Fetch recent messages from a specific user in this channel. Use when asked to summarize, review, or analyse what a particular person has said.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "user_name": {"type": "string", "description": "Display name of the user (partial match is fine)"},
-                    "limit": {"type": "integer", "description": "Max number of that user's messages to return (default 50, max 100)"},
-                },
-                "required": ["user_name"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "web_search",
-            "description": "Search the web for current information, recent news, events, or factual lookups",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "query": {"type": "string"},
-                },
-                "required": ["query"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "recall_memories",
-            "description": "Search past conversation memories for facts, decisions, preferences, or details about people",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "query": {"type": "string"},
-                },
-                "required": ["query"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "browse_page",
-            "description": "Open a URL in a real browser and return the page content as an accessibility tree. Use this for JS-heavy pages, login-walled content, or when web_search isn't enough to get the full page content.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "url": {"type": "string"},
-                },
-                "required": ["url"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "browser_click",
-            "description": "Click an element on the current browser page using its ref ID from the snapshot",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "ref": {"type": "string", "description": "The ref ID from the page snapshot"},
-                },
-                "required": ["ref"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "browser_type",
-            "description": "Type text into an input field on the current browser page",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "ref": {"type": "string", "description": "The ref ID of the input from the snapshot"},
-                    "text": {"type": "string"},
-                    "submit": {"type": "boolean", "description": "Press Enter after typing"},
-                },
-                "required": ["ref", "text"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "browser_snapshot",
-            "description": "Get the current state of the browser page as an accessibility tree",
-            "parameters": {"type": "object", "properties": {}},
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "browser_screenshot",
-            "description": "Take a visual screenshot of the current browser page and see it as an image",
-            "parameters": {"type": "object", "properties": {}},
-        },
-    },
-]
+def _schema(properties: dict, required: list[str] | None = None) -> genai_types.Schema:
+    return genai_types.Schema(
+        type=genai_types.Type.OBJECT,
+        properties={k: genai_types.Schema(**v) for k, v in properties.items()},
+        required=required or [],
+    )
+
+
+TOOLS = genai_types.Tool(function_declarations=[
+    genai_types.FunctionDeclaration(
+        name="fetch_user_messages",
+        description="Fetch recent messages from a specific user in this channel. Use when asked to summarize, review, or analyse what a particular person has said.",
+        parameters=_schema(
+            {"user_name": {"type": genai_types.Type.STRING, "description": "Display name of the user (partial match is fine)"},
+             "limit": {"type": genai_types.Type.INTEGER, "description": "Max number of that user's messages to return (default 50, max 100)"}},
+            required=["user_name"],
+        ),
+    ),
+    genai_types.FunctionDeclaration(
+        name="web_search",
+        description="Search the web for current information, recent news, events, or factual lookups",
+        parameters=_schema({"query": {"type": genai_types.Type.STRING}}, required=["query"]),
+    ),
+    genai_types.FunctionDeclaration(
+        name="recall_memories",
+        description="Search past conversation memories for facts, decisions, preferences, or details about people",
+        parameters=_schema({"query": {"type": genai_types.Type.STRING}}, required=["query"]),
+    ),
+    genai_types.FunctionDeclaration(
+        name="browse_page",
+        description="Open a URL in a real browser and return the page content as an accessibility tree. Use this for JS-heavy pages, login-walled content, or when web_search isn't enough.",
+        parameters=_schema({"url": {"type": genai_types.Type.STRING}}, required=["url"]),
+    ),
+    genai_types.FunctionDeclaration(
+        name="browser_click",
+        description="Click an element on the current browser page using its ref ID from the snapshot",
+        parameters=_schema({"ref": {"type": genai_types.Type.STRING, "description": "The ref ID from the page snapshot"}}, required=["ref"]),
+    ),
+    genai_types.FunctionDeclaration(
+        name="browser_type",
+        description="Type text into an input field on the current browser page",
+        parameters=_schema(
+            {"ref": {"type": genai_types.Type.STRING, "description": "The ref ID of the input from the snapshot"},
+             "text": {"type": genai_types.Type.STRING},
+             "submit": {"type": genai_types.Type.BOOLEAN, "description": "Press Enter after typing"}},
+            required=["ref", "text"],
+        ),
+    ),
+    genai_types.FunctionDeclaration(
+        name="browser_snapshot",
+        description="Get the current state of the browser page as an accessibility tree",
+        parameters=_schema({}),
+    ),
+    genai_types.FunctionDeclaration(
+        name="browser_screenshot",
+        description="Take a visual screenshot of the current browser page and see it as an image",
+        parameters=_schema({}),
+    ),
+])
 
 
 def setup_events(client: discord.Client):
@@ -181,8 +139,9 @@ def setup_events(client: discord.Client):
                 prompt = f"{prompt}\n\n[Current question from {message.author.display_name}]: {user_text}"
 
             images = await _download_images(message, ref_msg)
+            yt_video_ids = _YOUTUBE_RE.findall(user_text)
             system = _build_system()
-            user_content = _build_user_content(prompt, images)
+            user_content = _build_user_content(prompt, images, yt_video_ids)
 
             _status_msg: discord.Message | None = None
 
@@ -211,70 +170,60 @@ def setup_events(client: discord.Client):
 
 
 async def _run_with_tools(
-    system: str, user_content, channel: discord.TextChannel, channel_id: str, user_id: str, status_fn=None, max_iters: int = 5
+    system: str, user_content: genai_types.Content, channel: discord.TextChannel, channel_id: str, user_id: str, status_fn=None, max_iters: int = 5
 ) -> str:
-    msgs = [
-        {"role": "system", "content": system},
-        {"role": "user", "content": user_content},
-    ]
+    contents = [user_content]
+    config = genai_types.GenerateContentConfig(
+        system_instruction=system,
+        tools=[TOOLS],
+        thinking_config=genai_types.ThinkingConfig(thinking_budget=-1),
+    )
 
     for _ in range(max_iters):
-        response = await asyncio.to_thread(openai_generate, MODEL, msgs, tools=TOOLS)
-        choice = response.choices[0]
+        response = await genai_client.aio.models.generate_content(
+            model=MODEL, contents=contents, config=config,
+        )
 
-        if choice.finish_reason != "tool_calls" or not choice.message.tool_calls:
-            return (choice.message.content or "").strip()
+        if not response.function_calls:
+            return response.text or ""
 
-        msgs.append({
-            "role": "assistant",
-            "content": choice.message.content,
-            "tool_calls": [
-                {
-                    "id": tc.id,
-                    "type": "function",
-                    "function": {"name": tc.function.name, "arguments": tc.function.arguments},
-                }
-                for tc in choice.message.tool_calls
-            ],
-        })
+        contents.append(response.candidates[0].content)
 
-        for tc in choice.message.tool_calls:
-            try:
-                args = json.loads(tc.function.arguments)
-            except json.JSONDecodeError:
-                args = {}
-
+        fn_response_parts = []
+        for fc in response.function_calls:
+            args = dict(fc.args)
             if status_fn:
-                await status_fn(tc.function.name, args)
+                await status_fn(fc.name, args)
 
-            if tc.function.name == "fetch_user_messages":
-                result = await _fetch_user_messages(
-                    channel, args.get("user_name", ""), args.get("limit", 50)
-                )
+            if fc.name == "fetch_user_messages":
+                result = await _fetch_user_messages(channel, args.get("user_name", ""), args.get("limit", 50))
                 log.info("Tool fetch_user_messages(%s) → %d chars", args.get("user_name"), len(result))
-                msgs.append({"role": "tool", "tool_call_id": tc.id, "content": result})
-            elif tc.function.name == "browser_screenshot":
+            elif fc.name == "browser_screenshot":
                 img_bytes = await asyncio.to_thread(screenshot_bytes, user_id)
                 if img_bytes:
-                    b64 = base64.b64encode(img_bytes).decode()
-                    msgs.append({"role": "tool", "tool_call_id": tc.id, "content": "Screenshot taken."})
-                    msgs.append({
-                        "role": "user",
-                        "content": [{"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64}"}}],
-                    })
                     log.info("Tool browser_screenshot → %d bytes", len(img_bytes))
+                    fn_response_parts.append(genai_types.Part(
+                        function_response=genai_types.FunctionResponse(name=fc.name, response={"result": "Screenshot taken."})
+                    ))
+                    fn_response_parts.append(genai_types.Part(
+                        inline_data=genai_types.Blob(mime_type="image/png", data=img_bytes)
+                    ))
+                    continue
                 else:
-                    msgs.append({"role": "tool", "tool_call_id": tc.id, "content": "Screenshot failed — no active browser session."})
+                    result = "Screenshot failed — no active browser session."
             else:
-                result = await asyncio.to_thread(
-                    _dispatch_tool, tc.function.name, args, channel_id, user_id
-                )
-                log.info("Tool %s(%s) → %d chars", tc.function.name, list(args.keys()), len(result))
-                msgs.append({"role": "tool", "tool_call_id": tc.id, "content": result})
+                result = await asyncio.to_thread(_dispatch_tool, fc.name, args, channel_id, user_id)
+                log.info("Tool %s(%s) → %d chars", fc.name, list(args.keys()), len(result))
+
+            fn_response_parts.append(genai_types.Part(
+                function_response=genai_types.FunctionResponse(name=fc.name, response={"result": result})
+            ))
+
+        contents.append(genai_types.Content(role="user", parts=fn_response_parts))
 
     # Max iterations hit — final call without tools
-    response = await asyncio.to_thread(openai_generate, MODEL, msgs)
-    return (response.choices[0].message.content or "").strip()
+    response = await genai_client.aio.models.generate_content(model=MODEL, contents=contents, config=config)
+    return response.text or ""
 
 
 def _dispatch_tool(name: str, args: dict, channel_id: str, user_id: str) -> str:
@@ -329,17 +278,17 @@ def _build_system() -> str:
     return SYSTEM_INSTRUCTION + f"\n\n## Today's date time\n{now} PT"
 
 
-def _build_user_content(prompt: str, images: list[dict]):
-    if not images:
-        return prompt
-    content = [{"type": "text", "text": prompt}]
+def _build_user_content(prompt: str, images: list[dict], yt_video_ids: list[str] | None = None) -> genai_types.Content:
+    parts = [genai_types.Part(text=prompt)]
+    for video_id in (yt_video_ids or []):
+        parts.append(genai_types.Part(file_data=genai_types.FileData(
+            mime_type="video/*", file_uri=f"https://www.youtube.com/watch?v={video_id}",
+        )))
     for img in images:
-        b64 = base64.b64encode(img["data"]).decode()
-        content.append({
-            "type": "image_url",
-            "image_url": {"url": f"data:{img['mime_type']};base64,{b64}"},
-        })
-    return content
+        parts.append(genai_types.Part(inline_data=genai_types.Blob(
+            mime_type=img["mime_type"], data=img["data"],
+        )))
+    return genai_types.Content(role="user", parts=parts)
 
 
 def _collect_media_urls(msg: discord.Message) -> list[dict]:
