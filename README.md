@@ -40,6 +40,7 @@ A Discord AI assistant powered by Gemini with web search, browser automation, Yo
 | `MODEL` | No | `gemini-3-flash-preview` | Gemini model to use |
 | `EMBEDDING_MODEL` | No | `gemini-embedding-2` | Embedding model |
 | `MEMORY_DECAY_DAYS` | No | `90` | Days before memories score lower in search |
+| `TOOL_MAX_ITERS` | No | `5` | Max tool-calling iterations per response |
 | `LOG_LEVEL` | No | `INFO` | Logging level |
 | `WEBHOOK_PORT` | No | `8643` | Port for the incoming webhook server |
 

@@ -48,6 +48,9 @@ MEMORY_DECAY_DAYS = int(os.getenv("MEMORY_DECAY_DAYS", "90"))
 FIRECRAWL_URL = os.getenv("FIRECRAWL_API_URL", "http://localhost:3002")
 FIRECRAWL_MAX_RESULTS = int(os.getenv("FIRECRAWL_MAX_RESULTS", "5"))
 
+# --- Tool loop ---
+TOOL_MAX_ITERS = int(os.getenv("TOOL_MAX_ITERS", "5"))
+
 # --- Prompts ---
 with open(os.path.join(os.path.dirname(__file__), "SOUL.md")) as _f:
     SYSTEM_INSTRUCTION = _f.read().strip()

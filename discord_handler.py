@@ -13,7 +13,7 @@ import httpx
 from google.genai import types as genai_types
 
 from browser import browse_page, browser_click, browser_snapshot, browser_type, close_browser_session, screenshot_bytes
-from config import MAX_DISCORD_LENGTH, MODEL, SYSTEM_INSTRUCTION, genai_client
+from config import MAX_DISCORD_LENGTH, MODEL, SYSTEM_INSTRUCTION, TOOL_MAX_ITERS, genai_client
 from context import fetch_context
 from memory import extract_and_store_memories, init_db, search_memories
 from search import web_search
@@ -170,7 +170,7 @@ def setup_events(client: discord.Client):
 
 
 async def _run_with_tools(
-    system: str, user_content: genai_types.Content, channel: discord.TextChannel, channel_id: str, user_id: str, status_fn=None, max_iters: int = 5
+    system: str, user_content: genai_types.Content, channel: discord.TextChannel, channel_id: str, user_id: str, status_fn=None, max_iters: int = TOOL_MAX_ITERS
 ) -> str:
     contents = [user_content]
     config = genai_types.GenerateContentConfig(
