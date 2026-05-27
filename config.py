@@ -2,6 +2,8 @@ import logging
 import os
 import sys
 
+import openai as _openai
+
 from dotenv import load_dotenv
 from google import genai
 
@@ -21,13 +23,15 @@ log = logging.getLogger("siegclaw")
 # --- Required ---
 DISCORD_TOKEN = os.getenv("DISCORD_BOT_TOKEN")
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
+MIMO_API_KEY = os.getenv("MIMO_API_KEY")
+MIMO_BASE_URL = os.getenv("MIMO_BASE_URL")
 
 # --- Webhook ---
 WEBHOOK_PORT = int(os.getenv("WEBHOOK_PORT", "8643"))
 WEBHOOK_CHANNEL_ID = int(os.getenv("WEBHOOK_CHANNEL_ID", "0"))
 
 # --- Model & Discord ---
-MODEL = os.getenv("MODEL", "gemini-3-flash-preview")
+MODEL = os.getenv("MODEL", "mimo-v2.5")
 EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "gemini-embedding-2")
 MAX_DISCORD_LENGTH = 2000
 
@@ -73,5 +77,8 @@ Conversation:
 Bot's reply:
 {bot_reply}"""
 
-# --- Client ---
+# --- Clients ---
+# Google genai: embeddings only
 genai_client = genai.Client(api_key=GOOGLE_API_KEY)
+# Mimo: chat completions (OpenAI-compatible)
+mimo_client = _openai.AsyncOpenAI(api_key=MIMO_API_KEY, base_url=MIMO_BASE_URL)

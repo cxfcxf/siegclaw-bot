@@ -1,19 +1,17 @@
 # SiegClaw Bot
 
-A Discord AI assistant powered by Gemini with web search, browser automation, YouTube understanding, and persistent vector memory.
+A Discord AI assistant powered by Xiaomi MiMo with web search, browser automation, and persistent vector memory.
 
 ## Features
 
-- **Tool-calling** — Gemini autonomously decides when to search, browse, recall memories, or fetch user history
+- **Tool-calling** — MiMo autonomously decides when to search, browse, recall memories, or fetch user history
 - **Web search** — real-time search via local Firecrawl instance
 - **Browser automation** — opens real browser pages (via Camofox), supports click, type, snapshot, and screenshot
-- **YouTube video understanding** — paste a YouTube URL and Gemini natively processes the video (no transcript scraping needed)
 - **Vector memory** — extracts and stores facts from conversations using LanceDB + Gemini embeddings
 - **Image support** — attach images or reply to image messages for multimodal responses
 - **User message lookup** — fetch and summarise what a specific person said in recent channel history
 - **Reply-aware context** — replying to the bot uses focused thread context instead of full channel history
 - **Hybrid context window** — adapts between count-based and time-based message fetching for active channels
-- **Dynamic thinking** — Gemini self-allocates thinking budget per query complexity
 - **Date-aware** — current PT timestamp injected into every prompt
 - **Webhook endpoint** — `POST /notify` lets external services push messages into a Discord channel
 - **Personality via SOUL.md** — edit `SOUL.md` to change the bot's behaviour without touching code
@@ -23,7 +21,8 @@ A Discord AI assistant powered by Gemini with web search, browser automation, Yo
 ### Requirements
 
 - Docker (recommended) or Python 3.12+
-- Google AI Studio API key (paid tier recommended — free tier is 20 req/day)
+- [Xiaomi MiMo](https://api.xiaomimimo.com) API key
+- Google AI Studio API key (embeddings only)
 - Local [Firecrawl](https://github.com/mendableai/firecrawl) instance
 - Local [Camofox](https://github.com/siegfried/camofox) instance (optional, for browser tools)
 
@@ -32,13 +31,15 @@ A Discord AI assistant powered by Gemini with web search, browser automation, Yo
 | Variable | Required | Default | Description |
 |---|---|---|---|
 | `DISCORD_BOT_TOKEN` | Yes | — | Discord bot token |
-| `GOOGLE_API_KEY` | Yes | — | Google AI Studio API key |
+| `MIMO_API_KEY` | Yes | — | Xiaomi MiMo API key |
+| `MIMO_BASE_URL` | Yes | — | Xiaomi MiMo API base URL (e.g. `https://api.xiaomimimo.com/v1`) |
+| `GOOGLE_API_KEY` | Yes | — | Google AI Studio API key (used for embeddings only) |
 | `FIRECRAWL_API_URL` | No | `http://localhost:3002` | Firecrawl instance URL |
 | `CAMOFOX_URL` | No | `http://localhost:9377` | Camofox browser instance URL |
 | `WEBHOOK_CHANNEL_ID` | No | — | Default Discord channel ID for webhook messages |
 | `LANCEDB_PATH` | No | `data/lancedb` | LanceDB directory path |
-| `MODEL` | No | `gemini-3-flash-preview` | Gemini model to use |
-| `EMBEDDING_MODEL` | No | `gemini-embedding-2` | Embedding model |
+| `MODEL` | No | `mimo-v2.5` | MiMo model to use |
+| `EMBEDDING_MODEL` | No | `gemini-embedding-2` | Embedding model (Google) |
 | `MEMORY_DECAY_DAYS` | No | `90` | Days before memories score lower in search |
 | `TOOL_MAX_ITERS` | No | `5` | Max tool-calling iterations per response |
 | `LOG_LEVEL` | No | `INFO` | Logging level |
@@ -51,9 +52,10 @@ docker build -t siegclaw-bot .
 
 docker run -d \
   --name siegclaw-bot \
-  --env-file .env \
-  -v /path/to/data:/app/data \
   --restart unless-stopped \
+  --env-file ~/.siegclaw.env \
+  -v /path/to/data:/app/data \
+  -p 127.0.0.1:8643:8643 \
   siegclaw-bot
 ```
 
@@ -75,9 +77,7 @@ User @mentions bot (or replies to bot message)
         │
         ├── Download attached images (parallel)
         │
-        ├── YouTube URLs in message? → attached as native file_data parts
-        │
-        └── _run_with_tools() — Gemini tool-calling loop (max 5 iterations)
+        └── _run_with_tools() — MiMo tool-calling loop (max 5 iterations)
                 │
                 ├── web_search        → Firecrawl
                 ├── browse_page       → Camofox (real browser)
@@ -85,7 +85,7 @@ User @mentions bot (or replies to bot message)
                 ├── recall_memories   → LanceDB vector search
                 └── fetch_user_messages → channel history filtered by author
                 │
-                └── Background: extract facts → embed → store in LanceDB
+                └── Background: extract facts → embed (Google) → store in LanceDB
 ```
 
 ## Tools
@@ -131,7 +131,7 @@ urllib.request.urlopen(urllib.request.Request(
 
 ```
 bot.py              — entrypoint, runs Discord client + webhook server
-config.py           — env vars, API client, prompts
+config.py           — env vars, API clients, prompts
 SOUL.md             — system prompt / bot personality
 context.py          — hybrid context window logic
 discord_handler.py  — Discord events, tool loop, message handling

@@ -14,6 +14,7 @@ from config import (
     MEMORY_EXTRACTION_PROMPT,
     MODEL,
     genai_client,
+    mimo_client,
 )
 
 log = logging.getLogger("siegclaw.memory")
@@ -188,17 +189,20 @@ async def extract_and_store_memories(
         prompt = MEMORY_EXTRACTION_PROMPT.format(
             conversation=conversation, bot_reply=bot_reply
         )
-        response = await asyncio.to_thread(
-            genai_client.models.generate_content,
+        response = await mimo_client.chat.completions.create(
             model=MODEL,
-            contents=prompt,
-            config=genai_types.GenerateContentConfig(
-                system_instruction="You extract facts from conversations. Return only valid JSON arrays.",
-                response_mime_type="application/json",
-            ),
+            messages=[
+                {"role": "system", "content": "You extract facts from conversations. Return only valid JSON arrays."},
+                {"role": "user", "content": prompt},
+            ],
+            response_format={"type": "json_object"},
         )
+        raw = response.choices[0].message.content or ""
         try:
-            facts = json.loads(response.text)
+            facts = json.loads(raw)
+            # Some models return {"facts": [...]} instead of a bare array
+            if isinstance(facts, dict):
+                facts = next((v for v in facts.values() if isinstance(v, list)), [])
         except json.JSONDecodeError as e:
             log.warning("Memory extraction returned invalid JSON: %s", e)
             return
