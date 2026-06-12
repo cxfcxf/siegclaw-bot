@@ -29,7 +29,8 @@ def web_search(query: str) -> str | None:
     for r in results:
         title = r.get("title", "")
         url = r.get("url", "")
-        content = r.get("description") or r.get("markdown", "")
+        # markdown can be a full page dump — cap it so one result can't flood the context
+        content = (r.get("description") or r.get("markdown") or "")[:1500]
         parts.append(f"**{title}** ({url})\n{content}")
 
     log.info("Web search returned %d results for '%s'", len(results), query[:60])

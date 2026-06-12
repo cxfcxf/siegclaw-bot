@@ -34,15 +34,21 @@ WEBHOOK_CHANNEL_ID = int(os.getenv("WEBHOOK_CHANNEL_ID", "0"))
 MODEL = os.getenv("MODEL", "mimo-v2.5")
 EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "gemini-embedding-2")
 MAX_DISCORD_LENGTH = 2000
+# Sampling temperature; unset → API default
+_temp = os.getenv("MODEL_TEMPERATURE")
+MODEL_TEMPERATURE = float(_temp) if _temp else None
+MODEL_TIMEOUT = float(os.getenv("MODEL_TIMEOUT", "120"))
+MODEL_MAX_RETRIES = int(os.getenv("MODEL_MAX_RETRIES", "2"))
 
 # --- Browser ---
 CAMOFOX_URL = os.getenv("CAMOFOX_URL", "http://localhost:9377")
 
 # --- Context window ---
-CONTEXT_MESSAGE_COUNT = int(os.getenv("CONTEXT_MESSAGE_COUNT", "30"))
+CONTEXT_MESSAGE_COUNT = int(os.getenv("CONTEXT_MESSAGE_COUNT", "50"))
 CONTEXT_TIME_WINDOW_HOURS = int(os.getenv("CONTEXT_TIME_WINDOW_HOURS", "24"))
-CONTEXT_ACTIVITY_THRESHOLD = int(os.getenv("CONTEXT_ACTIVITY_THRESHOLD", "20"))
-CONTEXT_MAX_MESSAGES = int(os.getenv("CONTEXT_MAX_MESSAGES", "50"))
+CONTEXT_ACTIVITY_THRESHOLD = int(os.getenv("CONTEXT_ACTIVITY_THRESHOLD", "30"))
+CONTEXT_MAX_MESSAGES = int(os.getenv("CONTEXT_MAX_MESSAGES", "150"))
+CONTEXT_MAX_CHARS = int(os.getenv("CONTEXT_MAX_CHARS", "16000"))
 
 # --- Memory ---
 LANCEDB_PATH = os.getenv("LANCEDB_PATH", "data/lancedb")
@@ -81,4 +87,9 @@ Bot's reply:
 # Google genai: embeddings only
 genai_client = genai.Client(api_key=GOOGLE_API_KEY)
 # Mimo: chat completions (OpenAI-compatible)
-mimo_client = _openai.AsyncOpenAI(api_key=MIMO_API_KEY, base_url=MIMO_BASE_URL)
+mimo_client = _openai.AsyncOpenAI(
+    api_key=MIMO_API_KEY,
+    base_url=MIMO_BASE_URL,
+    timeout=MODEL_TIMEOUT,
+    max_retries=MODEL_MAX_RETRIES,
+)

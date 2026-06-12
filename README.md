@@ -7,12 +7,14 @@ A Discord AI assistant powered by Xiaomi MiMo with web search, browser automatio
 - **Tool-calling** — MiMo autonomously decides when to search, browse, recall memories, or fetch user history
 - **Web search** — real-time search via local Firecrawl instance
 - **Browser automation** — opens real browser pages (via Camofox), supports click, type, snapshot, and screenshot
-- **Vector memory** — extracts and stores facts from conversations using LanceDB + Gemini embeddings
+- **Vector memory** — extracts and stores facts from conversations using LanceDB + Gemini embeddings; relevant memories are auto-injected into every prompt
 - **Image support** — attach images or reply to image messages for multimodal responses
-- **User message lookup** — fetch and summarise what a specific person said in recent channel history
-- **Reply-aware context** — replying to the bot uses focused thread context instead of full channel history
-- **Hybrid context window** — adapts between count-based and time-based message fetching for active channels
-- **Date-aware** — current PT timestamp injected into every prompt
+- **User message lookup** — fetch what a specific person said, with surrounding conversation for context
+- **Channel history lookup** — the model can fetch older messages when the user references something outside the recent window
+- **Reply-aware context** — replies include a note about which message is being replied to, on top of full channel context
+- **Mention-free triggers** — replying to one of the bot's messages or DMing it works without an @mention; other bots are ignored
+- **Hybrid context window** — adapts between count-based and time-based message fetching for active channels; always keeps the newest messages
+- **Date-aware** — current PT timestamp in the system prompt, per-message timestamps in the transcript
 - **Webhook endpoint** — `POST /notify` lets external services push messages into a Discord channel
 - **Personality via SOUL.md** — edit `SOUL.md` to change the bot's behaviour without touching code
 
@@ -39,6 +41,12 @@ A Discord AI assistant powered by Xiaomi MiMo with web search, browser automatio
 | `WEBHOOK_CHANNEL_ID` | No | — | Default Discord channel ID for webhook messages |
 | `LANCEDB_PATH` | No | `data/lancedb` | LanceDB directory path |
 | `MODEL` | No | `mimo-v2.5` | MiMo model to use |
+| `MODEL_TEMPERATURE` | No | API default | Sampling temperature for chat completions |
+| `MODEL_TIMEOUT` | No | `120` | Per-request timeout (seconds) for chat completions |
+| `MODEL_MAX_RETRIES` | No | `2` | Retries on transient API errors |
+| `CONTEXT_MESSAGE_COUNT` | No | `50` | Recent messages in the default context window |
+| `CONTEXT_MAX_MESSAGES` | No | `150` | Max messages when the active-channel time window kicks in |
+| `CONTEXT_MAX_CHARS` | No | `16000` | Max transcript size (truncated from the oldest end) |
 | `EMBEDDING_MODEL` | No | `gemini-embedding-2` | Embedding model (Google) |
 | `MEMORY_DECAY_DAYS` | No | `90` | Days before memories score lower in search |
 | `TOOL_MAX_ITERS` | No | `5` | Max tool-calling iterations per response |
@@ -72,9 +80,9 @@ python bot.py
 ```
 User @mentions bot (or replies to bot message)
         │
-        ├── Reply to bot? → focused 2-message thread context
-        │   else          → fetch_context() hybrid window
-        │
+        ├── fetch_context() — hybrid window, timestamped transcript
+        ├── Reply? → "[X is replying to Y's message]" note added
+        ├── Relevant memories auto-injected into system prompt
         ├── Download attached images (parallel)
         │
         └── _run_with_tools() — MiMo tool-calling loop (max 5 iterations)
@@ -83,7 +91,8 @@ User @mentions bot (or replies to bot message)
                 ├── browse_page       → Camofox (real browser)
                 ├── browser_click/type/snapshot/screenshot
                 ├── recall_memories   → LanceDB vector search
-                └── fetch_user_messages → channel history filtered by author
+                ├── fetch_user_messages → user's messages + surrounding conversation
+                └── fetch_channel_history → older messages beyond the context window
                 │
                 └── Background: extract facts → embed (Google) → store in LanceDB
 ```
@@ -99,7 +108,8 @@ User @mentions bot (or replies to bot message)
 | `browser_snapshot` | Get current page as accessibility tree |
 | `browser_screenshot` | Take a visual screenshot |
 | `recall_memories` | Search stored facts from past conversations |
-| `fetch_user_messages` | Fetch recent messages from a specific user in the channel |
+| `fetch_user_messages` | Fetch a user's recent messages with surrounding conversation |
+| `fetch_channel_history` | Fetch older channel messages beyond the default context window |
 
 ## Webhook
 
