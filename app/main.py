@@ -3,9 +3,23 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
+import sys
 import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
+
+# Make our own loggers (siegclaw.*) visible on stdout alongside uvicorn's, and
+# surface discord.py warnings/errors. Configured here so it survives uvicorn's
+# own logging setup (uvicorn only owns the "uvicorn.*" loggers).
+_sc = logging.getLogger("siegclaw")
+if not _sc.handlers:
+    _h = logging.StreamHandler(sys.stdout)
+    _h.setFormatter(logging.Formatter("%(asctime)s [%(name)s] %(levelname)s: %(message)s", "%Y-%m-%d %H:%M:%S"))
+    _sc.addHandler(_h)
+    _sc.setLevel(logging.INFO)
+    _sc.propagate = False
+logging.getLogger("discord").setLevel(logging.WARNING)
 
 from fastapi import FastAPI, HTTPException, UploadFile
 from fastapi.responses import StreamingResponse

@@ -1,5 +1,8 @@
 FROM python:3.12-slim
 
+# Unbuffered stdout so print()/logs appear in `docker logs` immediately.
+ENV PYTHONUNBUFFERED=1
+
 # Tools the agent's `bash` may reasonably reach for when analyzing data.
 RUN apt-get update && apt-get install -y --no-install-recommends \
         git curl ca-certificates jq \
