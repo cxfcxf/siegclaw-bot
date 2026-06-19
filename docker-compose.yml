@@ -1,49 +1,88 @@
+# OrbStack injects an HTTP proxy into containers whose NO_PROXY doesn't cover
+# compose service names or the 192.168.1.x LAN, which 502s all internal/LAN HTTP.
+# Disable the proxy inside our containers so they use Docker DNS + direct routing.
+x-noproxy: &noproxy
+  HTTP_PROXY: ""
+  HTTPS_PROXY: ""
+  ALL_PROXY: ""
+  http_proxy: ""
+  https_proxy: ""
+  all_proxy: ""
+  NO_PROXY: "*"
+  no_proxy: "*"
+
 services:
   siegclaw-bot:
     build: .
     # Host 8800 -> container 8080. (Host :8080 is taken by llama.cpp.)
     ports:
       - "8800:8080"
-    # Let the container reach host services (llama.cpp, Ollama, ...) via
-    # host.docker.internal on Linux/WSL2.
     extra_hosts:
       - "host.docker.internal:host-gateway"
-    # Load .env via compose (no bind mount = no inode-swap issues on save).
     env_file:
       - .env
-    # When you enable the mem0 profile below, set MEM0_API_URL=http://mem0:8000
-    # here (the server listens on 8000) and add `depends_on: [mem0]`.
-    # Only mount runtime data; app code (app/, web/, soul.md, mcp.json) comes
-    # from the image. Rebuild to change code.
+    environment:
+      <<: *noproxy
+      MEM0_API_URL: http://mem0:8000
+    depends_on:
+      - mem0
+    # Only mount runtime data; app code comes from the image. Rebuild to change code.
     volumes:
       - ./skills:/app/skills
       - ./data:/app/data
       - ./workspace:/app/workspace
     restart: unless-stopped
 
-  # mem0 memory as its own service. NOT started by default — `mem0/mem0-api-server`
-  # listens on :8000 and defaults to a pgvector (Postgres) vector store, so it needs
-  # a Postgres/pgvector companion AND an embeddings source (the default OpenAI
-  # embedder must point at an endpoint that actually serves /v1/embeddings). Until
-  # that's wired up, the bot falls back to the simple memory store.
-  #
-  # To bring it up:  docker compose --profile mem0 up -d
-  # then set on the bot service: environment MEM0_API_URL=http://mem0:8000 + depends_on.
+  # Featherweight embeddings (fastembed / ONNX Runtime — no torch, no GPU).
+  embed:
+    build: ./embed
+    environment:
+      <<: *noproxy
+    restart: unless-stopped
+
+  # Tiny custom mem0 service: extraction LLM -> llama.cpp, embedder -> fastembed,
+  # vector store -> pgvector, no graph store. (See mem0svc/.)
   mem0:
-    image: mem0/mem0-api-server:latest
-    profiles: ["mem0"]
+    build: ./mem0svc
     extra_hosts:
       - "host.docker.internal:host-gateway"
     environment:
-      # Extraction LLM: reuse the llama.cpp server (OpenAI-compatible).
-      - OPENAI_API_KEY=not-needed
-      - OPENAI_BASE_URL=http://192.168.1.121:8080/v1
-      # pgvector connection (add a pgvector/pgvector service for these to work).
-      - POSTGRES_HOST=pgvector
-      - POSTGRES_PORT=5432
-      - POSTGRES_USER=mem0
-      - POSTGRES_PASSWORD=mem0
-      - POSTGRES_DB=mem0
+      <<: *noproxy
+      # Extraction LLM (OpenAI-compatible). Point at your llama.cpp.
+      MEM0_LLM_BASE_URL: http://192.168.1.121:8080/v1
+      MEM0_LLM_MODEL: "unsloth/Qwen3.6-27B-MTP-GGUF:UD-Q4_K_XL"
+      MEM0_LLM_API_KEY: not-needed
+      # Embedder -> the fastembed service.
+      MEM0_EMBED_BASE_URL: http://embed:8090/v1
+      MEM0_EMBED_MODEL: nomic-embed-text
+      MEM0_EMBED_DIMS: "768"
+      # pgvector connection.
+      POSTGRES_HOST: pgvector
+      POSTGRES_PORT: "5432"
+      POSTGRES_USER: mem0
+      POSTGRES_PASSWORD: mem0
+      POSTGRES_DB: mem0
     volumes:
-      - ./data/mem0:/data
+      - ./data/mem0_history:/app/history
+    depends_on:
+      pgvector:
+        condition: service_healthy
+      embed:
+        condition: service_started
+    restart: unless-stopped
+
+  # Vector store for mem0.
+  pgvector:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: mem0
+      POSTGRES_PASSWORD: mem0
+      POSTGRES_DB: mem0
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "mem0", "-d", "mem0"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    volumes:
+      - ./data/pgvector:/var/lib/postgresql/data
     restart: unless-stopped

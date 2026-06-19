@@ -78,12 +78,14 @@ is set; without it you get the web UI alone.
   assistant keeps across chats. mem0 **auto-extracts** facts (no need to say
   "remember"), retrieves only the **semantically relevant** ones into the prompt,
   and reconciles contradictions (add/update/delete). A heuristic filter keeps out
-  conversation-log junk like "User was told…". mem0 runs as its **own container**
-  (a REST service the bot talks to over HTTP via `MEM0_API_URL`) so this image stays
-  lean — point its extraction LLM at your llama.cpp. The web UI shares one default
-  scope; Discord scopes memory per user. View/add/delete via the **memory** button
-  in the sidebar footer. If `MEM0_API_URL` is unset it falls back to a simple
-  all-facts SQLite store (or the in-process mem0 library if you install its deps).
+  conversation-log junk like "User was told…". Memory runs as a small **self-hosted
+  stack of side containers** so the bot image stays lean (no torch): a tiny custom
+  **mem0 service** (`mem0svc/`) + **pgvector** (Postgres) for storage + a
+  featherweight **fastembed** embeddings service (`embed/`, ONNX Runtime — no torch,
+  no GPU). Extraction runs on your llama.cpp; the bot talks to mem0 over HTTP via
+  `MEM0_API_URL`. The web UI shares one default scope; **Discord scopes memory per
+  user**. View/add/delete via the **memory** button in the sidebar footer. If
+  `MEM0_API_URL` is unset it falls back to a simple all-facts SQLite store.
 - **History / resume** — every conversation is saved; pick one from the sidebar to
   resume it with full context. Stored in `data/conversations.db`.
 - **Skills** — Claude-style `skills/<name>/SKILL.md` folders. The index is shown
@@ -108,14 +110,18 @@ python -m uvicorn app.main:app --port 8080
 
 Open <http://localhost:8080>.
 
-Docker (bot + mem0 service):
+Docker (bot + mem0 + pgvector + embed):
 
 ```bash
-docker compose up --build      # web UI on http://localhost:8800; bot connects if DISCORD_BOT_TOKEN is set
+docker compose up --build -d   # web UI on http://localhost:8800; bot connects if DISCORD_BOT_TOKEN is set
 ```
 
-The `mem0` service config (extraction LLM → llama.cpp, embedder, vector store) and
-its image/tag should be confirmed against mem0's current self-hosting docs.
+Four services: `siegclaw-bot` (web UI + Discord), `mem0` (tiny mem0 REST service),
+`pgvector` (vector storage), `embed` (fastembed embeddings). The `mem0` service is
+wired to use your llama.cpp for extraction and the `embed` service for embeddings.
+Point `MEM0_LLM_BASE_URL` (in `docker-compose.yml`) at your llama.cpp. On OrbStack,
+build with `--build-arg HTTP_PROXY=""` if DNS fails; the containers also disable the
+injected proxy so internal/LAN calls work.
 
 ### Configuring providers
 
@@ -145,6 +151,8 @@ app/
   memory.py      pluggable memory: mem0 REST service / in-process mem0 / simple
   storage.py     SQLite conversations (web UI only)
   main.py        FastAPI: /api/* + SSE chat + static UI; starts the Discord bot
+embed/           featherweight fastembed (ONNX) embeddings service container
+mem0svc/         tiny custom mem0 REST service container (pgvector + llama.cpp + embed)
 web/             vanilla HTML/CSS/JS frontend
 soul.md          system prompt
 mcp.json         MCP server definitions
