@@ -42,6 +42,7 @@
         <button id="edit-soul" type="button" title="Edit system prompt">soul</button>
         <button id="show-memory" type="button" title="Stored memories">memory</button>
         <button id="show-skills" type="button" title="Available skills">skills</button>
+        <button id="show-jobs" type="button" title="Scheduled jobs">cron</button>
       </div>
     </aside>
 
@@ -110,6 +111,37 @@
       <h3>Skills</h3>
       <p class="hint">Capabilities the model can load on demand.</p>
       <div id="skills-list"></div>
+      <menu><button value="close">Close</button></menu>
+    </form>
+  </dialog>
+
+  <dialog id="jobs-dialog">
+    <form method="dialog">
+      <h3>Scheduled jobs</h3>
+      <p class="hint">Run a prompt on a cron schedule and post the result to Discord. Cron is evaluated in the server timezone (HARNESS_TZ).</p>
+      <div id="jobs-list"></div>
+      <div class="job-form">
+        <input id="job-name" type="text" placeholder="Job name (e.g. Morning AI news)" />
+        <textarea id="job-prompt" rows="3" placeholder="Prompt to run, e.g. “Summarize the top AI news from the last 24 hours.”"></textarea>
+        <div class="job-form-row">
+          <input id="job-cron" type="text" placeholder="Cron — e.g. 0 9 * * * (9am daily)" />
+          <select id="job-target-type">
+            <option value="channel">Channel</option>
+            <option value="dm">DM</option>
+          </select>
+        </div>
+        <div class="job-form-row">
+          <select id="job-target-channel"></select>
+          <span id="job-target-dm-note" class="job-dm-note" hidden>→ DMs you (the bot owner)</span>
+        </div>
+        <div class="job-form-actions">
+          <span id="job-form-hint" class="hint"></span>
+          <span class="job-form-buttons">
+            <button id="job-cancel" type="button" hidden>Cancel</button>
+            <button id="job-save" type="button" class="primary">Add job</button>
+          </span>
+        </div>
+      </div>
       <menu><button value="close">Close</button></menu>
     </form>
   </dialog>

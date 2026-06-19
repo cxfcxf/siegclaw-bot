@@ -34,6 +34,15 @@ is set; without it you get the web UI alone.
   right now it falls back to `FALLBACK_PROVIDER`/`FALLBACK_MODEL` (with `FALLBACK_EFFORT`
   for reasoning providers). Model is **per conversation**: switch it (web picker or
   `/model`) and it sticks to that conversation; a new conversation returns to the default.
+- **Scheduled jobs (cron → Discord).** Define timed jobs in the web UI (**cron**
+  button in the sidebar footer): a name, a prompt, a 5-field **cron** expression
+  (evaluated in `HARNESS_TZ`), and a Discord destination — a server channel the bot
+  can post to, or a DM (by user ID). At each scheduled time the job runs a headless
+  agent turn (default model + full research tools — web/browser/skills/MCP/memory, no
+  shell) and posts the result to its target. Enable/disable, edit, delete, or **Run
+  now** from the same dialog; last-run status and the next fire time are shown inline.
+  Jobs persist in SQLite and survive restarts. The scheduler shares the bot's process
+  and loop.
 - **Multi-provider, switchable in the UI.** Any OpenAI-compatible endpoint:
   OpenAI, OpenRouter, DeepSeek, Xiaomi MiMo, and local llama.cpp. Providers are
   auto-detected from `.env` — set a key (or run a local engine) and it appears in
@@ -154,6 +163,8 @@ app/
   agent.py       streaming tool-call loop (web) + shared reasoning helper
   discord_bot.py Discord client, on_message, non-streaming tool loop, registry
   discord_context.py Discord history window + image/YouTube helpers
+  scheduler.py   cron job runner (headless agent turn → Discord delivery)
+  cronutil.py    cron-expression parsing/next-run (in HARNESS_TZ)
   tools/         registry, builtin (fs/bash), web (Firecrawl), browser (CamoFox)
   mcp_client.py  connects mcp.json servers
   skills.py      SKILL.md discovery + load_skill tool

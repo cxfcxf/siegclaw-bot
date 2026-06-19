@@ -47,6 +47,20 @@ def init_db() -> None:
                 user_id TEXT PRIMARY KEY,
                 active_cid TEXT
             );
+            CREATE TABLE IF NOT EXISTS scheduled_jobs (
+                id TEXT PRIMARY KEY,
+                name TEXT,
+                prompt TEXT,
+                cron TEXT,
+                target_type TEXT,       -- 'channel' | 'dm'
+                target_id TEXT,
+                enabled INTEGER,
+                created_at REAL,
+                next_run REAL,
+                last_run REAL,
+                last_status TEXT,       -- 'ok' | 'error' | NULL (never run)
+                last_result TEXT
+            );
             """
         )
         # Migrations for DBs created before later columns were added.
@@ -308,3 +322,85 @@ def get_messages(cid: str) -> list[dict[str, Any]]:
             msg["reasoning"] = r["reasoning"]
         messages.append(msg)
     return messages
+
+
+# --- Scheduled jobs --------------------------------------------------------- #
+def _job_row(r: sqlite3.Row) -> dict[str, Any]:
+    return {
+        "id": r["id"],
+        "name": r["name"],
+        "prompt": r["prompt"],
+        "cron": r["cron"],
+        "target_type": r["target_type"],
+        "target_id": r["target_id"],
+        "enabled": bool(r["enabled"]),
+        "created_at": r["created_at"],
+        "next_run": r["next_run"],
+        "last_run": r["last_run"],
+        "last_status": r["last_status"],
+        "last_result": r["last_result"],
+    }
+
+
+def create_job(
+    name: str, prompt: str, cron: str, target_type: str, target_id: str,
+    next_run: float, enabled: bool = True,
+) -> str:
+    jid = uuid.uuid4().hex
+    with _conn() as conn:
+        conn.execute(
+            "INSERT INTO scheduled_jobs (id, name, prompt, cron, target_type, "
+            "target_id, enabled, created_at, next_run) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (jid, name, prompt, cron, target_type, target_id,
+             1 if enabled else 0, time.time(), next_run),
+        )
+    return jid
+
+
+def list_jobs() -> list[dict[str, Any]]:
+    with _conn() as conn:
+        rows = conn.execute(
+            "SELECT * FROM scheduled_jobs ORDER BY created_at DESC"
+        ).fetchall()
+    return [_job_row(r) for r in rows]
+
+
+def get_job(jid: str) -> dict[str, Any] | None:
+    with _conn() as conn:
+        r = conn.execute("SELECT * FROM scheduled_jobs WHERE id = ?", (jid,)).fetchone()
+    return _job_row(r) if r else None
+
+
+def update_job(jid: str, **fields: Any) -> None:
+    """Update arbitrary columns. `enabled` is coerced to 0/1."""
+    if "enabled" in fields:
+        fields["enabled"] = 1 if fields["enabled"] else 0
+    allowed = {
+        "name", "prompt", "cron", "target_type", "target_id",
+        "enabled", "next_run", "last_run", "last_status", "last_result",
+    }
+    sets = {k: v for k, v in fields.items() if k in allowed}
+    if not sets:
+        return
+    cols = ", ".join(f"{k} = ?" for k in sets)
+    with _conn() as conn:
+        conn.execute(
+            f"UPDATE scheduled_jobs SET {cols} WHERE id = ?", (*sets.values(), jid)
+        )
+
+
+def delete_job(jid: str) -> None:
+    with _conn() as conn:
+        conn.execute("DELETE FROM scheduled_jobs WHERE id = ?", (jid,))
+
+
+def due_jobs(now: float) -> list[dict[str, Any]]:
+    """Enabled jobs whose next_run has passed."""
+    with _conn() as conn:
+        rows = conn.execute(
+            "SELECT * FROM scheduled_jobs WHERE enabled = 1 AND next_run IS NOT NULL "
+            "AND next_run <= ? ORDER BY next_run ASC",
+            (now,),
+        ).fetchall()
+    return [_job_row(r) for r in rows]

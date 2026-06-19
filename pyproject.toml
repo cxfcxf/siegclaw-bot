@@ -14,6 +14,8 @@ dependencies = [
     "python-multipart>=0.0.9",
     # Discord bot (runs in the same process as the web UI).
     "discord.py>=2.3,<3",
+    # Cron-expression parsing for scheduled jobs.
+    "croniter>=2.0",
     # Memory is a separate mem0 REST service — talked to over HTTP (no in-process
     # torch/chromadb). Install mem0ai/chromadb/sentence-transformers only if you
     # run the in-process Mem0Backend instead of MEM0_API_URL.

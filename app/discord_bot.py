@@ -208,10 +208,16 @@ def discord_history_tools(channel: discord.abc.Messageable, bot_user_id: int) ->
 # Registry + system prompt
 # --------------------------------------------------------------------------- #
 def build_discord_registry(
-    channel: discord.abc.Messageable, bot_user_id: int, scope: str, mcp_tools: list | None
+    channel: discord.abc.Messageable | None,
+    bot_user_id: int | None,
+    scope: str,
+    mcp_tools: list | None,
 ) -> tuple[Registry, dict]:
     """Per-message registry: harness web/browser/skills/MCP tools + per-user-scoped
-    memory + Discord-history tools. Shell/file tools are withheld unless enabled."""
+    memory + Discord-history tools. Shell/file tools are withheld unless enabled.
+
+    When `channel` is None (e.g. a scheduled job with no channel context) the
+    Discord-history tools are omitted."""
     registry = Registry()
     if DISCORD_ENABLE_SHELL:
         registry.extend(builtin_tools())
@@ -223,7 +229,8 @@ def build_discord_registry(
         registry.add(load_skill_tool(skills))
     if mcp_tools:
         registry.extend(mcp_tools)
-    registry.extend(discord_history_tools(channel, bot_user_id))
+    if channel is not None and bot_user_id is not None:
+        registry.extend(discord_history_tools(channel, bot_user_id))
     return registry, skills
 
 
@@ -260,10 +267,10 @@ async def run_discord_turn(
     seen_calls: set[tuple[str, str]] = set()
     needs_reasoning_replay = provider in ("deepseek", "xiaomi")
 
-    async def persist(fn, *a):
+    async def persist(fn, *a, **kw):
         if conversation_id:
             try:
-                await asyncio.to_thread(fn, conversation_id, *a)
+                await asyncio.to_thread(fn, conversation_id, *a, **kw)
             except Exception as e:
                 log.warning("DM persist failed: %s", e)
 
@@ -337,7 +344,8 @@ async def run_discord_turn(
 # --------------------------------------------------------------------------- #
 # Sending
 # --------------------------------------------------------------------------- #
-async def _send_long_message(message: discord.Message, text: str) -> None:
+def _chunk_message(text: str) -> list[str]:
+    """Split text into Discord's 2000-char limit, preferring newline boundaries."""
     chunks = []
     while len(text) > MAX_DISCORD_LENGTH:
         split_at = text.rfind("\n", 0, MAX_DISCORD_LENGTH)
@@ -346,12 +354,22 @@ async def _send_long_message(message: discord.Message, text: str) -> None:
         chunks.append(text[:split_at])
         text = text[split_at:].lstrip("\n")
     chunks.append(text)
+    return chunks
 
-    for i, chunk in enumerate(chunks):
+
+async def _send_long_message(message: discord.Message, text: str) -> None:
+    for i, chunk in enumerate(_chunk_message(text)):
         if i == 0:
             await message.reply(chunk)
         else:
             await message.channel.send(chunk)
+
+
+async def send_chunked(destination: discord.abc.Messageable, text: str) -> None:
+    """Send (chunked) to any messageable — a channel or DM — without needing a
+    triggering message. Used by the scheduler to deliver job results."""
+    for chunk in _chunk_message(text):
+        await destination.send(chunk)
 
 
 # --------------------------------------------------------------------------- #

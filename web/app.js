@@ -1190,6 +1190,183 @@ $("#show-skills").onclick = async () => {
   $("#skills-dialog").showModal();
 };
 
+// --- Scheduled jobs ---------------------------------------------------------
+let jobsChannels = [];        // [{id, label}] the bot can post to
+let jobsOwner = null;         // {id, name} the bot owner (DM recipient)
+let editingJobId = null;
+
+function fmtJobTime(ts) {
+  if (!ts) return "—";
+  return new Date(ts * 1000).toLocaleString([], {
+    month: "short", day: "numeric", hour: "2-digit", minute: "2-digit",
+  });
+}
+function channelLabel(id) {
+  const c = jobsChannels.find((x) => x.id === String(id));
+  return c ? c.label : null;
+}
+
+async function loadJobChannels() {
+  const data = await fetch("/api/discord/channels").then((r) => r.json());
+  jobsChannels = data.channels || [];
+  jobsOwner = data.owner || null;
+  const note = $("#job-target-dm-note");
+  if (note) note.textContent = jobsOwner ? `→ DMs you (${jobsOwner.name})` : "→ DMs you (the bot owner)";
+  const sel = $("#job-target-channel");
+  sel.innerHTML = "";
+  if (!data.connected) {
+    sel.innerHTML = '<option value="">(bot not connected)</option>';
+    return;
+  }
+  if (!jobsChannels.length) {
+    sel.innerHTML = '<option value="">(no channels available)</option>';
+    return;
+  }
+  jobsChannels.forEach((c) => {
+    const o = el("option");
+    o.value = c.id;
+    o.textContent = c.label;
+    sel.appendChild(o);
+  });
+}
+
+function updateJobTargetInputs() {
+  const type = $("#job-target-type").value;
+  $("#job-target-channel").hidden = type !== "channel";
+  $("#job-target-dm-note").hidden = type !== "dm";
+}
+$("#job-target-type").addEventListener("change", updateJobTargetInputs);
+
+function resetJobForm() {
+  editingJobId = null;
+  $("#job-name").value = "";
+  $("#job-prompt").value = "";
+  $("#job-cron").value = "";
+  $("#job-target-type").value = "channel";
+  $("#job-save").textContent = "Add job";
+  $("#job-cancel").hidden = true;
+  $("#job-form-hint").textContent = "";
+  updateJobTargetInputs();
+}
+
+function fillJobForm(j) {
+  editingJobId = j.id;
+  $("#job-name").value = j.name || "";
+  $("#job-prompt").value = j.prompt || "";
+  $("#job-cron").value = j.cron || "";
+  $("#job-target-type").value = j.target_type || "channel";
+  if (j.target_type === "channel") {
+    updateJobTargetInputs();
+    $("#job-target-channel").value = j.target_id || "";
+  }
+  $("#job-save").textContent = "Update job";
+  $("#job-cancel").hidden = false;
+  $("#job-form-hint").textContent = `editing “${j.name}”`;
+  updateJobTargetInputs();
+}
+
+async function renderJobs() {
+  const data = await fetch("/api/jobs").then((r) => r.json());
+  const list = $("#jobs-list");
+  list.innerHTML = "";
+  if (!data.jobs.length) {
+    list.innerHTML = '<div class="empty">No scheduled jobs yet.</div>';
+    return;
+  }
+  data.jobs.forEach((j) => {
+    const row = el("div", "job");
+    if (!j.enabled) row.classList.add("disabled");
+
+    const head = el("div", "job-head");
+    const name = el("span", "job-name"); name.textContent = j.name || "Job";
+    const toggle = el("label", "job-toggle");
+    const cb = el("input"); cb.type = "checkbox"; cb.checked = j.enabled;
+    cb.onchange = async () => {
+      await fetch(`/api/jobs/${j.id}`, {
+        method: "PUT", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ enabled: cb.checked }),
+      });
+      renderJobs();
+    };
+    toggle.append(cb, document.createTextNode(" on"));
+    head.append(name, toggle);
+
+    const tgt = j.target_type === "dm"
+      ? (j.target_id === "owner" ? "DM (you)" : `DM ${j.target_id}`)
+      : (channelLabel(j.target_id) || `#${j.target_id}`);
+    const meta = el("div", "job-meta");
+    meta.textContent = `${j.cron} · ${j.cron_desc || ""} · → ${tgt}`;
+
+    const sched = el("div", "job-sched");
+    let s = `next: ${fmtJobTime(j.next_run)}`;
+    if (j.last_run) s += ` · last: ${fmtJobTime(j.last_run)} (${j.last_status || "?"})`;
+    sched.textContent = s;
+
+    const prm = el("div", "job-prompt-preview"); prm.textContent = j.prompt;
+
+    const actions = el("div", "job-actions");
+    const runBtn = el("button"); runBtn.type = "button"; runBtn.textContent = "Run now";
+    runBtn.onclick = async () => {
+      runBtn.disabled = true; runBtn.textContent = "Running…";
+      try { await fetch(`/api/jobs/${j.id}/run`, { method: "POST" }); }
+      finally { renderJobs(); }
+    };
+    const editBtn = el("button"); editBtn.type = "button"; editBtn.textContent = "Edit";
+    editBtn.onclick = () => fillJobForm(j);
+    const delBtn = el("button", "job-del"); delBtn.type = "button"; delBtn.textContent = "Delete";
+    delBtn.onclick = async () => {
+      if (!confirm(`Delete job “${j.name}”?`)) return;
+      await fetch(`/api/jobs/${j.id}`, { method: "DELETE" });
+      if (editingJobId === j.id) resetJobForm();
+      renderJobs();
+    };
+    actions.append(runBtn, editBtn, delBtn);
+
+    row.append(head, meta, sched, prm);
+    if (j.last_status === "error" && j.last_result) {
+      const e = el("div", "job-error"); e.textContent = j.last_result;
+      row.append(e);
+    }
+    row.append(actions);
+    list.appendChild(row);
+  });
+}
+
+$("#job-cancel").onclick = resetJobForm;
+
+$("#job-save").onclick = async () => {
+  const type = $("#job-target-type").value;
+  const target_id = type === "dm" ? "owner" : $("#job-target-channel").value;
+  const body = {
+    name: $("#job-name").value.trim(),
+    prompt: $("#job-prompt").value.trim(),
+    cron: $("#job-cron").value.trim(),
+    target_type: type,
+    target_id,
+  };
+  if (!body.prompt || !body.cron) { $("#job-form-hint").textContent = "Prompt and cron are required."; return; }
+  if (type === "channel" && !body.target_id) { $("#job-form-hint").textContent = "Pick a channel."; return; }
+  const url = editingJobId ? `/api/jobs/${editingJobId}` : "/api/jobs";
+  const method = editingJobId ? "PUT" : "POST";
+  const res = await fetch(url, {
+    method, headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    $("#job-form-hint").textContent = err.detail || "Save failed.";
+    return;
+  }
+  resetJobForm();
+  renderJobs();
+};
+
+$("#show-jobs").onclick = async () => {
+  await loadJobChannels();
+  resetJobForm();
+  await renderJobs();
+  $("#jobs-dialog").showModal();
+};
+
 // --- Boot -------------------------------------------------------------------
 (async function init() {
   await loadProviders();

@@ -35,13 +35,20 @@ from .config import (
     detect_providers,
     resolve_default_model,
 )
+from .cronutil import describe as cron_describe, is_valid as cron_is_valid, next_run_after
 from .mcp_client import MCPManager
+from .scheduler import Scheduler
 
 ALLOWED_IMAGE_EXT = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"}
 
 WEB_DIR = Path(__file__).resolve().parent.parent / "web"
 
 mcp_manager = MCPManager()
+
+
+# Holds the live Discord client (or None) so the scheduler and /api/discord/*
+# endpoints can reach it. Set in lifespan.
+_runtime: dict = {"discord_client": None, "scheduler": None}
 
 
 @asynccontextmanager
@@ -61,10 +68,19 @@ async def lifespan(app: FastAPI):
 
         discord_client = create_client(mcp_manager)
         discord_task = asyncio.create_task(discord_client.start(DISCORD_BOT_TOKEN))
+        _runtime["discord_client"] = discord_client
         print("[discord] starting bot")
+
+    # Scheduler runs regardless of Discord (jobs can be managed in the web UI),
+    # but delivery requires a connected bot.
+    scheduler = Scheduler(lambda: _runtime["discord_client"], mcp_manager)
+    scheduler.start()
+    _runtime["scheduler"] = scheduler
+    print("[scheduler] started")
 
     yield
 
+    await scheduler.stop()
     if discord_client is not None:
         await discord_client.close()
     if discord_task is not None:
@@ -201,6 +217,127 @@ def api_add_memory(body: MemoryCreate):
 @app.delete("/api/memories/{mem_id}")
 def api_delete_memory(mem_id: str):
     return {"ok": memory.delete_memory(mem_id)}
+
+
+# --- Scheduled jobs --------------------------------------------------------
+class JobCreate(BaseModel):
+    name: str
+    prompt: str
+    cron: str
+    target_type: str            # 'channel' | 'dm'
+    target_id: str
+    enabled: bool = True
+
+
+class JobUpdate(BaseModel):
+    name: str | None = None
+    prompt: str | None = None
+    cron: str | None = None
+    target_type: str | None = None
+    target_id: str | None = None
+    enabled: bool | None = None
+
+
+def _job_view(job: dict) -> dict:
+    """Augment a stored job with a human cron hint for the UI."""
+    return {**job, "cron_desc": cron_describe(job["cron"]) if job.get("cron") else ""}
+
+
+def _validate_job(cron: str, target_type: str, target_id: str) -> None:
+    if not cron_is_valid(cron):
+        raise HTTPException(400, f"Invalid cron expression: {cron!r}")
+    if target_type not in ("channel", "dm"):
+        raise HTTPException(400, "target_type must be 'channel' or 'dm'")
+    if target_type == "channel" and not target_id:
+        raise HTTPException(400, "a channel target requires a channel id")
+
+
+def _normalize_target_id(target_type: str, target_id: str) -> str:
+    """A DM target defaults to the bot owner ('owner' sentinel) — no id needed."""
+    tid = (target_id or "").strip()
+    if target_type == "dm" and not tid:
+        return "owner"
+    return tid
+
+
+@app.get("/api/jobs")
+def api_list_jobs():
+    return {"jobs": [_job_view(j) for j in storage.list_jobs()]}
+
+
+@app.post("/api/jobs")
+def api_create_job(body: JobCreate):
+    target_id = _normalize_target_id(body.target_type, body.target_id)
+    _validate_job(body.cron, body.target_type, target_id)
+    jid = storage.create_job(
+        body.name.strip() or "Job", body.prompt, body.cron,
+        body.target_type, target_id,
+        next_run=next_run_after(body.cron), enabled=body.enabled,
+    )
+    return {"job": _job_view(storage.get_job(jid))}
+
+
+@app.put("/api/jobs/{jid}")
+def api_update_job(jid: str, body: JobUpdate):
+    job = storage.get_job(jid)
+    if job is None:
+        raise HTTPException(404, "No such job")
+    fields = {k: v for k, v in body.model_dump().items() if v is not None}
+    cron = fields.get("cron", job["cron"])
+    target_type = fields.get("target_type", job["target_type"])
+    if "target_type" in fields or "target_id" in fields:
+        fields["target_id"] = _normalize_target_id(
+            target_type, fields.get("target_id", job["target_id"])
+        )
+    _validate_job(cron, target_type, fields.get("target_id", job["target_id"]))
+    # Re-arm the schedule when the cron changes.
+    if "cron" in fields:
+        fields["next_run"] = next_run_after(cron)
+    storage.update_job(jid, **fields)
+    return {"job": _job_view(storage.get_job(jid))}
+
+
+@app.delete("/api/jobs/{jid}")
+def api_delete_job(jid: str):
+    storage.delete_job(jid)
+    return {"ok": True}
+
+
+@app.post("/api/jobs/{jid}/run")
+async def api_run_job(jid: str):
+    scheduler = _runtime.get("scheduler")
+    if scheduler is None:
+        raise HTTPException(503, "Scheduler not running")
+    job = await scheduler.run_now(jid)
+    if job is None:
+        raise HTTPException(404, "No such job")
+    return {"job": _job_view(job)}
+
+
+@app.get("/api/discord/channels")
+async def api_discord_channels():
+    """Channels the bot can post to + the bot owner (for the job target picker).
+    Empty/None when the bot isn't connected."""
+    client = _runtime.get("discord_client")
+    if client is None or not client.is_ready():
+        return {"connected": False, "channels": [], "owner": None}
+    chans = []
+    for guild in client.guilds:
+        me = guild.me
+        for ch in guild.text_channels:
+            if me and ch.permissions_for(me).send_messages:
+                chans.append({
+                    "id": str(ch.id),
+                    "label": f"{guild.name} / #{ch.name}",
+                })
+    owner = None
+    try:
+        info = await client.application_info()
+        if info.owner is not None:
+            owner = {"id": str(info.owner.id), "name": str(info.owner)}
+    except Exception:
+        pass
+    return {"connected": True, "channels": chans, "owner": owner}
 
 
 # --- Image upload ----------------------------------------------------------
