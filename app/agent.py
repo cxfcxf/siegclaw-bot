@@ -69,16 +69,26 @@ def system_prompt(skills: dict, query: str) -> str:
     return "\n\n".join(parts)
 
 
-def reasoning_extra_body(provider: str, think: bool) -> dict[str, Any]:
-    """Per-request reasoning toggle. The mechanism differs per provider:
-    - llama.cpp/Ollama/LM Studio/sglang: chat_template_kwargs flag (server-side).
-    - OpenRouter: reasoning.enabled (gateway-level reasoning control).
-    - Others (OpenAI/Groq): no known toggle; let the model default.
+def reasoning_extra_body(provider: str, think: bool, effort: str | None = None) -> dict[str, Any]:
+    """Per-request reasoning toggle + effort. The mechanism differs per provider:
+    - llama.cpp: chat_template_kwargs flag (server-side), on/off only.
+    - DeepSeek/Xiaomi MiMo: {"thinking": {"type": enabled|disabled}} (OpenAI-compat).
+      DeepSeek also honors reasoning_effort (high/max).
+    - OpenRouter: reasoning.enabled (gateway-level); optional reasoning.effort.
+    - Others (OpenAI): no known toggle; let the model default.
     Shared by the web turn (run_turn) and the Discord turn."""
-    if provider in ("llamacpp", "ollama", "lmstudio", "local"):
+    if provider == "llamacpp":
         return {"chat_template_kwargs": {THINK_KWARG: think}}
+    if provider in ("deepseek", "xiaomi"):
+        body: dict[str, Any] = {"thinking": {"type": "enabled" if think else "disabled"}}
+        if think and effort and provider == "deepseek":
+            body["reasoning_effort"] = effort
+        return body
     if provider == "openrouter":
-        return {"reasoning": {"enabled": bool(think)}}
+        body = {"reasoning": {"enabled": bool(think)}}
+        if think and effort:
+            body["reasoning"]["effort"] = effort
+        return body
     return {}
 
 
@@ -100,27 +110,32 @@ def _image_data_url(url: str) -> str | None:
     return f"data:{mime};base64,{b64}"
 
 
-def _to_api_messages(history: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _to_api_messages(history: list[dict[str, Any]], provider: str | None = None) -> list[dict[str, Any]]:
     """Convert stored messages into OpenAI-ready ones, expanding any attached
-    images into multimodal `content` parts and dropping the non-API `images` key."""
+    images into multimodal `content` parts and dropping the non-API `images` key.
+
+    For providers that require the chain-of-thought to be replayed on tool-call
+    turns (DeepSeek, Xiaomi MiMo), the stored `reasoning` is emitted back as
+    `reasoning_content`; for everyone else it's dropped."""
     drop = ("images", "reasoning")  # non-API display fields
+    keep_reasoning = provider in ("deepseek", "xiaomi")
     out: list[dict[str, Any]] = []
     for msg in history:
         images = msg.get("images")
-        if not images:
-            out.append({k: v for k, v in msg.items() if k not in drop})
-            continue
-        parts: list[dict[str, Any]] = []
-        text = msg.get("content")
-        if text:
-            parts.append({"type": "text", "text": text})
-        for url in images:
-            data_url = _image_data_url(url)
-            if data_url:
-                parts.append({"type": "image_url", "image_url": {"url": data_url}})
-        new = {k: v for k, v in msg.items() if k not in (*drop, "content")}
-        new["content"] = parts
-        out.append(new)
+        base = {k: v for k, v in msg.items() if k not in drop}
+        if images:
+            parts: list[dict[str, Any]] = []
+            text = msg.get("content")
+            if text:
+                parts.append({"type": "text", "text": text})
+            for url in images:
+                data_url = _image_data_url(url)
+                if data_url:
+                    parts.append({"type": "image_url", "image_url": {"url": data_url}})
+            base["content"] = parts
+        if keep_reasoning and msg.get("reasoning") and msg.get("role") == "assistant":
+            base["reasoning_content"] = msg["reasoning"]
+        out.append(base)
     return out
 
 
@@ -133,8 +148,10 @@ async def run_turn(
     skills: dict,
     images: list[str] | None = None,
     think: bool = True,
+    effort: str | None = None,
 ) -> AsyncGenerator[dict[str, Any], None]:
     client = client_for(provider)
+    needs_reasoning_replay = provider in ("deepseek", "xiaomi")
 
     user_msg_id = storage.add_message(
         conversation_id, "user", content=user_message, images=images
@@ -147,10 +164,10 @@ async def run_turn(
     # Retrieve relevant memories (may embed the query) off the event loop.
     sys_content = await asyncio.to_thread(system_prompt, skills, user_message)
     messages: list[dict[str, Any]] = [{"role": "system", "content": sys_content}]
-    messages.extend(_to_api_messages(storage.get_messages(conversation_id)))
+    messages.extend(_to_api_messages(storage.get_messages(conversation_id), provider))
 
     tool_schemas = registry.schemas()
-    extra_body = reasoning_extra_body(provider, think)
+    extra_body = reasoning_extra_body(provider, think, effort)
     final_answer = ""
     total_tokens = 0  # completion tokens across all model calls this turn (for tok/s)
     last_prompt_tokens = 0  # prompt tokens of the final model call (context usage)
@@ -224,13 +241,17 @@ async def run_turn(
                     slot["function"]["arguments"] += tc.function.arguments
 
         # Persist the assistant message (content and/or tool calls). Reasoning is
-        # stored for the UI but not fed back to the model (stripped on replay).
+        # stored for the UI; for DeepSeek/MiMo it's also kept on the in-memory
+        # assistant message (as reasoning_content) so tool-call turns replay it
+        # back to the API on the next iteration (else those providers 400).
         if tool_calls:
             assistant_msg: dict[str, Any] = {
                 "role": "assistant",
                 "content": content_buf or None,
                 "tool_calls": tool_calls,
             }
+            if needs_reasoning_replay and reasoning_buf:
+                assistant_msg["reasoning_content"] = reasoning_buf
             messages.append(assistant_msg)
             storage.add_message(
                 conversation_id, "assistant", content=content_buf or None,

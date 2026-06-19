@@ -61,14 +61,24 @@ MEM0_API_URL = os.getenv("MEM0_API_URL", "").rstrip("/")
 # When a valid token is set, the app connects to Discord on startup (in the same
 # process as the web UI). Leave empty to run web-UI-only.
 DISCORD_BOT_TOKEN = os.getenv("DISCORD_BOT_TOKEN", "").strip()
-# Provider/model the Discord bot uses. If unset, falls back to the first detected
-# provider + its first model (see default_provider_model()).
-DISCORD_PROVIDER = os.getenv("DISCORD_PROVIDER", "").strip() or None
-DISCORD_MODEL = os.getenv("DISCORD_MODEL", "").strip() or None
 # Discord is multi-user; the builtin shell/file tools run in this container, so
 # they're withheld from Discord unless explicitly enabled.
 DISCORD_ENABLE_SHELL = os.getenv("DISCORD_ENABLE_SHELL", "false").lower() in ("1", "true", "yes")
 MAX_DISCORD_LENGTH = 2000
+
+# --- Default model order (shared by every surface) -------------------------
+# Every NEW conversation — web UI, Discord DM, Discord channel mention — starts
+# on this model. The preferred default is tried first; if its provider isn't
+# available right now (e.g. the local llama.cpp server is down), the fallback is
+# used instead. DEFAULT_MODEL blank means "whatever the provider serves first"
+# (handy for llama.cpp, which serves one model). EFFORT is the reasoning effort
+# for providers that support it (DeepSeek/OpenRouter); ignored elsewhere.
+DEFAULT_PROVIDER = os.getenv("DEFAULT_PROVIDER", "llamacpp").strip()
+DEFAULT_MODEL = os.getenv("DEFAULT_MODEL", "").strip()
+DEFAULT_EFFORT = os.getenv("DEFAULT_EFFORT", "").strip() or None
+FALLBACK_PROVIDER = os.getenv("FALLBACK_PROVIDER", "deepseek").strip()
+FALLBACK_MODEL = os.getenv("FALLBACK_MODEL", "deepseek-v4-flash").strip()
+FALLBACK_EFFORT = os.getenv("FALLBACK_EFFORT", "high").strip() or None
 
 # --- Discord context window ------------------------------------------------
 # Hybrid time/count window over live Discord channel history (Discord is the
@@ -104,11 +114,9 @@ class ProviderSpec:
 KNOWN_PROVIDERS: list[ProviderSpec] = [
     ProviderSpec("openai", "OpenAI", "OPENAI_BASE_URL", "https://api.openai.com/v1", "OPENAI_API_KEY"),
     ProviderSpec("openrouter", "OpenRouter", "OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1", "OPENROUTER_API_KEY"),
-    ProviderSpec("groq", "Groq", "GROQ_BASE_URL", "https://api.groq.com/openai/v1", "GROQ_API_KEY"),
+    ProviderSpec("deepseek", "DeepSeek", "DEEPSEEK_BASE_URL", "https://api.deepseek.com/v1", "DEEPSEEK_API_KEY"),
+    ProviderSpec("xiaomi", "Xiaomi MiMo", "XIAOMI_BASE_URL", "https://api.xiaomimimo.com/v1", "XIAOMI_API_KEY"),
     ProviderSpec("llamacpp", "llama.cpp (local)", "LLAMACPP_BASE_URL", "http://localhost:8080/v1", None),
-    ProviderSpec("ollama", "Ollama (local)", "OLLAMA_BASE_URL", "http://localhost:11434/v1", None),
-    ProviderSpec("lmstudio", "LM Studio (local)", "LMSTUDIO_BASE_URL", "http://localhost:1234/v1", None),
-    ProviderSpec("local", "Custom (local/remote)", "LOCAL_OPENAI_BASE_URL", "", "LOCAL_OPENAI_API_KEY"),
 ]
 
 
@@ -142,13 +150,21 @@ class AvailableProvider:
     base_url: str
     models: list[str] = field(default_factory=list)
     model_context: dict[str, int] = field(default_factory=dict)
+    effort_levels: list[str] = field(default_factory=list)
+
+
+# Reasoning-effort levels a provider accepts when thinking is on. Absent =>
+# on/off only. (DeepSeek: high/max; low/medium map to high, xhigh to max.)
+EFFORT_LEVELS: dict[str, list[str]] = {
+    "deepseek": ["high", "max"],
+}
 
 
 def _context_of(m: dict) -> int | None:
     """Pull a max-context-window value out of a /models entry across providers.
 
     Field name/shape varies: llama.cpp exposes it under meta.n_ctx, OpenRouter as
-    a top-level context_length, others (LM Studio, etc.) use context_window.
+    a top-level context_length, others (e.g. LM Studio, various gateways) use context_window.
     """
     for key in ("context_length", "context_window", "max_context_length"):
         v = m.get(key)
@@ -174,40 +190,59 @@ def detect_providers() -> list[AvailableProvider]:
         base_url = spec.base_url()
         key = spec.api_key()
 
+        effort = EFFORT_LEVELS.get(spec.id, [])
         if spec.key_env:  # cloud / keyed provider
             if not key:
-                continue
-            if spec.id == "local" and not base_url:
                 continue
             models = _models_reachable(base_url, key) or []
             ids = [m["id"] for m in models]
             ctx = {m["id"]: m["context"] for m in models if m["context"]}
-            available.append(AvailableProvider(spec.id, spec.name, base_url, ids, ctx))
+            available.append(AvailableProvider(spec.id, spec.name, base_url, ids, ctx, effort))
         else:  # keyless local engine — only if reachable
             models = _models_reachable(base_url, None)
             if models is None:
                 continue
             ids = [m["id"] for m in models]
             ctx = {m["id"]: m["context"] for m in models if m["context"]}
-            available.append(AvailableProvider(spec.id, spec.name, base_url, ids, ctx))
+            available.append(AvailableProvider(spec.id, spec.name, base_url, ids, ctx, effort))
     return available
 
 
-def default_provider_model() -> tuple[str, str] | None:
-    """Pick the (provider_id, model) the Discord bot should use.
+def resolve_default_model() -> tuple[str, str, str | None] | None:
+    """The model a NEW conversation starts on, for every surface.
 
-    Honors DISCORD_PROVIDER/DISCORD_MODEL when set; otherwise falls back to the
-    first detected provider and its first listed model. Returns None if nothing
-    usable is available (web-UI-only deployments may still have no provider).
+    Order: the preferred default (DEFAULT_PROVIDER/MODEL) if that provider is
+    available right now; otherwise the fallback (FALLBACK_PROVIDER/MODEL/EFFORT);
+    last resort, the first detected provider + its first model. A blank model
+    means "use whatever the provider lists first". Returns
+    (provider_id, model, effort) or None if nothing usable is available.
     """
-    providers = detect_providers()
-    if not providers:
-        return None
-    chosen = None
-    if DISCORD_PROVIDER:
-        chosen = next((p for p in providers if p.id == DISCORD_PROVIDER), None)
-    chosen = chosen or providers[0]
-    model = DISCORD_MODEL or (chosen.models[0] if chosen.models else None)
-    if not model:
-        return None
-    return chosen.id, model
+    providers = {p.id: p for p in detect_providers()}
+
+    pref = providers.get(DEFAULT_PROVIDER)
+    if pref is not None:
+        model = DEFAULT_MODEL or (pref.models[0] if pref.models else None)
+        if model:
+            return pref.id, model, DEFAULT_EFFORT
+
+    fb = providers.get(FALLBACK_PROVIDER)
+    if fb is not None:
+        model = FALLBACK_MODEL or (fb.models[0] if fb.models else None)
+        if model:
+            return fb.id, model, FALLBACK_EFFORT
+
+    for p in providers.values():
+        if p.models:
+            return p.id, p.models[0], None
+    return None
+
+
+def effort_for(provider: str, model: str) -> str | None:
+    """The reasoning effort to use for an already-chosen (provider, model) — so a
+    conversation resumed onto the fallback model keeps its configured effort.
+    Matches the default/fallback entries; otherwise None (let the model default)."""
+    if provider == DEFAULT_PROVIDER and (not DEFAULT_MODEL or model == DEFAULT_MODEL):
+        return DEFAULT_EFFORT
+    if provider == FALLBACK_PROVIDER and model == FALLBACK_MODEL:
+        return FALLBACK_EFFORT
+    return None

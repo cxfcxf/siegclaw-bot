@@ -1,10 +1,12 @@
 """Discord conversation context: build a timestamped transcript from live channel
 history, and download image/media attachments for multimodal turns.
 
-Discord is the source of truth for Discord conversations — these turns are NOT
-stored in the SQLite conversation db. Each mention/DM rebuilds context from the
-channel's recent history with a hybrid time/count window. Ported from the
-standalone siegclaw-bot (`context.py` + the media helpers in `discord_handler.py`).
+This is used for channel mentions/replies, where Discord is the source of truth
+and turns are NOT stored in the SQLite conversation db. DM turns take a different
+path: their context comes from the stored conversation (shared with the web UI),
+see `discord_bot.create_client`. Each mention rebuilds context from the channel's
+recent history with a hybrid time/count window. Ported from the standalone
+siegclaw-bot (`context.py` + the media helpers in `discord_handler.py`).
 """
 from __future__ import annotations
 

@@ -14,6 +14,9 @@ const state = {
   providers: [],
   models: [],
   modelContext: {},    // {providerId: {modelId: maxContextLength}}
+  effortLevels: {},   // {providerId: [effort level, ...]} — empty when unsupported
+  effort: null,       // currently-selected reasoning effort (null when n/a)
+  defaultModel: null,  // {provider, model, effort} a new conversation starts on (server-resolved)
   promptTokens: null,  // last-reported prompt-token count for the open conversation
   conversationId: null,
   streaming: false,
@@ -24,19 +27,52 @@ const state = {
 };
 
 // --- Thinking toggle --------------------------------------------------------
+const effortKey = (p) => `harness.effort.${p}`;
 $("#think-toggle").onclick = () => {
   state.think = !state.think;
   $("#think-toggle").classList.toggle("on", state.think);
+  renderEffort();
 };
+
+// Reasoning-effort selector: only shown for providers that support it, and only
+// when thinking is on. Persisted per provider alongside the model choice.
+function renderEffort() {
+  const sel = $("#effort");
+  const pid = $("#provider").value;
+  const levels = state.effortLevels[pid] || [];
+  if (!levels.length || !state.think) {
+    sel.hidden = true;
+    state.effort = null;
+    return;
+  }
+  sel.hidden = false;
+  sel.innerHTML = "";
+  levels.forEach((lvl) => {
+    const o = el("option");
+    o.value = lvl;
+    o.textContent = lvl;
+    sel.appendChild(o);
+  });
+  const saved = loadPref(effortKey(pid));
+  sel.value = levels.includes(saved) ? saved : levels[0];
+  state.effort = sel.value;
+}
+$("#effort").addEventListener("change", () => {
+  state.effort = $("#effort").value;
+  savePref(effortKey($("#provider").value), state.effort);
+});
 
 // --- Providers --------------------------------------------------------------
 async function loadProviders() {
   const data = await fetch("/api/providers").then((r) => r.json());
   state.providers = data.providers;
-  // Build per-provider {modelId: contextLength} lookup for the ctx meter.
+  state.defaultModel = data.default || null;
+  // Build per-provider {modelId: contextLength} + effort-level lookups.
   state.modelContext = {};
+  state.effortLevels = {};
   state.providers.forEach((p) => {
     if (p.model_context) state.modelContext[p.id] = p.model_context;
+    if (p.effort_levels && p.effort_levels.length) state.effortLevels[p.id] = p.effort_levels;
   });
   const psel = $("#provider");
   psel.innerHTML = "";
@@ -59,6 +95,7 @@ async function loadProviders() {
     psel.value = savedProvider;
   }
   populateModels();
+  renderEffort();
 }
 
 function populateModels() {
@@ -79,6 +116,33 @@ function populateModels() {
   msel.placeholder = "Pick or type a model…";
   // Restore this provider's last-used model (if any).
   msel.value = loadPref(modelKey(pid)) || "";
+  renderCtxMeter();
+  renderEffort();
+}
+
+// Point the provider/model/effort picker at a specific selection — used to make
+// the picker follow the active conversation (resume → its stored model; new chat
+// → the server default). Falls back gracefully if the provider isn't available.
+function applyModelSelection(provider, model, effort) {
+  const psel = $("#provider");
+  if (provider && state.providers.some((p) => p.id === provider)) {
+    psel.value = provider;
+    savePref(PROVIDER_KEY, provider);
+  }
+  populateModels();              // rebuilds the model list for the chosen provider
+  if (model) {
+    $("#model").value = model;
+    savePref(modelKey($("#provider").value), model);
+  }
+  renderEffort();
+  if (effort) {
+    const es = $("#effort");
+    if (!es.hidden && [...es.options].some((o) => o.value === effort)) {
+      es.value = effort;
+      state.effort = effort;
+      savePref(effortKey($("#provider").value), effort);
+    }
+  }
   renderCtxMeter();
 }
 
@@ -266,6 +330,10 @@ async function openConversation(id) {
   state.conversationId = id;
   const data = await fetch(`/api/conversations/${id}`).then((r) => r.json());
   state.promptTokens = (data.conversation && data.conversation.prompt_tokens) || null;
+  // Snap the picker to this conversation's stored model — model is per-conversation.
+  if (data.conversation) {
+    applyModelSelection(data.conversation.provider, data.conversation.model, null);
+  }
   $("#messages").innerHTML = "";
   renderHistory(data.messages);
   setMainEmpty(data.messages.length === 0);
@@ -282,6 +350,10 @@ const EMPTY_STATE = `
 function newChat() {
   state.conversationId = null;
   state.promptTokens = null;
+  // A new conversation starts on the server-resolved default model.
+  if (state.defaultModel) {
+    applyModelSelection(state.defaultModel.provider, state.defaultModel.model, state.defaultModel.effort);
+  }
   $("#messages").innerHTML = EMPTY_STATE;
   setMainEmpty(true);
   updateScrollJump();
@@ -900,7 +972,7 @@ async function send(providedText, providedImages) {
     const resp = await fetch("/api/chat", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ conversation_id: state.conversationId, provider, model, message: text, images: images.length ? images : null, think: state.think }),
+      body: JSON.stringify({ conversation_id: state.conversationId, provider, model, message: text, images: images.length ? images : null, think: state.think, effort: state.think ? (state.effort || null) : null }),
       signal: controller.signal,
     });
     if (!resp.ok) throw new Error(`HTTP ${resp.status}`);

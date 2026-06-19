@@ -28,7 +28,13 @@ from pydantic import BaseModel
 
 from . import memory, storage
 from .agent import build_registry, read_soul, run_turn
-from .config import DISCORD_BOT_TOKEN, SOUL_PATH, UPLOADS_DIR, detect_providers
+from .config import (
+    DISCORD_BOT_TOKEN,
+    SOUL_PATH,
+    UPLOADS_DIR,
+    detect_providers,
+    resolve_default_model,
+)
 from .mcp_client import MCPManager
 
 ALLOWED_IMAGE_EXT = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"}
@@ -87,6 +93,7 @@ class ChatRequest(BaseModel):
     message: str
     images: list[str] | None = None  # '/uploads/<file>' refs from /api/upload
     think: bool = True               # toggle model reasoning per request
+    effort: str | None = None        # reasoning effort for providers that support it
 
 
 class NewConversation(BaseModel):
@@ -103,6 +110,7 @@ class SoulUpdate(BaseModel):
 @app.get("/api/providers")
 def api_providers():
     providers = detect_providers()
+    default = resolve_default_model()
     return {
         "providers": [
             {
@@ -111,9 +119,15 @@ def api_providers():
                 "base_url": p.base_url,
                 "models": p.models,
                 "model_context": p.model_context,
+                "effort_levels": p.effort_levels,
             }
             for p in providers
-        ]
+        ],
+        # The model a new conversation starts on, shared with Discord.
+        "default": (
+            {"provider": default[0], "model": default[1], "effort": default[2]}
+            if default else None
+        ),
     }
 
 
@@ -216,7 +230,7 @@ async def api_chat(body: ChatRequest):
         yield _sse({"type": "conversation", "id": cid})
         async for event in run_turn(
             cid, body.provider, body.model, body.message, registry, skills,
-            images=body.images, think=body.think,
+            images=body.images, think=body.think, effort=body.effort,
         ):
             yield _sse(event)
 

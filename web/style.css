@@ -267,6 +267,17 @@ select:focus { outline: none; border-color: var(--patina-dim); }
 .think-btn.on svg { filter: drop-shadow(0 0 6px rgba(95, 182, 160, 0.55)); }
 .think-btn:focus-visible { outline: 2px solid var(--patina); outline-offset: 1px; }
 
+/* Reasoning-effort selector — shown only for providers that support it, and
+   only while thinking is on. Sits beside the think toggle inside the composer. */
+.effort {
+  flex-shrink: 0; height: 38px; align-self: stretch;
+  padding: 0 8px; border-radius: var(--r-sm);
+  border: 1px solid var(--border); background: var(--surface-2); color: var(--text);
+  font: inherit; font-size: 12.5px; text-transform: capitalize; cursor: pointer;
+}
+.effort:hover { border-color: var(--patina-dim); }
+.effort:focus-visible { outline: 2px solid var(--patina); outline-offset: 1px; }
+
 @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.3; } }
 
 /* ===========================================================================

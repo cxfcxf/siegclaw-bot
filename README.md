@@ -21,12 +21,23 @@ is set; without it you get the web UI alone.
   pasted YouTube links. Extra Discord-only tools `fetch_user_messages` /
   `fetch_channel_history` read older history on demand. Memory is scoped **per
   Discord user**. The shell/file tools are withheld from Discord unless
-  `DISCORD_ENABLE_SHELL=true`. Set `DISCORD_PROVIDER`/`DISCORD_MODEL` to choose the
-  model (defaults to the first detected provider).
+  `DISCORD_ENABLE_SHELL=true`. **DM slash commands** (DM-only, hidden from channel
+  autocomplete): `/new` (start a fresh conversation — reports the model + context
+  window it'll use), `/list`, `/resume <ref>`, and `/model` (switch the active DM
+  conversation's model, with **autocomplete**: pick a provider, then pick from that
+  provider's models — same typeahead filter as the web UI). Channel @mentions are
+  stateless and always use the default model.
+- **One default model, shared by every surface.** A configurable **default →
+  fallback** order (`config.py:resolve_default_model`): every *new* conversation —
+  web UI, Discord DM, Discord channel mention — starts on `DEFAULT_PROVIDER`/`DEFAULT_MODEL`
+  (blank model = whatever a local engine serves), and if that provider isn't reachable
+  right now it falls back to `FALLBACK_PROVIDER`/`FALLBACK_MODEL` (with `FALLBACK_EFFORT`
+  for reasoning providers). Model is **per conversation**: switch it (web picker or
+  `/model`) and it sticks to that conversation; a new conversation returns to the default.
 - **Multi-provider, switchable in the UI.** Any OpenAI-compatible endpoint:
-  OpenAI, OpenRouter, Groq, and local engines (Ollama, LM Studio, vLLM,
-  llama.cpp). Providers are auto-detected from `.env` — set a key (or run a local
-  engine) and it appears in the dropdown.
+  OpenAI, OpenRouter, DeepSeek, Xiaomi MiMo, and local llama.cpp. Providers are
+  auto-detected from `.env` — set a key (or run a local engine) and it appears in
+  the dropdown.
 - **Tools.** `read_file`, `write_file`, `edit_file`, `list_dir`, `bash`, plus
   the full Firecrawl surface (`web_search`, `web_scrape`, `web_map`,
   `web_crawl`) and `browser_use` — a stealth (camoufox) browser that renders JS
@@ -37,8 +48,8 @@ is set; without it you get the web UI alone.
   vision-capable model (e.g. a llama.cpp server started with an `mmproj` projector).
 - **Thinking toggle** — a compact lightbulb in the composer (per request) turns
   model reasoning on/off. The mechanism is provider-aware: `chat_template_kwargs`
-  (`THINK_KWARG`) for local engines (llama.cpp/Ollama/LM Studio), and
-  `reasoning.enabled` for OpenRouter. Reasoning is read back from whichever field
+  (`THINK_KWARG`) for llama.cpp, `thinking.type` (+ `reasoning_effort` for
+  DeepSeek) for DeepSeek/MiMo, and `reasoning.enabled` for OpenRouter. Reasoning is read back from whichever field
   the provider emits (`reasoning_content`, `reasoning`, or structured
   `reasoning_details`) and shown inside the collapsible **process trace** (below).
 - **Process trace** — thinking, tool calls/results, and memory activity for a turn
@@ -127,11 +138,9 @@ injected proxy so internal/LAN calls work.
 
 Edit `.env`. A provider shows up when usable:
 
-- **Cloud** (`OPENAI_API_KEY`, `OPENROUTER_API_KEY`, `GROQ_API_KEY`): set the key.
-- **Local** (Ollama, LM Studio): just run the engine; it's detected if its
+- **Cloud** (`OPENAI_API_KEY`, `OPENROUTER_API_KEY`, `DEEPSEEK_API_KEY`): set the key.
+- **Local** (llama.cpp): just run the engine; it's detected if its
   `/v1/models` endpoint responds (no key).
-- **Custom** OpenAI-compatible endpoint: set `LOCAL_OPENAI_BASE_URL` (+
-  `LOCAL_OPENAI_API_KEY`).
 
 If a provider doesn't list models, just type a model id into the model field
 (it's a free-text combobox).

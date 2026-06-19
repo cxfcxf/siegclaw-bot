@@ -2,10 +2,14 @@
 as the web UI.
 
 A triggered message (mention in a channel, any DM, or a reply to the bot) builds
-its conversation context from live Discord history (Discord is the source of
-truth — these turns are not stored in the SQLite conversation db), assembles a
-per-message tool registry (reusing the harness web/browser/skills/MCP tools plus
-per-user-scoped memory and Discord-history tools), runs a non-streaming
+its conversation context. For channel mentions/replies that context is live
+Discord history (Discord is the source of truth — those turns are not stored).
+For DMs, the stored conversation IS the source of truth and is shared with the
+web UI: a DM appends to the same conversation the web UI reads, so either side
+can resume the other. DM sessions are managed with text commands:
+/new /list /resume <ref> /model [provider] [model]. Either way, the handler
+assembles a per-message tool registry (reusing the web/browser/skills/MCP tools
+plus per-user-scoped memory and Discord-history tools), runs a non-streaming
 tool-calling loop, and posts a chunked reply.
 
 The Discord client shares uvicorn's asyncio loop, so the web UI and the bot run
@@ -14,18 +18,32 @@ in one process. See `app/main.py` lifespan for startup/shutdown.
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import logging
+import time
+from typing import Optional
 
 import discord
+from discord import app_commands
 
-from . import memory
-from .agent import current_datetime_block, reasoning_extra_body, read_soul
+from . import memory, storage
+from .agent import (
+    _to_api_messages,
+    build_registry,
+    current_datetime_block,
+    reasoning_extra_body,
+    read_soul,
+    system_prompt,
+)
 from .config import (
     DISCORD_ENABLE_SHELL,
     MAX_AGENT_ITERATIONS,
     MAX_DISCORD_LENGTH,
-    default_provider_model,
+    detect_providers,
+    effort_for,
+    get_provider,
+    resolve_default_model,
 )
 from .discord_context import (
     YOUTUBE_RE,
@@ -227,14 +245,31 @@ async def run_discord_turn(
     registry: Registry,
     *,
     think: bool = True,
+    effort: str | None = None,
     status_fn=None,
+    conversation_id: str | None = None,
 ) -> str:
     """Drive the model + tools to a final text answer for Discord (no streaming).
-    Mirrors run_turn's contract but builds nothing in storage."""
+
+    When `conversation_id` is given (the DM path), every assistant message and
+    tool result is also appended to that stored conversation so the shared
+    history stays valid for the next turn (and shows up in the web UI)."""
     client = client_for(provider)
-    extra_body = reasoning_extra_body(provider, think)
+    extra_body = reasoning_extra_body(provider, think, effort)
     schemas = registry.schemas()
     seen_calls: set[tuple[str, str]] = set()
+    needs_reasoning_replay = provider in ("deepseek", "xiaomi")
+
+    async def persist(fn, *a):
+        if conversation_id:
+            try:
+                await asyncio.to_thread(fn, conversation_id, *a)
+            except Exception as e:
+                log.warning("DM persist failed: %s", e)
+
+    def _reasoning_of(m) -> str | None:
+        # Non-streaming responses expose the chain-of-thought as reasoning_content.
+        return getattr(m, "reasoning_content", None)
 
     for _ in range(MAX_AGENT_ITERATIONS):
         resp = await client.chat.completions.create(
@@ -244,10 +279,21 @@ async def run_discord_turn(
             extra_body=extra_body,
         )
         msg = resp.choices[0].message
+        reasoning_text = _reasoning_of(msg) if needs_reasoning_replay else None
         if not msg.tool_calls:
+            await persist(storage.add_message, "assistant", content=msg.content or "", reasoning=reasoning_text)
             return msg.content or ""
 
-        messages.append(msg.model_dump(exclude_none=True))
+        assistant_dump = msg.model_dump(exclude_none=True)
+        if needs_reasoning_replay and reasoning_text:
+            assistant_dump["reasoning_content"] = reasoning_text
+        messages.append(assistant_dump)
+        await persist(
+            storage.add_message, "assistant",
+            content=assistant_dump.get("content"),
+            tool_calls=assistant_dump.get("tool_calls"),
+            reasoning=reasoning_text,
+        )
 
         for tc in msg.tool_calls:
             name = tc.function.name
@@ -255,13 +301,17 @@ async def run_discord_turn(
             try:
                 args = json.loads(raw_args)
             except json.JSONDecodeError as e:
-                messages.append({"role": "tool", "tool_call_id": tc.id, "content": f"Invalid tool arguments (not valid JSON): {e}"})
+                content = f"Invalid tool arguments (not valid JSON): {e}"
+                messages.append({"role": "tool", "tool_call_id": tc.id, "content": content})
+                await persist(storage.add_message, "tool", content=content, tool_call_id=tc.id, name=name)
                 continue
 
             call_key = (name, raw_args)
             if name in _IDEMPOTENT_TOOLS and call_key in seen_calls:
                 log.info("Tool %s skipped (duplicate call)", name)
-                messages.append({"role": "tool", "tool_call_id": tc.id, "content": "You already made this exact tool call — its result is above. Use that result, or change the arguments."})
+                content = "You already made this exact tool call — its result is above. Use that result, or change the arguments."
+                messages.append({"role": "tool", "tool_call_id": tc.id, "content": content})
+                await persist(storage.add_message, "tool", content=content, tool_call_id=tc.id, name=name)
                 continue
             seen_calls.add(call_key)
 
@@ -274,11 +324,14 @@ async def run_discord_turn(
             result = await registry.call(name, args)
             log.info("Tool %s(%s) → %d chars", name, list(args.keys()), len(result))
             messages.append({"role": "tool", "tool_call_id": tc.id, "content": result})
+            await persist(storage.add_message, "tool", content=result, tool_call_id=tc.id, name=name)
 
     # Max iterations hit — force a final answer with no tools.
     messages.append({"role": "user", "content": "You have reached the maximum number of tool calls. Based on everything gathered so far, give your best answer now."})
     resp = await client.chat.completions.create(model=model, messages=messages, extra_body=extra_body)
-    return resp.choices[0].message.content or ""
+    content = resp.choices[0].message.content or ""
+    await persist(storage.add_message, "assistant", content=content)
+    return content
 
 
 # --------------------------------------------------------------------------- #
@@ -308,11 +361,59 @@ def create_client(mcp_manager) -> discord.Client:
     intents = discord.Intents.default()
     intents.message_content = True
     client = discord.Client(intents=intents)
+    tree = app_commands.CommandTree(client)
+
+    # --- Slash commands (the primary UI; replies are ephemeral) ---------------
+    # Restricted to DMs (and group DMs) — these manage a user's DM conversation
+    # state, which has nothing to do with @mentions in channels (those take a
+    # separate, live-Discord-history path). guilds=False hides them from the
+    # channel autocomplete so an @mention doesn't surface the slash menu.
+    dm_only = app_commands.allowed_contexts(guilds=False, dms=True, private_channels=True)
+
+    @tree.command(name="new", description="Start a new conversation")
+    @dm_only
+    async def new_cmd(interaction: discord.Interaction):
+        await _respond(interaction, cmd_new(str(interaction.user.id)))
+
+    @tree.command(name="list", description="List all conversations")
+    @dm_only
+    async def list_cmd(interaction: discord.Interaction):
+        await _respond(interaction, cmd_list(str(interaction.user.id)))
+
+    @tree.command(name="resume", description="Resume a conversation by its ref number")
+    @dm_only
+    @app_commands.describe(ref="Conversation number from /list")
+    async def resume_cmd(interaction: discord.Interaction, ref: int):
+        await _respond(interaction, cmd_resume(str(interaction.user.id), ref))
+
+    @tree.command(name="model", description="Show or set the active conversation's model")
+    @dm_only
+    @app_commands.describe(
+        provider="Pick a provider (autocomplete; omit to keep current)",
+        model="Pick a model (autocomplete shows the chosen provider's models)",
+    )
+    @app_commands.autocomplete(provider=_provider_autocomplete, model=_model_autocomplete)
+    async def model_cmd(
+        interaction: discord.Interaction,
+        provider: Optional[str] = None,
+        model: Optional[str] = None,
+    ):
+        await _respond(interaction, cmd_model(str(interaction.user.id), provider, model))
 
     @client.event
     async def on_ready():
         memory.init_memory()  # idempotent; ensures the backend is ready
+        # Sync once per process (on_ready also fires on reconnect). Overwriting
+        # stale global commands left by older bot versions.
+        if not on_ready._synced:
+            on_ready._synced = True
+            try:
+                synced = await tree.sync()
+                log.info("Synced %d slash commands", len(synced))
+            except Exception as e:
+                log.warning("Slash command sync failed: %s", e)
         log.info("Logged in as %s (ID: %s)", client.user, client.user.id)
+    on_ready._synced = False
 
     @client.event
     async def on_message(message: discord.Message):
@@ -339,36 +440,73 @@ def create_client(mcp_manager) -> discord.Client:
         if not triggered:
             return
 
-        pm = default_provider_model()
+        is_dm = message.guild is None
+        user_id = str(message.author.id)
+
+        # Resolve provider + model. DMs use the active conversation's stored
+        # choice (or the default on first contact); channel mentions use default.
+        dm_cid: str | None = None
+        pm = resolve_default_model()
         if pm is None:
             log.warning("No provider/model available; ignoring message")
             return
-        provider, model = pm
+        provider, model, effort = pm
+        if is_dm:
+            dm_cid = storage.dm_active_cid(user_id)
+            if dm_cid is not None:
+                convo = storage.get_conversation(dm_cid)
+                if convo and convo["provider"] and convo["model"]:
+                    provider, model = convo["provider"], convo["model"]
+                    effort = effort_for(provider, model)
 
         async with message.channel.typing():
             user_text = message_text(message, strip_bot_id=client.user.id)
-            user_id = str(message.author.id)
-            scope = f"discord:{user_id}"
 
-            reply_note = ""
-            if ref_msg is not None:
-                ref_text = message_text(ref_msg)[:500]
-                ref_author = "your (SiegClaw's)" if ref_msg.author == client.user else f"{ref_msg.author.display_name}'s"
-                reply_note = f"[{message.author.display_name} is replying to {ref_author} message]: {ref_text}\n"
+            if is_dm:
+                # The stored conversation IS the DM — same one the web UI reads,
+                # same registry, same system prompt. A DM turn is identical to a
+                # web UI turn on this conversation; Discord is just the surface.
+                if dm_cid is None:
+                    dm_cid = storage.create_conversation(provider, model, user_text[:60] or "New chat")
+                    storage.dm_set_active_cid(user_id, dm_cid)
+                elif user_text:
+                    convo = storage.get_conversation(dm_cid)
+                    if convo and convo.get("title") == "New chat":
+                        storage.rename_conversation(dm_cid, user_text[:60])
 
-            prompt, _ = await fetch_context(message.channel, client.user.id, message.id)
-            prompt = f"{prompt}\n\n{reply_note}[Current question from {message.author.display_name}]: {user_text}"
+                registry, skills = build_registry(mcp_manager.tools)
+                system = await asyncio.to_thread(system_prompt, skills, user_text)
 
-            images = await download_images(message, ref_msg)
-            yt_video_ids = YOUTUBE_RE.findall(user_text)
+                storage.add_message(dm_cid, "user", content=user_text)
+                storage.touch_conversation(dm_cid, provider, model)
+                api_history = _to_api_messages(storage.get_messages(dm_cid), provider)
+                images = await download_images(message, ref_msg)
+                if images:
+                    api_history = _attach_turn_images(api_history, images)
+                messages = [{"role": "system", "content": system}, *api_history]
+            else:
+                # Channel mention: live Discord history is the source of truth
+                # (not persisted). Build the timestamped transcript + question.
+                scope = f"discord:{user_id}"
+                registry, skills = build_discord_registry(
+                    message.channel, client.user.id, scope, mcp_manager.tools
+                )
+                system = await asyncio.to_thread(discord_system_prompt, skills, user_text, scope)
 
-            registry, skills = build_discord_registry(message.channel, client.user.id, scope, mcp_manager.tools)
-            system = await asyncio.to_thread(discord_system_prompt, skills, user_text, scope)
-            user_content = build_user_content(prompt, images, yt_video_ids)
-            messages = [
-                {"role": "system", "content": system},
-                {"role": "user", "content": user_content},
-            ]
+                reply_note = ""
+                if ref_msg is not None:
+                    ref_text = message_text(ref_msg)[:500]
+                    ref_author = "your (SiegClaw's)" if ref_msg.author == client.user else f"{ref_msg.author.display_name}'s"
+                    reply_note = f"[{message.author.display_name} is replying to {ref_author} message]: {ref_text}\n"
+                prompt, _ = await fetch_context(message.channel, client.user.id, message.id)
+                prompt = f"{prompt}\n\n{reply_note}[Current question from {message.author.display_name}]: {user_text}"
+                images = await download_images(message, ref_msg)
+                yt_video_ids = YOUTUBE_RE.findall(user_text)
+                user_content = build_user_content(prompt, images, yt_video_ids)
+                messages = [
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": user_content},
+                ]
 
             _status_msg: discord.Message | None = None
 
@@ -389,19 +527,36 @@ def create_client(mcp_manager) -> discord.Client:
 
             try:
                 reply_text = await run_discord_turn(
-                    provider, model, messages, registry, think=True, status_fn=update_status
+                    provider, model, messages, registry,
+                    think=True, effort=effort, status_fn=update_status, conversation_id=dm_cid,
                 )
                 if not reply_text:
                     raise ValueError("Empty response")
+                turn_failed = False
             except Exception as e:
                 log.error("Discord turn failed: %s", e)
                 reply_text = f"Sorry, I couldn't generate a response ({type(e).__name__}). Please try again."
+                turn_failed = True
 
         await _send_long_message(message, reply_text)
 
-        # Only the tail of the transcript — re-extracting the full window every
-        # mention is costly and floods memory with near-duplicate facts.
-        asyncio.create_task(_extract_memory(scope, prompt[-2000:], reply_text))
+        # If the turn failed after the user message was already stored, drop it
+        # (and any partially-persisted tool messages). If that leaves the
+        # conversation empty, remove it entirely + clear the pointer so we don't
+        # leave a zero-message conversation behind.
+        if is_dm and dm_cid and turn_failed:
+            storage.rewind_last_user_turn(dm_cid)
+            if storage.message_count(dm_cid) == 0:
+                storage.delete_conversation(dm_cid)
+                storage.dm_clear_active(user_id)
+
+        # Memory extraction. DMs share the web UI's debounced, global extraction
+        # (same conversation, same memory). Channel mentions extract immediately,
+        # scoped per Discord user.
+        if is_dm:
+            memory.schedule_extraction(user_text, reply_text)
+        else:
+            asyncio.create_task(_extract_memory(scope, prompt[-2000:], reply_text))
 
     return client
 
@@ -411,3 +566,227 @@ async def _extract_memory(scope: str, conversation: str, reply: str) -> None:
         await asyncio.to_thread(memory.record_turn, conversation, reply, scope)
     except Exception as e:
         log.warning("Memory extraction failed: %s", e)
+
+
+def _attach_turn_images(api_messages: list[dict], images: list[dict]) -> list[dict]:
+    """Convert the most recent user message into multimodal content by appending
+    this turn's downloaded images. (Images aren't persisted, so this only feeds
+    the current model call — matching the pre-unification DM behavior.)"""
+    for i in range(len(api_messages) - 1, -1, -1):
+        if api_messages[i].get("role") == "user":
+            msg = api_messages[i]
+            parts: list[dict] = []
+            text = msg.get("content")
+            if isinstance(text, str) and text:
+                parts.append({"type": "text", "text": text})
+            for img in images:
+                b64 = base64.b64encode(img["data"]).decode()
+                parts.append({"type": "image_url", "image_url": {"url": f"data:{img['mime_type']};base64,{b64}"}})
+            msg["content"] = parts
+            break
+    return api_messages
+
+
+# --------------------------------------------------------------------------- #
+# Conversation commands — pure logic returning a reply string.
+# Shared by the slash-command handlers (interactions) and the DM text-command
+# fallback, so both paths behave identically.
+# --------------------------------------------------------------------------- #
+def _rel_time(ts: float | None) -> str:
+    if not ts:
+        return ""
+    delta = time.time() - ts
+    if delta < 60:
+        return "just now"
+    if delta < 3600:
+        return f"{int(delta // 60)}m ago"
+    if delta < 86400:
+        return f"{int(delta // 3600)}h ago"
+    return f"{int(delta // 86400)}d ago"
+
+
+_LIST_CAP = 20
+
+
+def _fmt_ctx(n: int | None) -> str | None:
+    """Human-readable context window: 131072 -> 128K, 1048576 -> 1M."""
+    if not n:
+        return None
+    if n >= 1000:
+        k = n / 1000
+        if k >= 1024:
+            m = k / 1024
+            return f"{round(m)}M" if m >= 10 else f"{m:.1f}".rstrip("0").rstrip(".") + "M"
+        return f"{round(k)}K"
+    return str(n)
+
+
+def _default_model_line() -> str:
+    """Describe the model a new conversation will start on: `provider/model`,
+    its context window (when the provider reports one), and effort if set."""
+    pm = resolve_default_model()
+    if pm is None:
+        return "No model available — check provider config."
+    provider, model, effort = pm
+    ctx = None
+    for p in detect_providers():
+        if p.id == provider:
+            ctx = p.model_context.get(model)
+            break
+    parts = [f"`{provider}/{model}`"]
+    ctx_str = _fmt_ctx(ctx)
+    parts.append(f"{ctx_str} context" if ctx_str else "context window unknown")
+    if effort:
+        parts.append(f"effort: {effort}")
+    return " · ".join(parts)
+
+
+def cmd_new(user_id: str) -> str:
+    # Don't create a conversation yet — just clear the active pointer. The
+    # conversation is created (and titled) when the user actually sends a
+    # message, matching the web UI's "new chat just resets, persists on send".
+    storage.dm_clear_active(user_id)
+    return (
+        "Starting a fresh conversation — your next message begins it.\n"
+        f"Model: {_default_model_line()}"
+    )
+
+
+def cmd_list(user_id: str) -> str:
+    convos = storage.list_all_conversations()
+    if not convos:
+        return "No conversations yet. Send a message or use `/new`."
+    active_cid = storage.dm_active_cid(user_id)
+    shown = convos[:_LIST_CAP]
+    lines = ["**Conversations:**"]
+    for c in shown:
+        mark = " \u2190 active" if c["id"] == active_cid else ""
+        title = c["title"] or "Untitled"
+        lines.append(
+            f"**#{c['ref']}** \u00b7 {title} \u00b7 `{c['provider']}/{c['model']}` \u00b7 "
+            f"{c['msg_count']} msgs \u00b7 {_rel_time(c['updated_at'])}{mark}"
+        )
+    if len(convos) > _LIST_CAP:
+        lines.append(f"_(showing {_LIST_CAP} of {len(convos)}; resume older by `ref`)_")
+    return "\n".join(lines)
+
+
+_HISTORY_PREVIEW = 20
+
+
+def _format_history_preview(cid: str) -> str:
+    """A readable transcript of the last user/assistant text messages, for the
+    /resume reply. Tool-only messages and raw tool results are skipped. Full
+    message text is included (the reply is chunked across Discord messages)."""
+    visible: list[tuple[str, str]] = []
+    for m in storage.get_messages(cid):
+        role, content = m.get("role"), m.get("content")
+        if role == "user" and content:
+            visible.append(("you", content))
+        elif role == "assistant" and content:
+            visible.append(("siegclaw", content))
+    if not visible:
+        return "_(no messages yet)_"
+    total = len(visible)
+    recent = visible[-_HISTORY_PREVIEW:]
+    body = "\n\n".join(f"**{who}**: {text.strip()}" for who, text in recent)
+    if total > len(recent):
+        return f"_(showing last {len(recent)} of {total} messages)_\n\n{body}"
+    return body
+
+
+def cmd_resume(user_id: str, ref: int) -> str:
+    convo = storage.conversation_by_ref(ref)
+    if convo is None:
+        return f"No conversation **#{ref}**. Use `/list` to see them."
+    storage.dm_set_active_cid(user_id, convo["id"])
+    return (
+        f"Resumed **#{ref}** ({convo['title'] or 'Untitled'}).\n"
+        f"Model: `{convo['provider']}/{convo['model']}`\n\n"
+        + _format_history_preview(convo["id"])
+    )
+
+
+def cmd_model(user_id: str, provider: str | None = None, model: str | None = None) -> str:
+    cid = storage.dm_active_cid(user_id)
+    if cid is None:
+        return "No active conversation — send a message or use `/new` first."
+    convo = storage.get_conversation(cid)
+    providers = detect_providers()
+    provider_ids = {p.id for p in providers}
+
+    if not model:
+        lines = [
+            f"Active **#{convo['ref']}**: `{convo['provider']}/{convo['model']}`",
+            "**Available providers:**",
+        ]
+        for p in providers:
+            n = len(p.models)
+            lines.append(f"- `{p.id}` ({p.name}) \u2014 {n} model{'s' if n != 1 else ''}")
+        lines.append(
+            "\nSet with `/model model:<model>` (keeps current provider) "
+            "or `/model provider:<p> model:<m>`."
+        )
+        return "\n".join(lines)
+
+    provider_id = provider if (provider in provider_ids) else convo["provider"]
+    if get_provider(provider_id) is None:
+        return f"Unknown provider `{provider_id}`. Known: {', '.join(sorted(provider_ids))}."
+    storage.update_conversation_model(cid, provider_id, model)
+    return f"Conversation **#{convo['ref']}** model set to `{provider_id}/{model}`."
+
+
+async def _provider_autocomplete(
+    interaction: discord.Interaction, current: str
+) -> list[app_commands.Choice[str]]:
+    """Offer the detected providers (with model counts) as you type the provider
+    field. Substring-match on both id and display name."""
+    cur = (current or "").lower()
+    out: list[app_commands.Choice[str]] = []
+    for p in detect_providers():
+        if cur and cur not in p.id.lower() and cur not in p.name.lower():
+            continue
+        n = len(p.models)
+        label = f"{p.name} ({n} model{'s' if n != 1 else ''})"
+        out.append(app_commands.Choice(name=label[:100], value=p.id))
+    return out[:25]
+
+
+async def _model_autocomplete(
+    interaction: discord.Interaction, current: str
+) -> list[app_commands.Choice[str]]:
+    """Offer models for the provider already picked in this command (falling back
+    to the active conversation's provider). Discord caps choices at 25, so the
+    typed text filters the list — exactly like the web UI combobox."""
+    cur = (current or "").lower()
+    providers = {p.id: p for p in detect_providers()}
+    pid = (getattr(interaction.namespace, "provider", None) or "").strip()
+    if pid not in providers:
+        cid = storage.dm_active_cid(str(interaction.user.id))
+        convo = storage.get_conversation(cid) if cid else None
+        pid = convo["provider"] if (convo and convo["provider"] in providers) else None
+    chosen = providers.get(pid)
+    models = chosen.models if chosen else [m for p in providers.values() for m in p.models]
+    out: list[app_commands.Choice[str]] = []
+    for m in models:
+        if cur and cur not in m.lower():
+            continue
+        out.append(app_commands.Choice(name=m[:100], value=m))
+        if len(out) >= 25:
+            break
+    return out
+
+
+async def _respond(interaction: discord.Interaction, text: str, *, ephemeral: bool = True) -> None:
+    """Reply to a slash-command interaction, chunking past Discord's 2000-char cap."""
+    chunks: list[str] = []
+    while len(text) > 2000:
+        split_at = text.rfind("\n", 0, 2000)
+        if split_at == -1:
+            split_at = 2000
+        chunks.append(text[:split_at])
+        text = text[split_at:].lstrip("\n")
+    chunks.append(text)
+    await interaction.response.send_message(chunks[0], ephemeral=ephemeral)
+    for c in chunks[1:]:
+        await interaction.followup.send(c, ephemeral=ephemeral)
