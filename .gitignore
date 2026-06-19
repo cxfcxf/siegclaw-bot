@@ -1,6 +1,9 @@
 .env
 __pycache__/
 *.pyc
+data/
+workspace/
+.venv/
 venv/
-*.tar
-*.tar.gz
+*.egg-info/
+.claude/settings.local.json

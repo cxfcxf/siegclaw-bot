@@ -1,160 +1,164 @@
-# SiegClaw Bot
+# SiegClaw
 
-A Discord AI assistant powered by Xiaomi MiMo with web search, browser automation, and persistent vector memory.
+A self-hosted agentic assistant that runs **two surfaces from one process**: a
+single-user **web UI** and a multi-user **Discord bot** (DMs, @mentions, replies).
+Multi-provider (any OpenAI-compatible API, cloud or local), with a `soul.md` system
+prompt, real tools (web search + scrape, stealth browser, optional files/bash),
+**MCP** servers, **skills**, and durable **mem0** memory.
+
+It's a reverse-merge of the `chat-harness` agent (web UI + tool loop) with the
+original `siegclaw-bot` Discord bot — the harness is the agent, Discord is an
+adapter on top. The Discord client connects on startup whenever `DISCORD_BOT_TOKEN`
+is set; without it you get the web UI alone.
 
 ## Features
 
-- **Tool-calling** — MiMo autonomously decides when to search, browse, recall memories, or fetch user history
-- **Web search** — real-time search via local Firecrawl instance
-- **Browser automation** — opens real browser pages (via Camofox), supports click, type, snapshot, and screenshot
-- **Vector memory** — extracts and stores facts from conversations using LanceDB + Gemini embeddings; relevant memories are auto-injected into every prompt
-- **Image support** — attach images or reply to image messages for multimodal responses
-- **User message lookup** — fetch what a specific person said, with surrounding conversation for context
-- **Channel history lookup** — the model can fetch older messages when the user references something outside the recent window
-- **Reply-aware context** — replies include a note about which message is being replied to, on top of full channel context
-- **Mention-free triggers** — replying to one of the bot's messages or DMing it works without an @mention; other bots are ignored
-- **Hybrid context window** — adapts between count-based and time-based message fetching for active channels; always keeps the newest messages
-- **Date-aware** — current PT timestamp in the system prompt, per-message timestamps in the transcript
-- **Webhook endpoint** — `POST /notify` lets external services push messages into a Discord channel
-- **Personality via SOUL.md** — edit `SOUL.md` to change the bot's behaviour without touching code
+- **Discord bot (same process as the web UI).** Replies to DMs, @mentions in a
+  channel, and replies to its own messages. Builds context from **live Discord
+  history** (a hybrid time/count window — Discord is the source of truth, not the
+  SQLite store), refers to people by name, posts live `-#` tool-status lines, chunks
+  replies over Discord's 2000-char limit, reads image attachments, and understands
+  pasted YouTube links. Extra Discord-only tools `fetch_user_messages` /
+  `fetch_channel_history` read older history on demand. Memory is scoped **per
+  Discord user**. The shell/file tools are withheld from Discord unless
+  `DISCORD_ENABLE_SHELL=true`. Set `DISCORD_PROVIDER`/`DISCORD_MODEL` to choose the
+  model (defaults to the first detected provider).
+- **Multi-provider, switchable in the UI.** Any OpenAI-compatible endpoint:
+  OpenAI, OpenRouter, Groq, and local engines (Ollama, LM Studio, vLLM,
+  llama.cpp). Providers are auto-detected from `.env` — set a key (or run a local
+  engine) and it appears in the dropdown.
+- **Tools.** `read_file`, `write_file`, `edit_file`, `list_dir`, `bash`, plus
+  the full Firecrawl surface (`web_search`, `web_scrape`, `web_map`,
+  `web_crawl`) and `browser_use` — a stealth (camoufox) browser that renders JS
+  and bypasses bot detection, for pages Firecrawl can't.
+- **Image upload (vision)** — attach images (📎 button, or paste into the box) and
+  the model can read them. Uploads are saved under `data/uploads/` and sent to the
+  model as base64 in the OpenAI-compatible multimodal format. Requires a
+  vision-capable model (e.g. a llama.cpp server started with an `mmproj` projector).
+- **Thinking toggle** — a compact lightbulb in the composer (per request) turns
+  model reasoning on/off. The mechanism is provider-aware: `chat_template_kwargs`
+  (`THINK_KWARG`) for local engines (llama.cpp/Ollama/LM Studio), and
+  `reasoning.enabled` for OpenRouter. Reasoning is read back from whichever field
+  the provider emits (`reasoning_content`, `reasoning`, or structured
+  `reasoning_details`) and shown inside the collapsible **process trace** (below).
+- **Process trace** — thinking, tool calls/results, and memory activity for a turn
+  are collected into a single collapsible "process" block (collapsed by default)
+  with a **live activity light** that pulses while the turn is working, and a **live
+  timer** in its header that counts the whole turn (thinking + tools + streaming) and
+  settles on the total. Tool calls **nest under the reasoning step that triggered
+  them**, so collapsing a Thinking block hides its tools too. Reasoning is saved with
+  the conversation.
+- **Per-response metrics** — each answer carries a small chip (after the copy icon)
+  showing total wall time, a live timer that counts from 0 while the turn runs,
+  the time spent thinking, and **tok/s** (from the server's streamed usage when
+  available).
+- **Context meter** — a compact `X% · YK ctx` line under the composer shows how
+  full the current conversation is relative to the model's max context. Max context
+  comes from the provider's `/models` endpoint (llama.cpp `meta.n_ctx`, OpenRouter
+  `context_length`); used comes from each turn's `prompt_tokens`, persisted per
+  conversation so it shows on reload. Turns clay at ≥80%.
+- **Searchable model picker** — the model field is a combobox: type to filter
+  (handy for OpenRouter's hundreds of models), arrow-key/enter to pick, or just
+  type a custom model id. The last-used provider and per-provider model are
+  remembered across reloads.
+- **Current date/time in context** — every turn's system prompt is stamped with the
+  current date and time (US Pacific by default, DST-aware; set `HARNESS_TZ` to any
+  IANA zone), so the model never wastes a turn searching for "what year is it".
+- **Stop** — the send button becomes a **stop** control while a turn is streaming;
+  click it (or press Enter) to abort immediately, anywhere in the turn.
+- **Message actions** — hover a message for **copy**, **retry** (on your messages —
+  rewinds and re-runs from that point), and **edit & resend** (only on your most
+  recent message — rewinds and drops the text + images back into the composer to
+  change and send again).
+- **Scroll-jump** — a floating button that jumps to the first message when you're at
+  the bottom, and flips to jump back to the newest message once you scroll up.
+- **soul.md** — the system prompt, editable from the UI (the **soul** button in the
+  sidebar footer).
+- **Memory** ([mem0](https://github.com/mem0ai/mem0)) — durable facts the
+  assistant keeps across chats. mem0 **auto-extracts** facts (no need to say
+  "remember"), retrieves only the **semantically relevant** ones into the prompt,
+  and reconciles contradictions (add/update/delete). A heuristic filter keeps out
+  conversation-log junk like "User was told…". mem0 runs as its **own container**
+  (a REST service the bot talks to over HTTP via `MEM0_API_URL`) so this image stays
+  lean — point its extraction LLM at your llama.cpp. The web UI shares one default
+  scope; Discord scopes memory per user. View/add/delete via the **memory** button
+  in the sidebar footer. If `MEM0_API_URL` is unset it falls back to a simple
+  all-facts SQLite store (or the in-process mem0 library if you install its deps).
+- **History / resume** — every conversation is saved; pick one from the sidebar to
+  resume it with full context. Stored in `data/conversations.db`.
+- **Skills** — Claude-style `skills/<name>/SKILL.md` folders. The index is shown
+  to the model; full instructions load on demand via the `load_skill` tool.
+- **MCP** — declare servers in `mcp.json` (stdio or HTTP); their tools are exposed
+  to the agent, namespaced `mcp__<server>__<tool>`.
+- **Streaming** chat over SSE with live tool-call/result rendering and SQLite
+  conversation history. Provider and model selectors live in the sidebar (no top
+  bar); the live timer signals activity, and a small floating pill surfaces only
+  one-off notices (errors, "stopped"). Assistant markdown renders GFM tables,
+  including tab-separated rows that local models sometimes emit raw.
 
 ## Setup
 
-### Requirements
-
-- Docker (recommended) or Python 3.12+
-- [Xiaomi MiMo](https://api.xiaomimimo.com) API key
-- Google AI Studio API key (embeddings only)
-- Local [Firecrawl](https://github.com/mendableai/firecrawl) instance
-- Local [Camofox](https://github.com/siegfried/camofox) instance (optional, for browser tools)
-
-### Environment Variables
-
-| Variable | Required | Default | Description |
-|---|---|---|---|
-| `DISCORD_BOT_TOKEN` | Yes | — | Discord bot token |
-| `MIMO_API_KEY` | Yes | — | Xiaomi MiMo API key |
-| `MIMO_BASE_URL` | Yes | — | Xiaomi MiMo API base URL (e.g. `https://api.xiaomimimo.com/v1`) |
-| `GOOGLE_API_KEY` | Yes | — | Google AI Studio API key (used for embeddings only) |
-| `FIRECRAWL_API_URL` | No | `http://localhost:3002` | Firecrawl instance URL |
-| `CAMOFOX_URL` | No | `http://localhost:9377` | Camofox browser instance URL |
-| `WEBHOOK_CHANNEL_ID` | No | — | Default Discord channel ID for webhook messages |
-| `LANCEDB_PATH` | No | `data/lancedb` | LanceDB directory path |
-| `MODEL` | No | `mimo-v2.5` | MiMo model to use |
-| `MODEL_TEMPERATURE` | No | API default | Sampling temperature for chat completions |
-| `MODEL_TIMEOUT` | No | `120` | Per-request timeout (seconds) for chat completions |
-| `MODEL_MAX_RETRIES` | No | `2` | Retries on transient API errors |
-| `CONTEXT_MESSAGE_COUNT` | No | `50` | Recent messages in the default context window |
-| `CONTEXT_MAX_MESSAGES` | No | `150` | Max messages when the active-channel time window kicks in |
-| `CONTEXT_MAX_CHARS` | No | `16000` | Max transcript size (truncated from the oldest end) |
-| `EMBEDDING_MODEL` | No | `gemini-embedding-2` | Embedding model (Google) |
-| `MEMORY_DECAY_DAYS` | No | `90` | Days before memories score lower in search |
-| `TOOL_MAX_ITERS` | No | `5` | Max tool-calling iterations per response |
-| `LOG_LEVEL` | No | `INFO` | Logging level |
-| `WEBHOOK_PORT` | No | `8643` | Port for the incoming webhook server |
-
-### Docker (recommended)
+Local (web UI; add `DISCORD_BOT_TOKEN` to `.env` to also run the bot):
 
 ```bash
-docker build -t siegclaw-bot .
-
-docker run -d \
-  --name siegclaw-bot \
-  --restart unless-stopped \
-  --env-file ~/.siegclaw.env \
-  -v /path/to/data:/app/data \
-  -p 127.0.0.1:8643:8643 \
-  siegclaw-bot
+pip install -e .          # fastapi uvicorn openai httpx python-dotenv pyyaml mcp discord.py
+cp .env.example .env      # edit: provider keys, Firecrawl/Camofox URLs, MEM0_API_URL, DISCORD_BOT_TOKEN
+python -m uvicorn app.main:app --port 8080
 ```
 
-### Python
+Open <http://localhost:8080>.
+
+Docker (bot + mem0 service):
 
 ```bash
-pip install -r requirements.txt
-cp .env.example .env  # fill in your keys
-python bot.py
+docker compose up --build      # web UI on http://localhost:8800; bot connects if DISCORD_BOT_TOKEN is set
 ```
 
-## Architecture
+The `mem0` service config (extraction LLM → llama.cpp, embedder, vector store) and
+its image/tag should be confirmed against mem0's current self-hosting docs.
+
+### Configuring providers
+
+Edit `.env`. A provider shows up when usable:
+
+- **Cloud** (`OPENAI_API_KEY`, `OPENROUTER_API_KEY`, `GROQ_API_KEY`): set the key.
+- **Local** (Ollama, LM Studio): just run the engine; it's detected if its
+  `/v1/models` endpoint responds (no key).
+- **Custom** OpenAI-compatible endpoint: set `LOCAL_OPENAI_BASE_URL` (+
+  `LOCAL_OPENAI_API_KEY`).
+
+If a provider doesn't list models, just type a model id into the model field
+(it's a free-text combobox).
+
+## Layout
 
 ```
-User @mentions bot (or replies to bot message)
-        │
-        ├── fetch_context() — hybrid window, timestamped transcript
-        ├── Reply? → "[X is replying to Y's message]" note added
-        ├── Relevant memories auto-injected into system prompt
-        ├── Download attached images (parallel)
-        │
-        └── _run_with_tools() — MiMo tool-calling loop (max 5 iterations)
-                │
-                ├── web_search        → Firecrawl
-                ├── browse_page       → Camofox (real browser)
-                ├── browser_click/type/snapshot/screenshot
-                ├── recall_memories   → LanceDB vector search
-                ├── fetch_user_messages → user's messages + surrounding conversation
-                └── fetch_channel_history → older messages beyond the context window
-                │
-                └── Background: extract facts → embed (Google) → store in LanceDB
+app/
+  config.py      provider registry + env detection
+  providers.py   OpenAI-compatible (async) client factory
+  agent.py       streaming tool-call loop (web) + shared reasoning helper
+  discord_bot.py Discord client, on_message, non-streaming tool loop, registry
+  discord_context.py Discord history window + image/YouTube helpers
+  tools/         registry, builtin (fs/bash), web (Firecrawl), browser (CamoFox)
+  mcp_client.py  connects mcp.json servers
+  skills.py      SKILL.md discovery + load_skill tool
+  memory.py      pluggable memory: mem0 REST service / in-process mem0 / simple
+  storage.py     SQLite conversations (web UI only)
+  main.py        FastAPI: /api/* + SSE chat + static UI; starts the Discord bot
+web/             vanilla HTML/CSS/JS frontend
+soul.md          system prompt
+mcp.json         MCP server definitions
+skills/          your skills (SKILL.md folders)
 ```
 
-## Tools
+## Notes
 
-| Tool | Description |
-|---|---|
-| `web_search` | Search the web via Firecrawl |
-| `browse_page` | Open a URL in a real browser |
-| `browser_click` | Click an element by ARIA ref |
-| `browser_type` | Type into an input field |
-| `browser_snapshot` | Get current page as accessibility tree |
-| `browser_screenshot` | Take a visual screenshot |
-| `recall_memories` | Search stored facts from past conversations |
-| `fetch_user_messages` | Fetch a user's recent messages with surrounding conversation |
-| `fetch_channel_history` | Fetch older channel messages beyond the default context window |
-
-## Webhook
-
-The bot exposes a `POST /notify` endpoint (default port 8643) for external services to push messages into Discord.
-
-```
-POST http://localhost:8643/notify
-Content-Type: application/json
-
-{
-  "content": "your message here",
-  "channel_id": "optional — overrides WEBHOOK_CHANNEL_ID"
-}
-```
-
-From another Docker container:
-
-```python
-import urllib.request, json
-
-urllib.request.urlopen(urllib.request.Request(
-    'http://host.docker.internal:8643/notify',
-    data=json.dumps({'content': 'your message here'}).encode(),
-    headers={'Content-Type': 'application/json'}
-))
-```
-
-## File Structure
-
-```
-bot.py              — entrypoint, runs Discord client + webhook server
-config.py           — env vars, API clients, prompts
-SOUL.md             — system prompt / bot personality
-context.py          — hybrid context window logic
-discord_handler.py  — Discord events, tool loop, message handling
-webhook.py          — aiohttp webhook server
-search.py           — Firecrawl web search
-memory.py           — LanceDB vector memory
-browser.py          — Camofox browser automation
-```
-
-## Memory System
-
-Facts are automatically extracted from every conversation and stored as vector embeddings in LanceDB using `gemini-embedding-2` (768 dimensions). Memories are:
-
-- **Per-channel and per-user** — channel memories stay local, user preferences follow them across channels
-- **Decay-weighted** — older memories score lower in search results (configurable via `MEMORY_DECAY_DAYS`)
-- **Deduplicated** — near-identical facts (≥0.95 cosine similarity) are skipped on insert
+- The web UI is single-user and local. The `bash`/file tools run arbitrary
+  commands in `WORKSPACE_DIR` — intentional for the web UI, but **withheld from
+  Discord** (multi-user) unless `DISCORD_ENABLE_SHELL=true`. Don't expose the web UI
+  to untrusted networks.
+- Tool-calling reliability depends on the model. Strong cloud models and
+  tool-tuned local models work best; weak local models may not call tools well.
+- **CamoFox** (`CAMOFOX_URL`) is the stealth-browser backend, driven directly by
+  the `browser_use` tool for JS-rendered or bot-blocked pages. Firecrawl
+  (`FIRECRAWL_API_URL`) handles plain search/scrape/map/crawl.
