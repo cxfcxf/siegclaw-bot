@@ -27,7 +27,10 @@ services:
     depends_on:
       - mem0
     # Only mount runtime data; app code comes from the image. Rebuild to change code.
+    # soul.md is mounted so the web UI's soul edits persist and survive rebuilds
+    # (it's not baked into the image).
     volumes:
+      - ./soul.md:/app/soul.md
       - ./skills:/app/skills
       - ./data:/app/data
       - ./workspace:/app/workspace
