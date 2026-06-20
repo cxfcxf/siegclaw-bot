@@ -282,12 +282,25 @@ async def run_turn(
     total_tokens = 0  # completion tokens across all model calls this turn (for tok/s)
     last_prompt_tokens = 0  # prompt tokens of the final model call (context usage)
 
-    for _ in range(MAX_AGENT_ITERATIONS):
+    for _i in range(MAX_AGENT_ITERATIONS):
+        # On the final allowed step, don't let the loop dead-end with no answer:
+        # tell the model it's out of tool budget and strip the tools so it must
+        # return its best prose answer from what it already gathered.
+        final_pass = _i == MAX_AGENT_ITERATIONS - 1
+        if final_pass:
+            messages.append({
+                "role": "user",
+                "content": (
+                    "(system) You've reached the tool-use limit for this turn. "
+                    "Do not call any more tools — give your best final answer now "
+                    "using what you already have."
+                ),
+            })
         try:
             stream = await client.chat.completions.create(
                 model=model,
                 messages=messages,
-                tools=tool_schemas or None,
+                tools=None if final_pass else (tool_schemas or None),
                 stream=True,
                 # Ask the server to emit a final usage chunk so the UI can show tok/s.
                 stream_options={"include_usage": True},
