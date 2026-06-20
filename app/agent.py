@@ -21,8 +21,19 @@ from .providers import client_for
 from .skills import discover_skills, load_skill_tool, skills_index
 from .tools.browser import browser_tools
 from .tools.builtin import builtin_tools
+from .tools.clock import clock_tools
 from .tools.registry import Registry
 from .tools.web import web_tools
+
+
+# Providers that require the chain-of-thought to be replayed on tool-call turns
+# (they 400 otherwise). The stored `reasoning` is emitted back as
+# `reasoning_content` for these; for everyone else it's dropped.
+_REASONING_REPLAY_PROVIDERS = ("deepseek", "xiaomi")
+
+
+def needs_reasoning_replay(provider: str) -> bool:
+    return provider in _REASONING_REPLAY_PROVIDERS
 
 
 def read_soul() -> str:
@@ -34,6 +45,7 @@ def read_soul() -> str:
 def build_registry(mcp_tools: list | None = None) -> tuple[Registry, dict]:
     """Assemble all tools. Returns (registry, skills) — skills feed the prompt."""
     registry = Registry()
+    registry.extend(clock_tools())
     registry.extend(builtin_tools())
     registry.extend(web_tools())
     registry.extend(browser_tools())
@@ -46,27 +58,64 @@ def build_registry(mcp_tools: list | None = None) -> tuple[Registry, dict]:
     return registry, skills
 
 
-def current_datetime_block() -> str:
-    """A fresh 'now' line so the model never has to search for today's date."""
+def conversation_time_block(started_at: float | None = None) -> str:
+    """A 'today' captured ONCE per conversation (its start date, DAY precision
+    only) and placed in the cacheable system prefix. Frozen on purpose: only the
+    date is given (not the time of day), so the prefix stays byte-identical
+    across every turn and the prompt cache never invalidates — the date drifts
+    stale by at most a day within a long conversation, which is fine (and far
+    better than the model's training cutoff). `started_at` is the conversation's
+    created_at; None means use now() (single-shot surfaces: channel, cron). For
+    the precise time of day, to the second, the model calls `current_time`."""
     try:
-        now = datetime.now(ZoneInfo(HARNESS_TZ))
+        tz = ZoneInfo(HARNESS_TZ)
+        dt = datetime.fromtimestamp(started_at, tz) if started_at else datetime.now(tz)
     except Exception:
-        now = datetime.now().astimezone()
-    stamp = now.strftime("%A, %B %-d, %Y, %-I:%M %p %Z")
+        dt = datetime.now().astimezone()
+    stamp = dt.strftime("%A, %B %-d, %Y")
     return (
-        f"The current date and time is {stamp} ({HARNESS_TZ}). "
-        "Treat this as the present moment — you already know the date, so do not "
-        "search the web just to determine today's date or the current year. Use it "
-        "directly when forming queries or reasoning about current events."
+        f"This conversation started on {stamp} ({HARNESS_TZ}). Treat that as the "
+        "current date — you already know it, so do not search the web just to "
+        "determine today's date or year. Only the date is provided here (kept "
+        "stable so the prompt can be cached); for the precise time of day, to the "
+        "second, call the `current_time` tool."
     )
 
 
-def system_prompt(skills: dict, query: str) -> str:
-    parts = [read_soul(), current_datetime_block(), memory.relevant_block(query)]
-    index = skills_index(skills)
-    if index:
-        parts.append(index)
-    return "\n\n".join(parts)
+def assemble_system_prompt(skills: dict, *parts: str) -> str:
+    """Join the given prompt sections plus the skills index (when non-empty),
+    dropping any blanks. Shared by the web, Discord, and cron system prompts."""
+    sections = [*parts, skills_index(skills)]
+    return "\n\n".join(p for p in sections if p)
+
+
+def static_system_prompt(skills: dict, *extra: str) -> str:
+    """The cacheable prefix of the system prompt: soul + any caller-supplied
+    sections (preamble, day-level time, FROZEN memory) + skills index. Every one
+    of these is stable for the life of a conversation, so the prefix — and all
+    prior turns — stay in the prompt cache and never get re-evaluated. There is
+    deliberately NO per-turn-volatile content here; nothing rides in the tail."""
+    return assemble_system_prompt(skills, read_soul(), *extra)
+
+
+def conversation_memory_block(conversation: dict | None, query: str, scope: str | None = None) -> str:
+    """The memory section of the (cacheable) system prefix, FROZEN for the life
+    of the conversation. On the first turn (no stored frozen block yet) we
+    retrieve the memories relevant to the opening user message and persist the
+    resulting block; every later turn reuses that exact string so the prefix —
+    and thus the prompt cache — never changes. The model can pull fresher or
+    differently-relevant memories on demand via the `search_memory` tool.
+
+    For stateless surfaces (no `conversation` row) the block is just computed
+    from the query each time — those turns are single-shot, so the prefix is
+    still stable across the turn's own tool-loop iterations."""
+    if conversation is None:
+        return memory.relevant_block(query, scope)
+    frozen = conversation.get("frozen_memory")
+    if frozen is None:
+        frozen = memory.relevant_block(query, scope)
+        storage.set_frozen_memory(conversation["id"], frozen)
+    return frozen
 
 
 def reasoning_extra_body(provider: str, think: bool, effort: str | None = None) -> dict[str, Any]:
@@ -79,7 +128,7 @@ def reasoning_extra_body(provider: str, think: bool, effort: str | None = None) 
     Shared by the web turn (run_turn) and the Discord turn."""
     if provider == "llamacpp":
         return {"chat_template_kwargs": {THINK_KWARG: think}}
-    if provider in ("deepseek", "xiaomi"):
+    if needs_reasoning_replay(provider):
         body: dict[str, Any] = {"thinking": {"type": "enabled" if think else "disabled"}}
         if think and effort and provider == "deepseek":
             body["reasoning_effort"] = effort
@@ -118,7 +167,7 @@ def _to_api_messages(history: list[dict[str, Any]], provider: str | None = None)
     turns (DeepSeek, Xiaomi MiMo), the stored `reasoning` is emitted back as
     `reasoning_content`; for everyone else it's dropped."""
     drop = ("images", "reasoning")  # non-API display fields
-    keep_reasoning = provider in ("deepseek", "xiaomi")
+    keep_reasoning = needs_reasoning_replay(provider)
     out: list[dict[str, Any]] = []
     for msg in history:
         images = msg.get("images")
@@ -151,7 +200,7 @@ async def run_turn(
     effort: str | None = None,
 ) -> AsyncGenerator[dict[str, Any], None]:
     client = client_for(provider)
-    needs_reasoning_replay = provider in ("deepseek", "xiaomi")
+    replay_reasoning = needs_reasoning_replay(provider)
 
     user_msg_id = storage.add_message(
         conversation_id, "user", content=user_message, images=images
@@ -161,8 +210,17 @@ async def run_turn(
     # retry-from-here (which needs to rewind by id on the server).
     yield {"type": "user_message", "id": user_msg_id}
 
-    # Retrieve relevant memories (may embed the query) off the event loop.
-    sys_content = await asyncio.to_thread(system_prompt, skills, user_message)
+    # Fully static system prefix (soul + conversation-fixed day-level time +
+    # FROZEN memory + skills) — identical every turn, so it (and all prior turns)
+    # stay in the prompt cache. Memory is snapshotted on the first turn and
+    # reused verbatim thereafter; the model fetches fresher facts via
+    # `search_memory`, and the precise time via `current_time` (both are tool
+    # calls that happen after the cached prefix, so they never bust it).
+    convo = storage.get_conversation(conversation_id)
+    started_at = convo.get("created_at") if convo else None
+    time_block = conversation_time_block(started_at)
+    memory_block = await asyncio.to_thread(conversation_memory_block, convo, user_message)
+    sys_content = await asyncio.to_thread(static_system_prompt, skills, time_block, memory_block)
     messages: list[dict[str, Any]] = [{"role": "system", "content": sys_content}]
     messages.extend(_to_api_messages(storage.get_messages(conversation_id), provider))
 
@@ -250,7 +308,7 @@ async def run_turn(
                 "content": content_buf or None,
                 "tool_calls": tool_calls,
             }
-            if needs_reasoning_replay and reasoning_buf:
+            if replay_reasoning and reasoning_buf:
                 assistant_msg["reasoning_content"] = reasoning_buf
             messages.append(assistant_msg)
             storage.add_message(

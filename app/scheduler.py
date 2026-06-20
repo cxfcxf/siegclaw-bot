@@ -15,11 +15,10 @@ from typing import Any, Callable
 import discord
 
 from . import memory, storage
-from .agent import current_datetime_block, read_soul
+from .agent import assemble_system_prompt, conversation_time_block, read_soul
 from .config import resolve_default_model
 from .cronutil import next_run_after
 from .discord_bot import build_discord_registry, run_discord_turn, send_chunked
-from .skills import skills_index
 
 log = logging.getLogger("siegclaw.scheduler")
 
@@ -35,16 +34,10 @@ CRON_PREAMBLE = (
 
 
 def _cron_system_prompt(skills: dict, prompt: str) -> str:
-    parts = [
-        read_soul(),
-        CRON_PREAMBLE,
-        current_datetime_block(),
-        memory.relevant_block(prompt, CRON_SCOPE),
-    ]
-    index = skills_index(skills)
-    if index:
-        parts.append(index)
-    return "\n\n".join(p for p in parts if p)
+    return assemble_system_prompt(
+        skills, read_soul(), CRON_PREAMBLE,
+        conversation_time_block(), memory.relevant_block(prompt, CRON_SCOPE),
+    )
 
 
 class Scheduler:

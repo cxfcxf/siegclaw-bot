@@ -18,10 +18,11 @@ in one process. See `app/main.py` lifespan for startup/shutdown.
 from __future__ import annotations
 
 import asyncio
-import base64
 import json
 import logging
+import mimetypes
 import time
+import uuid
 from typing import Optional
 
 import discord
@@ -29,17 +30,18 @@ from discord import app_commands
 
 from . import memory, storage
 from .agent import (
-    _to_api_messages,
     build_registry,
-    current_datetime_block,
+    conversation_time_block,
+    needs_reasoning_replay,
     reasoning_extra_body,
-    read_soul,
-    system_prompt,
+    run_turn,
+    static_system_prompt,
 )
 from .config import (
     DISCORD_ENABLE_SHELL,
     MAX_AGENT_ITERATIONS,
     MAX_DISCORD_LENGTH,
+    UPLOADS_DIR,
     detect_providers,
     effort_for,
     get_provider,
@@ -55,9 +57,10 @@ from .discord_context import (
     message_text,
 )
 from .providers import client_for
-from .skills import discover_skills, load_skill_tool, skills_index
+from .skills import discover_skills, load_skill_tool
 from .tools.browser import browser_tools
 from .tools.builtin import builtin_tools
+from .tools.clock import clock_tools
 from .tools.registry import Registry, Tool
 from .tools.web import web_tools
 
@@ -219,6 +222,7 @@ def build_discord_registry(
     When `channel` is None (e.g. a scheduled job with no channel context) the
     Discord-history tools are omitted."""
     registry = Registry()
+    registry.extend(clock_tools())
     if DISCORD_ENABLE_SHELL:
         registry.extend(builtin_tools())
     registry.extend(web_tools())
@@ -234,12 +238,17 @@ def build_discord_registry(
     return registry, skills
 
 
-def discord_system_prompt(skills: dict, query: str, scope: str) -> str:
-    parts = [read_soul(), DISCORD_PREAMBLE, current_datetime_block(), memory.relevant_block(query, scope)]
-    index = skills_index(skills)
-    if index:
-        parts.append(index)
-    return "\n\n".join(parts)
+def discord_system_prompt(skills: dict, query: str, scope: str | None) -> str:
+    """Stable Discord system prefix for channel mentions: soul + multi-user
+    preamble + day-level time + query-relevant memory + skills. Channel turns
+    are single-shot (one user message, not stored), so time and memory are
+    captured at request time and stay byte-identical across the turn's own
+    tool-loop iterations — keeping the prefix cacheable. For the precise time
+    the model calls `current_time`; for other memories, `search_memory`."""
+    return static_system_prompt(
+        skills, DISCORD_PREAMBLE,
+        conversation_time_block(), memory.relevant_block(query, scope),
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -265,7 +274,7 @@ async def run_discord_turn(
     extra_body = reasoning_extra_body(provider, think, effort)
     schemas = registry.schemas()
     seen_calls: set[tuple[str, str]] = set()
-    needs_reasoning_replay = provider in ("deepseek", "xiaomi")
+    replay_reasoning = needs_reasoning_replay(provider)
 
     async def persist(fn, *a, **kw):
         if conversation_id:
@@ -286,13 +295,18 @@ async def run_discord_turn(
             extra_body=extra_body,
         )
         msg = resp.choices[0].message
-        reasoning_text = _reasoning_of(msg) if needs_reasoning_replay else None
+        # Always read + persist the reasoning so DM turns (shared with the web
+        # UI) show their thinking block there — Discord itself only surfaces tool
+        # status lines, never reasoning. `replay_reasoning` only governs whether
+        # it's ALSO reattached to the in-memory assistant message for providers
+        # that 400 without the chain-of-thought replayed on tool-call turns.
+        reasoning_text = _reasoning_of(msg)
         if not msg.tool_calls:
             await persist(storage.add_message, "assistant", content=msg.content or "", reasoning=reasoning_text)
             return msg.content or ""
 
         assistant_dump = msg.model_dump(exclude_none=True)
-        if needs_reasoning_replay and reasoning_text:
+        if replay_reasoning and reasoning_text:
             assistant_dump["reasoning_content"] = reasoning_text
         messages.append(assistant_dump)
         await persist(
@@ -336,9 +350,9 @@ async def run_discord_turn(
     # Max iterations hit — force a final answer with no tools.
     messages.append({"role": "user", "content": "You have reached the maximum number of tool calls. Based on everything gathered so far, give your best answer now."})
     resp = await client.chat.completions.create(model=model, messages=messages, extra_body=extra_body)
-    content = resp.choices[0].message.content or ""
-    await persist(storage.add_message, "assistant", content=content)
-    return content
+    final = resp.choices[0].message
+    await persist(storage.add_message, "assistant", content=final.content or "", reasoning=_reasoning_of(final))
+    return final.content or ""
 
 
 # --------------------------------------------------------------------------- #
@@ -480,52 +494,9 @@ def create_client(mcp_manager) -> discord.Client:
         async with message.channel.typing():
             user_text = message_text(message, strip_bot_id=client.user.id)
 
-            if is_dm:
-                # The stored conversation IS the DM — same one the web UI reads,
-                # same registry, same system prompt. A DM turn is identical to a
-                # web UI turn on this conversation; Discord is just the surface.
-                if dm_cid is None:
-                    dm_cid = storage.create_conversation(provider, model, user_text[:60] or "New chat")
-                    storage.dm_set_active_cid(user_id, dm_cid)
-                elif user_text:
-                    convo = storage.get_conversation(dm_cid)
-                    if convo and convo.get("title") == "New chat":
-                        storage.rename_conversation(dm_cid, user_text[:60])
-
-                registry, skills = build_registry(mcp_manager.tools)
-                system = await asyncio.to_thread(system_prompt, skills, user_text)
-
-                storage.add_message(dm_cid, "user", content=user_text)
-                storage.touch_conversation(dm_cid, provider, model)
-                api_history = _to_api_messages(storage.get_messages(dm_cid), provider)
-                images = await download_images(message, ref_msg)
-                if images:
-                    api_history = _attach_turn_images(api_history, images)
-                messages = [{"role": "system", "content": system}, *api_history]
-            else:
-                # Channel mention: live Discord history is the source of truth
-                # (not persisted). Build the timestamped transcript + question.
-                scope = f"discord:{user_id}"
-                registry, skills = build_discord_registry(
-                    message.channel, client.user.id, scope, mcp_manager.tools
-                )
-                system = await asyncio.to_thread(discord_system_prompt, skills, user_text, scope)
-
-                reply_note = ""
-                if ref_msg is not None:
-                    ref_text = message_text(ref_msg)[:500]
-                    ref_author = "your (SiegClaw's)" if ref_msg.author == client.user else f"{ref_msg.author.display_name}'s"
-                    reply_note = f"[{message.author.display_name} is replying to {ref_author} message]: {ref_text}\n"
-                prompt, _ = await fetch_context(message.channel, client.user.id, message.id)
-                prompt = f"{prompt}\n\n{reply_note}[Current question from {message.author.display_name}]: {user_text}"
-                images = await download_images(message, ref_msg)
-                yt_video_ids = YOUTUBE_RE.findall(user_text)
-                user_content = build_user_content(prompt, images, yt_video_ids)
-                messages = [
-                    {"role": "system", "content": system},
-                    {"role": "user", "content": user_content},
-                ]
-
+            # Tool status lines, posted live to Discord as one growing -# message.
+            # Defined before the branch so both the DM (run_turn event stream) and
+            # the channel (run_discord_turn status_fn) paths can drive it.
             _status_msg: discord.Message | None = None
 
             async def update_status(tool_name: str, args: dict):
@@ -544,13 +515,77 @@ def create_client(mcp_manager) -> discord.Client:
                     log.debug("Status update failed: %s", e)
 
             try:
-                reply_text = await run_discord_turn(
-                    provider, model, messages, registry,
-                    think=True, effort=effort, status_fn=update_status, conversation_id=dm_cid,
-                )
-                if not reply_text:
-                    raise ValueError("Empty response")
-                turn_failed = False
+                if is_dm:
+                    # The stored conversation IS the DM — same one the web UI reads.
+                    # Run the SAME streaming turn generator the web UI uses (run_turn),
+                    # so prompt construction, storage, and reasoning capture are
+                    # byte-identical to a web turn. We only consume the event stream
+                    # differently: accumulate the reply text, surface tool calls as
+                    # Discord status lines, and ignore reasoning events (Discord never
+                    # shows thinking). run_turn still saves reasoning to the DB, so the
+                    # web UI shows the thinking block when this DM session is opened
+                    # there — exactly like a web-asked turn.
+                    if dm_cid is None:
+                        dm_cid = storage.create_conversation(provider, model, user_text[:60] or "New chat")
+                        storage.dm_set_active_cid(user_id, dm_cid)
+                    elif user_text:
+                        convo = storage.get_conversation(dm_cid)
+                        if convo and convo.get("title") == "New chat":
+                            storage.rename_conversation(dm_cid, user_text[:60])
+
+                    registry, skills = build_registry(mcp_manager.tools)
+                    image_paths = _save_discord_images(await download_images(message, ref_msg))
+
+                    reply_text = ""
+                    async for event in run_turn(
+                        dm_cid, provider, model, user_text, registry, skills,
+                        images=image_paths or None, think=True, effort=effort,
+                    ):
+                        et = event.get("type")
+                        if et == "token":
+                            reply_text += event.get("text", "")
+                        elif et == "tool_call":
+                            try:
+                                await update_status(event.get("name", ""), json.loads(event.get("arguments") or "{}"))
+                            except Exception:
+                                pass
+                        elif et == "error":
+                            raise RuntimeError(event.get("message", "turn error"))
+                    if not reply_text:
+                        raise ValueError("Empty response")
+                    turn_failed = False
+                else:
+                    # Channel mention: live Discord history is the source of truth
+                    # (not persisted). Build the timestamped transcript + question,
+                    # then drive the non-streaming tool loop to a single reply.
+                    scope = f"discord:{user_id}"
+                    registry, skills = build_discord_registry(
+                        message.channel, client.user.id, scope, mcp_manager.tools
+                    )
+                    system = await asyncio.to_thread(discord_system_prompt, skills, user_text, scope)
+
+                    reply_note = ""
+                    if ref_msg is not None:
+                        ref_text = message_text(ref_msg)[:500]
+                        ref_author = "your (SiegClaw's)" if ref_msg.author == client.user else f"{ref_msg.author.display_name}'s"
+                        reply_note = f"[{message.author.display_name} is replying to {ref_author} message]: {ref_text}\n"
+                    prompt, _ = await fetch_context(message.channel, client.user.id, message.id)
+                    prompt = f"{prompt}\n\n{reply_note}[Current question from {message.author.display_name}]: {user_text}"
+                    images = await download_images(message, ref_msg)
+                    yt_video_ids = YOUTUBE_RE.findall(user_text)
+                    user_content = build_user_content(prompt, images, yt_video_ids)
+                    messages = [
+                        {"role": "system", "content": system},
+                        {"role": "user", "content": user_content},
+                    ]
+
+                    reply_text = await run_discord_turn(
+                        provider, model, messages, registry,
+                        think=True, effort=effort, status_fn=update_status,
+                    )
+                    if not reply_text:
+                        raise ValueError("Empty response")
+                    turn_failed = False
             except Exception as e:
                 log.error("Discord turn failed: %s", e)
                 reply_text = f"Sorry, I couldn't generate a response ({type(e).__name__}). Please try again."
@@ -568,12 +603,10 @@ def create_client(mcp_manager) -> discord.Client:
                 storage.delete_conversation(dm_cid)
                 storage.dm_clear_active(user_id)
 
-        # Memory extraction. DMs share the web UI's debounced, global extraction
-        # (same conversation, same memory). Channel mentions extract immediately,
-        # scoped per Discord user.
-        if is_dm:
-            memory.schedule_extraction(user_text, reply_text)
-        else:
+        # Memory extraction. DM turns run through run_turn, which already
+        # schedules the debounced global extraction — so only the ephemeral
+        # channel-mention path needs explicit (per-user-scoped) extraction here.
+        if not is_dm:
             asyncio.create_task(_extract_memory(scope, prompt[-2000:], reply_text))
 
     return client
@@ -586,23 +619,19 @@ async def _extract_memory(scope: str, conversation: str, reply: str) -> None:
         log.warning("Memory extraction failed: %s", e)
 
 
-def _attach_turn_images(api_messages: list[dict], images: list[dict]) -> list[dict]:
-    """Convert the most recent user message into multimodal content by appending
-    this turn's downloaded images. (Images aren't persisted, so this only feeds
-    the current model call — matching the pre-unification DM behavior.)"""
-    for i in range(len(api_messages) - 1, -1, -1):
-        if api_messages[i].get("role") == "user":
-            msg = api_messages[i]
-            parts: list[dict] = []
-            text = msg.get("content")
-            if isinstance(text, str) and text:
-                parts.append({"type": "text", "text": text})
-            for img in images:
-                b64 = base64.b64encode(img["data"]).decode()
-                parts.append({"type": "image_url", "image_url": {"url": f"data:{img['mime_type']};base64,{b64}"}})
-            msg["content"] = parts
-            break
-    return api_messages
+def _save_discord_images(images: list[dict]) -> list[str]:
+    """Save downloaded Discord image bytes to UPLOADS_DIR and return their
+    '/uploads/<name>' URLs — the same shape the web UI's /api/upload produces.
+    This lets a DM turn feed run_turn identically to a web turn: images get
+    stored on the message row and re-expanded from disk on resume (so a DM with
+    an image replays correctly when the conversation is opened in the web UI)."""
+    paths = []
+    for img in images:
+        ext = mimetypes.guess_extension(img.get("mime_type", "image/png")) or ".png"
+        name = f"{uuid.uuid4().hex}{ext}"
+        (UPLOADS_DIR / name).write_bytes(img["data"])
+        paths.append(f"/uploads/{name}")
+    return paths
 
 
 # --------------------------------------------------------------------------- #
@@ -797,14 +826,7 @@ async def _model_autocomplete(
 
 async def _respond(interaction: discord.Interaction, text: str, *, ephemeral: bool = True) -> None:
     """Reply to a slash-command interaction, chunking past Discord's 2000-char cap."""
-    chunks: list[str] = []
-    while len(text) > 2000:
-        split_at = text.rfind("\n", 0, 2000)
-        if split_at == -1:
-            split_at = 2000
-        chunks.append(text[:split_at])
-        text = text[split_at:].lstrip("\n")
-    chunks.append(text)
+    chunks = _chunk_message(text)
     await interaction.response.send_message(chunks[0], ephemeral=ephemeral)
     for c in chunks[1:]:
         await interaction.followup.send(c, ephemeral=ephemeral)

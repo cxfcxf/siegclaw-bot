@@ -81,9 +81,13 @@ is set; without it you get the web UI alone.
   (handy for OpenRouter's hundreds of models), arrow-key/enter to pick, or just
   type a custom model id. The last-used provider and per-provider model are
   remembered across reloads.
-- **Current date/time in context** — every turn's system prompt is stamped with the
-  current date and time (US Pacific by default, DST-aware; set `HARNESS_TZ` to any
-  IANA zone), so the model never wastes a turn searching for "what year is it".
+- **Cache-friendly system prompt (date + memory frozen)** — the system prefix
+  is kept byte-identical across every turn so the prompt cache never invalidates:
+  the date is stamped at **day** precision (e.g. "June 19, 2026", frozen at the
+  conversation's start; set `HARNESS_TZ` to any IANA zone), and memory is
+  snapshotted once per conversation into the prefix. For the things that change
+  within a turn, the model calls tools instead — `current_time` for the precise
+  time to the second, `search_memory` for fresher/differently-relevant facts.
 - **Stop** — the send button becomes a **stop** control while a turn is streaming;
   click it (or press Enter) to abort immediately, anywhere in the turn.
 - **Message actions** — hover a message for **copy**, **retry** (on your messages —
@@ -96,15 +100,18 @@ is set; without it you get the web UI alone.
   sidebar footer).
 - **Memory** ([mem0](https://github.com/mem0ai/mem0)) — durable facts the
   assistant keeps across chats. mem0 **auto-extracts** facts (no need to say
-  "remember"), retrieves only the **semantically relevant** ones into the prompt,
-  and reconciles contradictions (add/update/delete). A heuristic filter keeps out
-  conversation-log junk like "User was told…". Memory runs as a small **self-hosted
-  stack of side containers** so the bot image stays lean (no torch): a tiny custom
-  **mem0 service** (`mem0svc/`) + **pgvector** (Postgres) for storage + a
-  featherweight **fastembed** embeddings service (`embed/`, ONNX Runtime — no torch,
-  no GPU). Extraction runs on your llama.cpp; the bot talks to mem0 over HTTP via
-  `MEM0_API_URL`. The web UI shares one default scope; **Discord scopes memory per
-  user**. View/add/delete via the **memory** button in the sidebar footer. If
+  "remember") and reconciles contradictions (add/update/delete). To keep the
+  system prompt cacheable, the **semantically relevant facts are snapshotted once
+  at the conversation's start** into the prefix and reused for that conversation;
+  the model pulls fresher or differently-relevant ones on demand via the
+  `search_memory` tool. A heuristic filter keeps out conversation-log junk like
+  "User was told…". Memory runs as a small **self-hosted stack of side
+  containers** so the bot image stays lean (no torch): a tiny custom **mem0
+  service** (`mem0svc/`) + **pgvector** (Postgres) for storage + a featherweight
+  **fastembed** embeddings service (`embed/`, ONNX Runtime — no torch, no GPU).
+  Extraction runs on your llama.cpp; the bot talks to mem0 over HTTP via
+  `MEM0_API_URL`. The web UI shares one default scope; **Discord scopes memory
+  per user**. View/add/delete via the **memory** button in the sidebar footer. If
   `MEM0_API_URL` is unset it falls back to a simple all-facts SQLite store.
 - **History / resume** — every conversation is saved; pick one from the sidebar to
   resume it with full context. Stored in `data/conversations.db`.
@@ -158,18 +165,18 @@ If a provider doesn't list models, just type a model id into the model field
 
 ```
 app/
-  config.py      provider registry + env detection
+  config.py      provider registry + env detection (cached: liveness ping + day-long model list)
   providers.py   OpenAI-compatible (async) client factory
-  agent.py       streaming tool-call loop (web) + shared reasoning helper
-  discord_bot.py Discord client, on_message, non-streaming tool loop, registry
+  agent.py       streaming tool-call loop (web + Discord DM); frozen system prompt
+  discord_bot.py Discord client, on_message; DM runs the shared loop, channel/cron use the non-streaming one
   discord_context.py Discord history window + image/YouTube helpers
   scheduler.py   cron job runner (headless agent turn → Discord delivery)
   cronutil.py    cron-expression parsing/next-run (in HARNESS_TZ)
-  tools/         registry, builtin (fs/bash), web (Firecrawl), browser (CamoFox)
+  tools/         registry, builtin (fs/bash), web (Firecrawl), browser (CamoFox), clock (current_time)
   mcp_client.py  connects mcp.json servers
   skills.py      SKILL.md discovery + load_skill tool
   memory.py      pluggable memory: mem0 REST service / in-process mem0 / simple
-  storage.py     SQLite conversations (web UI only)
+  storage.py     SQLite conversations (web UI + Discord DM share one pool)
   main.py        FastAPI: /api/* + SSE chat + static UI; starts the Discord bot
 embed/           featherweight fastembed (ONNX) embeddings service container
 mem0svc/         tiny custom mem0 REST service container (pgvector + llama.cpp + embed)

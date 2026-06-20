@@ -72,6 +72,11 @@ def init_db() -> None:
         ccols = [r["name"] for r in conn.execute("PRAGMA table_info(conversations)").fetchall()]
         if "prompt_tokens" not in ccols:
             conn.execute("ALTER TABLE conversations ADD COLUMN prompt_tokens INTEGER")
+        # frozen_memory: the memory block snapshotted at the conversation's first
+        # turn and reused verbatim on every later turn, so the system prompt (and
+        # thus the prompt cache) stays byte-identical. See agent.conversation_memory_block.
+        if "frozen_memory" not in ccols:
+            conn.execute("ALTER TABLE conversations ADD COLUMN frozen_memory TEXT")
         # ref: a short, human-typable number identifying a conversation (used by
         # Discord /list and /resume so webui UUID conversations can be resumed
         # from Discord). Backfilled for existing rows.
@@ -227,6 +232,16 @@ def set_prompt_tokens(cid: str, tokens: int) -> None:
     with _conn() as conn:
         conn.execute(
             "UPDATE conversations SET prompt_tokens=? WHERE id=?", (tokens, cid)
+        )
+
+
+def set_frozen_memory(cid: str, text: str) -> None:
+    """Persist the frozen memory block for a conversation (computed once on its
+    first turn). Subsequent turns read this back so the system prompt — and the
+    prompt cache — never changes mid-conversation."""
+    with _conn() as conn:
+        conn.execute(
+            "UPDATE conversations SET frozen_memory=? WHERE id=?", (text, cid)
         )
 
 
