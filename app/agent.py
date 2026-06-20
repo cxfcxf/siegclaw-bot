@@ -16,7 +16,18 @@ from typing import Any, AsyncGenerator
 from zoneinfo import ZoneInfo
 
 from . import memory, storage
-from .config import HARNESS_TZ, MAX_AGENT_ITERATIONS, SOUL_PATH, THINK_KWARG, UPLOADS_DIR
+from .config import (
+    HARNESS_TZ,
+    MAX_AGENT_ITERATIONS,
+    SEND_FALLBACK_RETRIES,
+    SEND_FALLBACK_RETRY_DELAY,
+    SOUL_PATH,
+    THINK_KWARG,
+    UPLOADS_DIR,
+    model_valid_for,
+    provider_serving,
+    resolve_default_model,
+)
 from .providers import client_for
 from .skills import discover_skills, load_skill_tool, skills_index
 from .tools.browser import browser_tools
@@ -116,6 +127,47 @@ def conversation_memory_block(conversation: dict | None, query: str, scope: str 
         frozen = memory.relevant_block(query, scope)
         storage.set_frozen_memory(conversation["id"], frozen)
     return frozen
+
+
+async def resolve_for_turn(
+    conversation_id: str | None,
+    provider: str,
+    model: str,
+    effort: str | None,
+) -> tuple[str, str, str | None]:
+    """Pick the (provider, model, effort) to actually run this turn with, with
+    retry-then-fallback.
+
+    Two reasons to fall back: the provider isn't currently serving (e.g. the
+    local engine was stopped — see config.provider_serving), or the model isn't
+    valid for that provider (e.g. a llama.cpp model id left on a conversation
+    that got switched to a cloud provider). Retries cover transient blips; once
+    it falls back, the switch is PERSISTED on the conversation so the rest of
+    the session stays on the fallback — it won't flap back if the original
+    returns mid-conversation. A brand-new conversation resolves the original
+    again via the default (which picks it once it's back up).
+
+    Returns the (provider, model, effort) to run with — unchanged only if the
+    requested provider is serving AND the model is valid for it (or no different
+    fallback exists)."""
+    # Fast path: model is valid for the provider -> just confirm it's serving,
+    # retrying a few times in case the provider blipped.
+    if model_valid_for(provider, model):
+        last_try = max(SEND_FALLBACK_RETRIES - 1, 0)
+        for attempt in range(SEND_FALLBACK_RETRIES):
+            if provider_serving(provider):
+                return provider, model, effort
+            if attempt < last_try:
+                await asyncio.sleep(SEND_FALLBACK_RETRY_DELAY)
+    # Provider down after retries, or model wrong for it -> switch to the
+    # default (fallback) model and persist it for the session.
+    fb = resolve_default_model()
+    if fb and (fb[0] != provider or fb[1] != model):
+        if conversation_id:
+            storage.update_conversation_model(conversation_id, fb[0], fb[1])
+        return fb
+    # No different fallback available — return as-is and let the turn surface the error.
+    return provider, model, effort
 
 
 def reasoning_extra_body(provider: str, think: bool, effort: str | None = None) -> dict[str, Any]:

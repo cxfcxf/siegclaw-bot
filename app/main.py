@@ -27,7 +27,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from . import memory, storage
-from .agent import build_registry, read_soul, run_turn
+from .agent import build_registry, read_soul, resolve_for_turn, run_turn
 from .config import (
     DISCORD_BOT_TOKEN,
     SOUL_PATH,
@@ -365,9 +365,15 @@ async def api_chat(body: ChatRequest):
     async def event_stream():
         # First event carries the (possibly new) conversation id.
         yield _sse({"type": "conversation", "id": cid})
+        # Send-time fallback: if the chosen provider isn't serving, retry a few
+        # times then switch this conversation to the fallback model (persisted,
+        # so it sticks for the session). Tell the client when it changed.
+        provider, model, effort = await resolve_for_turn(cid, body.provider, body.model, body.effort)
+        if provider != body.provider or model != body.model:
+            yield _sse({"type": "model", "provider": provider, "model": model, "effort": effort})
         async for event in run_turn(
-            cid, body.provider, body.model, body.message, registry, skills,
-            images=body.images, think=body.think, effort=body.effort,
+            cid, provider, model, body.message, registry, skills,
+            images=body.images, think=body.think, effort=effort,
         ):
             yield _sse(event)
 

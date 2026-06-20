@@ -7,11 +7,9 @@ for keyless local engines, when its OpenAI-compatible /models endpoint responds.
 from __future__ import annotations
 
 import os
-import socket
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from urllib.parse import urlparse
 
 import httpx
 from dotenv import load_dotenv
@@ -127,14 +125,14 @@ def get_provider(provider_id: str) -> ProviderSpec | None:
     return next((p for p in KNOWN_PROVIDERS if p.id == provider_id), None)
 
 
-def _models_reachable(base_url: str, api_key: str | None) -> list[dict] | None:
+def _models_reachable(base_url: str, api_key: str | None, timeout: float = 4.0) -> list[dict] | None:
     """Return [{id, context}] if the OpenAI-compatible /models endpoint responds,
     else None. `context` is the model's max context window when reported."""
     if not base_url:
         return None
     headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
     try:
-        resp = httpx.get(f"{base_url}/models", headers=headers, timeout=4.0)
+        resp = httpx.get(f"{base_url}/models", headers=headers, timeout=timeout)
         resp.raise_for_status()
         data = resp.json().get("data", [])
         return [
@@ -181,35 +179,76 @@ def _context_of(m: dict) -> int | None:
     return None
 
 
-# Two-tier provider detection, for speed:
-# - Liveness ("is the server up at all") is checked cheaply and often via a TCP
-#   connect ping (_is_alive) — so a downed local engine is spotted immediately
-#   without waiting on a full /models fetch.
-# - The (slow, rarely-changing) model list is fetched at most once per
-#   PROVIDER_MODELS_CACHE_TTL (a day by default) via _cached_models.
-# Provider availability changes second-to-second (engine restarts); which models
-# a provider serves changes far less often — so we ping one and cache the other.
+# Provider detection, two-tier for speed:
+# - Keyless local engines (llama.cpp) are probed via a real HTTP GET /models on
+#   a SHORT cache (PROVIDER_LIVENESS_CACHE_TTL). A TCP connect isn't enough — a
+#   proxy/port-forward (or the server process with no model loaded) happily
+#   accepts TCP but never answers the request, so we require an actual HTTP
+#   response to consider it up. The probe is cached briefly so repeated refreshes
+#   stay fast while still noticing an outage within seconds.
+# - The (large, rarely-changing) model lists of keyed cloud providers are fetched
+#   at most once per PROVIDER_MODELS_CACHE_TTL (a day) via _cached_models.
 PROVIDER_MODELS_CACHE_TTL = float(os.getenv("PROVIDER_MODELS_CACHE_TTL", str(86400)))
-_LIVENESS_TIMEOUT = float(os.getenv("PROVIDER_LIVENESS_TIMEOUT", "1.5"))
+PROVIDER_LIVENESS_CACHE_TTL = float(os.getenv("PROVIDER_LIVENESS_CACHE_TTL", "10"))
+_LIVENESS_TIMEOUT = float(os.getenv("PROVIDER_LIVENESS_TIMEOUT", "2"))
 _models_cache: dict[str, tuple[float, list[dict]]] = {}
+_liveness_cache: dict[str, tuple[float, list[dict] | None]] = {}
+
+# Send-time fallback: if the chosen provider isn't serving, retry this many
+# times (transient blips) before switching the conversation to the fallback
+# model. The switch is persisted on the conversation, so it sticks for that
+# session and won't flap back if the original returns mid-conversation.
+SEND_FALLBACK_RETRIES = int(os.getenv("SEND_FALLBACK_RETRIES", "3"))
+SEND_FALLBACK_RETRY_DELAY = float(os.getenv("SEND_FALLBACK_RETRY_DELAY", "0.75"))
 
 
-def _is_alive(base_url: str, timeout: float = _LIVENESS_TIMEOUT) -> bool:
-    """Fast liveness check: open a TCP connection to the server's host:port and
-    close it at once. Universally cheap (ms on a LAN) and never waits on a full
-    HTTP response or body, so it can run on every detect_providers() call to
-    notice a downed local engine without the latency of fetching /models. Any
-    listening HTTP server accepts the connection; a refused/timeout = down."""
-    try:
-        parsed = urlparse(base_url)
-        host = parsed.hostname
-        if not host:
-            return False
-        port = parsed.port or (443 if parsed.scheme == "https" else 80)
-        with socket.create_connection((host, port), timeout=timeout):
-            return True
-    except OSError:
+def provider_serving(provider_id: str) -> bool:
+    """True if the provider can serve a request right now — used for send-time
+    fallback. Keyed (cloud) providers count as serving when their key is set
+    (they're effectively always up). Keyless local engines get a fresh, UNCACHED
+    HTTP /models probe — the only check that sees through a port-forward or a
+    server with no model loaded (a TCP connect would falsely succeed)."""
+    spec = get_provider(provider_id)
+    if spec is None:
         return False
+    if spec.key_env:
+        return bool(spec.api_key())
+    return _models_reachable(spec.base_url(), None, timeout=_LIVENESS_TIMEOUT) is not None
+
+
+def model_valid_for(provider_id: str, model: str) -> bool:
+    """True if `model` is plausibly usable on `provider`. Keyless local engines
+    accept anything (blank = "whatever's loaded"; a custom id is the server's
+    call). Keyed cloud providers must use a name from their known model list — a
+    blank or foreign name (e.g. a llama.cpp model id sent to DeepSeek) is rejected
+    so we fall back instead of 400-ing and persisting a bad provider/model pair.
+    An empty/unknown list is treated as "can't validate" (allow)."""
+    spec = get_provider(provider_id)
+    if spec is None:
+        return False
+    if not spec.key_env:
+        return True
+    if not model:
+        return False
+    known = next((p.models for p in detect_providers() if p.id == provider_id), None)
+    return not known or model in known
+
+
+def _probe_keyless(provider_id: str, base_url: str) -> list[dict] | None:
+    """Short-TTL-cached HTTP probe of a keyless local engine's /models endpoint.
+    Returns the model list when the server is actually serving, or None when
+    it's down. This IS the liveness check for keyless engines: a TCP connect
+    can't be trusted here — a port-forward (or the server process with no model
+    loaded) will accept TCP but never answer the request. Requiring a real HTTP
+    /models response catches both. Cached briefly (PROVIDER_LIVENESS_CACHE_TTL)
+    so frequent refreshes stay fast while still detecting an outage in seconds."""
+    now = time.monotonic()
+    cached = _liveness_cache.get(provider_id)
+    if cached and (now - cached[0]) < PROVIDER_LIVENESS_CACHE_TTL:
+        return cached[1]
+    result = _models_reachable(base_url, None, timeout=_LIVENESS_TIMEOUT)
+    _liveness_cache[provider_id] = (now, result)
+    return result
 
 
 def _cached_models(provider_id: str, base_url: str, api_key: str | None) -> list[dict]:
@@ -233,10 +272,11 @@ def detect_providers() -> list[AvailableProvider]:
     """Detect which providers are usable right now.
 
     - Keyed (cloud) providers: included when the API key is set; models come
-      from the day-long model cache.
-    - Keyless local providers: included only when the liveness ping answers.
-    The slow /models fetch is decoupled from availability (see _cached_models),
-    so a normal refresh just pings + reads cache and stays fast.
+      from the day-long model cache (_cached_models). Cloud providers are
+      effectively always up when keyed, so they aren't probed.
+    - Keyless local engines: included only when the short-TTL HTTP /models probe
+      (_probe_keyless) answers — that probe IS the liveness check, and (unlike a
+      TCP ping) it sees through port-forwards / a server with no model loaded.
     """
     available: list[AvailableProvider] = []
     for spec in KNOWN_PROVIDERS:
@@ -248,10 +288,10 @@ def detect_providers() -> list[AvailableProvider]:
             if not key:
                 continue
             models = _cached_models(spec.id, base_url, key)
-        else:  # keyless local engine — only if the liveness ping answers
-            if not _is_alive(base_url):
+        else:  # keyless local engine — only if the HTTP /models probe answers
+            models = _probe_keyless(spec.id, base_url)
+            if models is None:
                 continue
-            models = _cached_models(spec.id, base_url, None)
 
         ids = [m["id"] for m in models]
         ctx = {m["id"]: m["context"] for m in models if m["context"]}

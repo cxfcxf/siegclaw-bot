@@ -332,7 +332,16 @@ async function openConversation(id) {
   state.promptTokens = (data.conversation && data.conversation.prompt_tokens) || null;
   // Snap the picker to this conversation's stored model — model is per-conversation.
   if (data.conversation) {
-    applyModelSelection(data.conversation.provider, data.conversation.model, null);
+    const cp = data.conversation.provider;
+    if (cp && state.providers.some((p) => p.id === cp)) {
+      applyModelSelection(cp, data.conversation.model, null);
+    } else if (state.defaultModel) {
+      // Conversation's provider isn't available right now (e.g. the local engine
+      // is down). Snap to the default model so the picker stays consistent
+      // (provider + model from the same source) — the backend persists the
+      // fallback on the next turn.
+      applyModelSelection(state.defaultModel.provider, state.defaultModel.model, state.defaultModel.effort);
+    }
   }
   $("#messages").innerHTML = "";
   renderHistory(data.messages);
@@ -1049,6 +1058,12 @@ async function send(providedText, providedImages) {
     }
 
     switch (ev.type) {
+      case "model":
+        // Server switched the conversation to a fallback model (the chosen
+        // provider wasn't serving). Sync the picker so it reflects reality.
+        applyModelSelection(ev.provider, ev.model, ev.effort);
+        setStatus(`↳ fell back to ${ev.provider}/${ev.model}`);
+        break;
       case "reasoning":
         thinkTick(true);
         if (!thinkingBlock) {

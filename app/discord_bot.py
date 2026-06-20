@@ -34,6 +34,7 @@ from .agent import (
     conversation_time_block,
     needs_reasoning_replay,
     reasoning_extra_body,
+    resolve_for_turn,
     run_turn,
     static_system_prompt,
 )
@@ -534,6 +535,10 @@ def create_client(mcp_manager) -> discord.Client:
                             storage.rename_conversation(dm_cid, user_text[:60])
 
                     registry, skills = build_registry(mcp_manager.tools)
+                    # Send-time fallback: if the conversation's provider isn't
+                    # serving (e.g. llama.cpp was stopped), retry a few times
+                    # then switch this DM to the fallback model for the session.
+                    provider, model, effort = await resolve_for_turn(dm_cid, provider, model, effort)
                     image_paths = _save_discord_images(await download_images(message, ref_msg))
 
                     reply_text = ""

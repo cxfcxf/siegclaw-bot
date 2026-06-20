@@ -34,6 +34,15 @@ is set; without it you get the web UI alone.
   right now it falls back to `FALLBACK_PROVIDER`/`FALLBACK_MODEL` (with `FALLBACK_EFFORT`
   for reasoning providers). Model is **per conversation**: switch it (web picker or
   `/model`) and it sticks to that conversation; a new conversation returns to the default.
+  **Send-time fallback** (`agent.py:resolve_for_turn`): if a conversation's provider
+  isn't serving or its model isn't valid for it (e.g. you stop the local engine, or a
+  stale model id is left on a switched provider), the turn retries a few times then
+  switches that conversation to the fallback model for the rest of the session —
+  persisted, so it won't flap back if the original returns; a *new* conversation picks
+  the original again once it's back. Whether a keyless local engine is "serving" is a
+  real HTTP `/models` probe (a TCP connect can't see through a port-forward, or a
+  server still listening with no model loaded). Knobs: `SEND_FALLBACK_RETRIES`,
+  `SEND_FALLBACK_RETRY_DELAY`, `PROVIDER_LIVENESS_CACHE_TTL`.
 - **Scheduled jobs (cron → Discord).** Define timed jobs in the web UI (**cron**
   button in the sidebar footer): a name, a prompt, a 5-field **cron** expression
   (evaluated in `HARNESS_TZ`), and a Discord destination — a server channel the bot
@@ -165,7 +174,7 @@ If a provider doesn't list models, just type a model id into the model field
 
 ```
 app/
-  config.py      provider registry + env detection (cached: liveness ping + day-long model list)
+  config.py      provider registry + env detection (HTTP liveness probe, day-long model cache, send-time fallback)
   providers.py   OpenAI-compatible (async) client factory
   agent.py       streaming tool-call loop (web + Discord DM); frozen system prompt
   discord_bot.py Discord client, on_message; DM runs the shared loop, channel/cron use the non-streaming one
