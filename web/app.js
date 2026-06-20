@@ -24,6 +24,7 @@ const state = {
   attachments: [],   // [{ url }]
   think: true,
   abort: null,       // AbortController for the in-flight stream (stop button)
+  stick: true,       // follow the bottom as content streams; false once you scroll up
 };
 
 // --- Thinking toggle --------------------------------------------------------
@@ -344,6 +345,7 @@ async function openConversation(id) {
     }
   }
   $("#messages").innerHTML = "";
+  state.stick = true;  // opening a chat lands at the latest message
   renderHistory(data.messages);
   setMainEmpty(data.messages.length === 0);
   updateScrollJump();
@@ -359,6 +361,7 @@ const EMPTY_STATE = `
 function newChat() {
   state.conversationId = null;
   state.promptTokens = null;
+  state.stick = true;
   // A new conversation starts on the server-resolved default model.
   if (state.defaultModel) {
     applyModelSelection(state.defaultModel.provider, state.defaultModel.model, state.defaultModel.effort);
@@ -488,10 +491,32 @@ function addMessageBubble(role, markdown, images, msgId) {
   return bubble;
 }
 
+// navigator.clipboard only exists in a secure context (HTTPS or localhost).
+// Over plain http on a LAN IP (typical on Windows) it's undefined, so fall back
+// to the legacy execCommand path via an off-screen textarea.
+async function writeClipboard(text) {
+  if (navigator.clipboard && window.isSecureContext) {
+    await navigator.clipboard.writeText(text);
+    return;
+  }
+  const ta = document.createElement("textarea");
+  ta.value = text;
+  ta.setAttribute("readonly", "");
+  ta.style.position = "fixed";
+  ta.style.top = "-9999px";
+  document.body.appendChild(ta);
+  ta.select();
+  ta.setSelectionRange(0, text.length);
+  let ok = false;
+  try { ok = document.execCommand("copy"); } catch (_) {}
+  document.body.removeChild(ta);
+  if (!ok) throw new Error("copy command was blocked");
+}
+
 async function copyMessage(wrap, btn) {
   const text = wrap.dataset.rawText || "";
   try {
-    await navigator.clipboard.writeText(text);
+    await writeClipboard(text);
     btn.classList.add("copied");
     setTimeout(() => btn.classList.remove("copied"), 1400);
   } catch (err) {
@@ -732,7 +757,11 @@ function renderHistory(messages) {
 }
 
 const truncate = (s, n) => (s && s.length > n ? s.slice(0, n) + "…" : s || "");
-const scroll = () => { const m = $("#messages"); m.scrollTop = m.scrollHeight; updateScrollJump(); };
+// Auto-scroll only while "stuck" to the bottom. Once you scroll up to read the
+// start of a streaming answer we leave you there; scrolling back down (or the
+// jump-to-newest button) re-sticks. updateScrollJump() recomputes state.stick
+// from the scroll position, so a programmatic snap to the bottom keeps it stuck.
+const scroll = () => { const m = $("#messages"); if (state.stick) m.scrollTop = m.scrollHeight; updateScrollJump(); };
 
 // --- Scroll-jump button -----------------------------------------------------
 // At the bottom it offers to jump to the first message; once scrolled up it
@@ -741,16 +770,22 @@ function updateScrollJump() {
   const m = $("#messages");
   const btn = $("#scroll-jump");
   if (!m || !btn) return;
+  const atBottom = m.scrollHeight - m.scrollTop - m.clientHeight < 80;
+  // Re-stick when the view is back at the bottom; unstick when scrolled up. This
+  // runs on every scroll, so reading up during a stream stops the auto-follow.
+  state.stick = atBottom;
   const scrollable = m.scrollHeight - m.clientHeight > 60;
   if (!scrollable) { btn.classList.remove("show"); return; }
   btn.classList.add("show");
-  const atBottom = m.scrollHeight - m.scrollTop - m.clientHeight < 80;
   btn.classList.toggle("down", !atBottom);
   btn.title = atBottom ? "Jump to first message" : "Jump to newest message";
 }
 $("#scroll-jump").addEventListener("click", () => {
   const m = $("#messages");
   const toBottom = $("#scroll-jump").classList.contains("down");
+  // Following the stream again re-sticks; jumping to the top intentionally
+  // detaches so streamed tokens don't yank you back down.
+  state.stick = toBottom;
   m.scrollTo({ top: toBottom ? m.scrollHeight : 0, behavior: "smooth" });
 });
 $("#messages").addEventListener("scroll", updateScrollJump);
@@ -889,6 +924,7 @@ async function send(providedText, providedImages) {
   if (!text && !images.length) return;
   if (!provider || !model) { setStatus("Pick a provider and model first."); return; }
 
+  state.stick = true;  // a turn you just started should follow the new output
   addMessageBubble("user", text, images);
   if (!isRetry) {
     $("#input").value = "";
@@ -1384,7 +1420,10 @@ $("#show-jobs").onclick = async () => {
 
 // --- Boot -------------------------------------------------------------------
 (async function init() {
-  await loadProviders();
-  await loadConversations();
+  // The sidebar history doesn't depend on provider detection, so load it in
+  // parallel — a slow provider probe must never hold back the chat list.
+  const convos = loadConversations();
+  await loadProviders();   // newChat() needs the resolved default model
+  await convos;
   newChat();
 })();

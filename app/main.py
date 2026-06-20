@@ -126,7 +126,7 @@ class SoulUpdate(BaseModel):
 @app.get("/api/providers")
 def api_providers():
     providers = detect_providers()
-    default = resolve_default_model()
+    default = resolve_default_model({p.id: p for p in providers})
     return {
         "providers": [
             {

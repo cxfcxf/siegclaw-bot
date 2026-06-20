@@ -7,7 +7,9 @@ for keyless local engines, when its OpenAI-compatible /models endpoint responds.
 from __future__ import annotations
 
 import os
+import threading
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -160,6 +162,31 @@ EFFORT_LEVELS: dict[str, list[str]] = {
     "deepseek": ["high", "max"],
 }
 
+def _openrouter_context_index() -> dict[str, int]:
+    """Context windows harvested from OpenRouter's /models, which — unlike most
+    direct provider APIs (DeepSeek, MiMo return only id/owner) — reports
+    context_length for every model. Used to fill context for those providers so
+    the UI meter works without any hardcoded values.
+
+    Indexed by both the full OpenRouter id (``vendor/model``) and the bare model
+    id, so a direct provider's plain id (e.g. ``deepseek-v4-flash``) matches
+    OpenRouter's ``deepseek/deepseek-v4-flash``. Requires OPENROUTER_API_KEY;
+    returns {} otherwise. Reuses the day-TTL model cache (with background
+    refresh), so it adds no extra fetch beyond detecting OpenRouter itself."""
+    spec = get_provider("openrouter")
+    if spec is None or not spec.api_key():
+        return {}
+    index: dict[str, int] = {}
+    for m in _cached_models("openrouter", spec.base_url(), spec.api_key()):
+        ctx = m.get("context")
+        if not ctx:
+            continue
+        mid = m["id"]
+        index[mid] = ctx
+        bare = mid.split("/", 1)[1] if "/" in mid else mid
+        index.setdefault(bare, ctx)  # full id wins on a bare-name collision
+    return index
+
 
 def _context_of(m: dict) -> int | None:
     """Pull a max-context-window value out of a /models entry across providers.
@@ -193,6 +220,29 @@ PROVIDER_LIVENESS_CACHE_TTL = float(os.getenv("PROVIDER_LIVENESS_CACHE_TTL", "10
 _LIVENESS_TIMEOUT = float(os.getenv("PROVIDER_LIVENESS_TIMEOUT", "2"))
 _models_cache: dict[str, tuple[float, list[dict]]] = {}
 _liveness_cache: dict[str, tuple[float, list[dict] | None]] = {}
+
+# Stale-while-revalidate: once a cache entry exists, an expired one is served
+# immediately while a daemon thread refreshes it in the background, so a slow or
+# down upstream never blocks /api/providers after the first warm load. Refreshes
+# are deduped by key so overlapping requests don't spawn duplicate probes.
+_refresh_inflight: set[str] = set()
+_refresh_lock = threading.Lock()
+
+
+def _refresh_async(key: str, work: Callable[[], object]) -> None:
+    with _refresh_lock:
+        if key in _refresh_inflight:
+            return
+        _refresh_inflight.add(key)
+
+    def run() -> None:
+        try:
+            work()
+        finally:
+            with _refresh_lock:
+                _refresh_inflight.discard(key)
+
+    threading.Thread(target=run, daemon=True).start()
 
 # Send-time fallback: if the chosen provider isn't serving, retry this many
 # times (transient blips) before switching the conversation to the fallback
@@ -234,38 +284,58 @@ def model_valid_for(provider_id: str, model: str) -> bool:
     return not known or model in known
 
 
+def _do_probe_keyless(provider_id: str, base_url: str) -> list[dict] | None:
+    """Perform the actual liveness probe and store the result in the cache."""
+    result = _models_reachable(base_url, None, timeout=_LIVENESS_TIMEOUT)
+    _liveness_cache[provider_id] = (time.monotonic(), result)
+    return result
+
+
 def _probe_keyless(provider_id: str, base_url: str) -> list[dict] | None:
     """Short-TTL-cached HTTP probe of a keyless local engine's /models endpoint.
     Returns the model list when the server is actually serving, or None when
     it's down. This IS the liveness check for keyless engines: a TCP connect
     can't be trusted here — a port-forward (or the server process with no model
     loaded) will accept TCP but never answer the request. Requiring a real HTTP
-    /models response catches both. Cached briefly (PROVIDER_LIVENESS_CACHE_TTL)
-    so frequent refreshes stay fast while still detecting an outage in seconds."""
+    /models response catches both.
+
+    A cold cache probes synchronously so the first detection is accurate; an
+    expired entry is served stale and refreshed in the background, so a down or
+    slow engine never makes /api/providers pay the probe timeout on the request
+    path. (Send-time correctness is unaffected: provider_serving() always probes
+    fresh and uncached.)"""
     now = time.monotonic()
     cached = _liveness_cache.get(provider_id)
-    if cached and (now - cached[0]) < PROVIDER_LIVENESS_CACHE_TTL:
+    if cached is not None:
+        if (now - cached[0]) >= PROVIDER_LIVENESS_CACHE_TTL:
+            _refresh_async(f"live:{provider_id}", lambda: _do_probe_keyless(provider_id, base_url))
         return cached[1]
-    result = _models_reachable(base_url, None, timeout=_LIVENESS_TIMEOUT)
-    _liveness_cache[provider_id] = (now, result)
-    return result
+    return _do_probe_keyless(provider_id, base_url)
+
+
+def _do_fetch_models(provider_id: str, base_url: str, api_key: str | None) -> list[dict] | None:
+    """Fetch the provider's model list and cache it on success (failures are not
+    cached, so a transient outage is retried rather than locked in)."""
+    fetched = _models_reachable(base_url, api_key)
+    if fetched is not None:
+        _models_cache[provider_id] = (time.monotonic(), fetched)
+    return fetched
 
 
 def _cached_models(provider_id: str, base_url: str, api_key: str | None) -> list[dict]:
     """The provider's model list, fetched at most once per
-    PROVIDER_MODELS_CACHE_TTL (a day by default). Failures are NOT cached — a
-    transient outage is retried on the next call rather than locked in for a
-    day. If a previous good fetch exists, it's returned (slightly stale) on
-    failure so the UI keeps a model list to show."""
+    PROVIDER_MODELS_CACHE_TTL (a day by default). A cold cache fetches
+    synchronously so the first load has a list; an expired entry is served stale
+    and refreshed in the background, so the day-boundary expiry never blocks a
+    request on a slow cloud /models call."""
     now = time.monotonic()
     cached = _models_cache.get(provider_id)
-    if cached and (now - cached[0]) < PROVIDER_MODELS_CACHE_TTL:
+    if cached is not None:
+        if (now - cached[0]) >= PROVIDER_MODELS_CACHE_TTL:
+            _refresh_async(f"models:{provider_id}", lambda: _do_fetch_models(provider_id, base_url, api_key))
         return cached[1]
-    fetched = _models_reachable(base_url, api_key)
-    if fetched is not None:
-        _models_cache[provider_id] = (now, fetched)
-        return fetched
-    return cached[1] if cached else []
+    fetched = _do_fetch_models(provider_id, base_url, api_key)
+    return fetched if fetched is not None else []
 
 
 def detect_providers() -> list[AvailableProvider]:
@@ -279,6 +349,7 @@ def detect_providers() -> list[AvailableProvider]:
       TCP ping) it sees through port-forwards / a server with no model loaded.
     """
     available: list[AvailableProvider] = []
+    or_ctx = _openrouter_context_index()  # context source for APIs that omit it
     for spec in KNOWN_PROVIDERS:
         base_url = spec.base_url()
         key = spec.api_key()
@@ -294,12 +365,21 @@ def detect_providers() -> list[AvailableProvider]:
                 continue
 
         ids = [m["id"] for m in models]
-        ctx = {m["id"]: m["context"] for m in models if m["context"]}
+        # Prefer the context the API actually reports; otherwise look it up in
+        # OpenRouter's catalog (by full vendor/model id, then bare id) for
+        # providers (DeepSeek, MiMo) whose own /models omits the field.
+        ctx = {}
+        for m in models:
+            c = m["context"] or or_ctx.get(f"{spec.id}/{m['id']}") or or_ctx.get(m["id"])
+            if c:
+                ctx[m["id"]] = c
         available.append(AvailableProvider(spec.id, spec.name, base_url, ids, ctx, effort))
     return available
 
 
-def resolve_default_model() -> tuple[str, str, str | None] | None:
+def resolve_default_model(
+    providers: dict[str, AvailableProvider] | None = None,
+) -> tuple[str, str, str | None] | None:
     """The model a NEW conversation starts on, for every surface.
 
     Order: the preferred default (DEFAULT_PROVIDER/MODEL) if that provider is
@@ -307,8 +387,12 @@ def resolve_default_model() -> tuple[str, str, str | None] | None:
     last resort, the first detected provider + its first model. A blank model
     means "use whatever the provider lists first". Returns
     (provider_id, model, effort) or None if nothing usable is available.
+
+    Pass an already-detected provider map to avoid a second detection pass (the
+    /api/providers endpoint detects once and shares it).
     """
-    providers = {p.id: p for p in detect_providers()}
+    if providers is None:
+        providers = {p.id: p for p in detect_providers()}
 
     pref = providers.get(DEFAULT_PROVIDER)
     if pref is not None:
