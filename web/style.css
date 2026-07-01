@@ -284,9 +284,9 @@ select:focus { outline: none; border-color: var(--patina-dim); }
 #main.is-empty #messages { flex: 0 0 auto; overflow: visible; padding-top: 0; padding-bottom: 0; }
 
 /* flex-shrink:0 is essential: #messages is a flex column, and without it long
-   answers make flexbox crush the small collapsed tool/thinking blocks to a
-   clipped, unclickable sliver. */
-.msg, .tool, .thinking { max-width: 824px; width: 100%; margin: 0 auto; flex-shrink: 0; }
+   answers make flexbox crush the small collapsed trace to a clipped,
+   unclickable sliver. */
+.msg { max-width: 824px; width: 100%; margin: 0 auto; flex-shrink: 0; }
 
 /* Channel label (the signature: who/what is on this line) */
 .msg { padding: 10px 0; animation: rise 0.32s cubic-bezier(0.2, 0.7, 0.2, 1); }
@@ -381,102 +381,85 @@ select:focus { outline: none; border-color: var(--patina-dim); }
 .msg .actions .metrics.live { color: var(--brass); }
 .msg .actions .metrics.live svg { animation: pulse 1s ease-in-out infinite; }
 
-/* ---- Tool calls: brass channel, technical inset --------------------------- */
-.tool {
-  background: var(--surface); border: 1px solid var(--line);
-  border-left: 2px solid var(--brass-deep); border-radius: var(--r-sm);
-  overflow: hidden; margin: 5px auto; animation: rise 0.32s cubic-bezier(0.2,0.7,0.2,1);
+/* ---- Trace steps: flat rows on the timeline rail ---------------------------
+   One row per thought (patina ring node) or tool call (brass diamond node);
+   clicking a row expands its reasoning text / tool result inline. */
+.step { margin: 0; }
+.step > summary {
+  cursor: pointer; list-style: none; user-select: none;
+  display: flex; gap: 8px; align-items: center;
+  padding: 5px 8px 5px 0; border-radius: var(--r-sm);
+  font-family: var(--font-mono); font-size: 12px; min-width: 0;
 }
-.tool summary {
-  cursor: pointer; padding: 9px 14px; font-family: var(--font-mono); font-size: 12px;
-  color: var(--brass); display: flex; gap: 9px; align-items: center; list-style: none;
+.step > summary::-webkit-details-marker { display: none; }
+.step > summary:hover { background: var(--surface); }
+/* Node markers sit on the rail; opaque centers mask the line behind them. */
+.step .node {
+  flex-shrink: 0; width: 7px; height: 7px; margin-left: 2px;
+  background: var(--ink); border: 1.5px solid var(--patina-dim); border-radius: 50%;
 }
-.tool summary::-webkit-details-marker { display: none; }
-.tool summary::before {
-  content: ">"; color: var(--text-faint); font-family: var(--font-mono); font-size: 12px;
-  line-height: 1; margin-right: 1px; display: inline-block; transition: transform 0.18s ease;
+.step.tool .node { border-color: var(--brass-deep); border-radius: 1.5px; transform: rotate(45deg); }
+.step.think > summary .slabel { color: var(--patina); font-size: 11.5px; letter-spacing: 0.05em; }
+.step.think.live > summary .slabel { animation: pulse 1.1s ease-in-out infinite; }
+.step.tool > summary .tname { color: var(--brass); flex-shrink: 0; }
+.step > summary .args { color: var(--text-dim); font-size: 11.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.step > summary .sdur {
+  margin-left: auto; flex-shrink: 0; color: var(--text-faint);
+  font-size: 11px; font-variant-numeric: tabular-nums;
 }
-.tool[open] summary::before { transform: rotate(90deg); }
-.tool summary .args { color: var(--text-dim); font-size: 11.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.tool summary .spinner { margin-left: auto; color: var(--text-faint); animation: pulse 1.1s ease-in-out infinite; }
-.tool .body { padding: 0 14px 12px; }
-.tool pre {
+.step > summary .sdur.spinner { animation: pulse 1.1s ease-in-out infinite; }
+/* Expanded step bodies: indented past the node column, quiet insets. */
+.step .reason {
+  margin: 2px 8px 8px 17px; padding: 9px 13px;
+  background: rgba(95, 182, 160, 0.05); border-left: 1px solid var(--patina-dim);
+  border-radius: 0 var(--r-sm) var(--r-sm) 0;
+  font-family: var(--font-mono); font-size: 12.5px; line-height: 1.65;
+  color: #9fc8bd; white-space: pre-wrap; word-break: break-word; max-height: 380px; overflow: auto;
+}
+.step .body { margin: 2px 8px 8px 17px; }
+.step .body pre {
   margin: 0; background: #0a0f0e; border: 1px solid var(--line); border-radius: 6px;
   padding: 11px 12px; max-height: 360px; overflow: auto; font-family: var(--font-mono);
   font-size: 12.5px; line-height: 1.55; white-space: pre-wrap; word-break: break-word; color: var(--text-dim);
 }
 
-/* ---- Thinking: patina channel, internal cognition ------------------------- */
-.thinking {
-  background: linear-gradient(180deg, rgba(95, 182, 160, 0.05), transparent);
-  border: 1px solid var(--line); border-left: 2px solid var(--patina-dim);
-  border-radius: var(--r-sm); overflow: hidden; margin: 5px auto;
-  animation: rise 0.32s cubic-bezier(0.2,0.7,0.2,1);
-}
-.thinking summary {
-  cursor: pointer; padding: 9px 14px; font-family: var(--font-mono); font-size: 11.5px;
-  letter-spacing: 0.05em; color: var(--patina); display: flex; gap: 9px; align-items: center; list-style: none;
-}
-.thinking summary::-webkit-details-marker { display: none; }
-.thinking summary::before {
-  content: ">"; color: var(--text-faint); font-family: var(--font-mono); font-size: 12px;
-  line-height: 1; margin-right: 1px; display: inline-block; transition: transform 0.18s ease;
-}
-.thinking[open] summary::before { transform: rotate(90deg); }
-.thinking summary .step-count { color: var(--text-faint); font-size: 11px; letter-spacing: 0.02em; }
-.thinking summary .live { margin-left: auto; color: var(--patina-dim); animation: pulse 1.1s ease-in-out infinite; }
-.thinking[open] summary { border-bottom: 1px dashed var(--line); }
-.thinking .reason {
-  padding: 11px 16px 13px; font-family: var(--font-mono); font-size: 12.5px; line-height: 1.65;
-  color: #9fc8bd; white-space: pre-wrap; word-break: break-word; max-height: 380px; overflow: auto;
-}
-/* Tool calls triggered by this reasoning step, nested below the reasoning. */
-.thinking .step-tools:not(:empty) {
-  padding: 8px 10px 10px 16px; display: flex; flex-direction: column; gap: 6px;
-  border-top: 1px dashed var(--line-soft);
-}
-.thinking .step-tools > .tool { margin: 0; max-width: none; width: auto; animation: none; }
-
 @keyframes rise { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
 
-/* ---- Trace: one collapsed wrapper per turn for all process events -------- */
+/* ---- Trace: one quiet collapsible timeline per turn ----------------------
+   No card chrome — a single mono line whose text narrates the live step
+   ("thinking…", "web_search · …") and settles to "2 thoughts · 3 tools";
+   opening it reveals the step rail. */
 .trace {
-  max-width: 824px; width: 100%; margin: 5px auto; flex-shrink: 0;
-  background: var(--surface); border: 1px solid var(--line);
-  border-left: 2px solid var(--text-faint); border-radius: var(--r-sm);
-  overflow: hidden; animation: rise 0.32s cubic-bezier(0.2,0.7,0.2,1);
+  max-width: 824px; width: 100%; margin: 2px auto; flex-shrink: 0;
+  animation: rise 0.32s cubic-bezier(0.2,0.7,0.2,1);
 }
 .trace > summary {
-  cursor: pointer; padding: 9px 14px; display: flex; gap: 10px; align-items: center;
-  list-style: none; user-select: none;
+  cursor: pointer; padding: 5px 8px 5px 2px; display: flex; gap: 8px; align-items: center;
+  list-style: none; user-select: none; border-radius: var(--r-sm);
+  font-family: var(--font-mono); font-size: 11.5px; color: var(--text-faint);
 }
+.trace > summary:hover { background: var(--surface); }
 .trace > summary::-webkit-details-marker { display: none; }
 .trace > summary::before {
   content: ">"; color: var(--text-faint); transition: transform 0.18s ease;
-  font-family: var(--font-mono); font-size: 12px; line-height: 1; margin-right: 1px;
+  font-family: var(--font-mono); font-size: 12px; line-height: 1;
   display: inline-block;
 }
 .trace[open] > summary::before { transform: rotate(90deg); }
-.trace > summary .tlabel {
-  font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.1em;
-  text-transform: uppercase; color: var(--text-dim);
-}
-.trace > summary .tmeta {
-  margin-left: auto; font-family: var(--font-mono); font-size: 11px;
-  color: var(--text-faint); letter-spacing: 0.02em;
+.trace > summary .tstatus {
+  color: var(--text-dim); letter-spacing: 0.04em;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 /* Live elapsed time for the whole turn (thinking + tools + streaming). */
 .trace > summary .tclock {
-  font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.02em;
+  margin-left: auto; flex-shrink: 0; font-size: 11px; letter-spacing: 0.02em;
   color: var(--brass); font-variant-numeric: tabular-nums; min-width: 3.5em; text-align: right;
 }
-/* Activity light: a small blink dot next to "process" while an activity is live.
-   Patina when the model is thinking, brass (yellow) when a tool is running. */
+/* Activity light: blinks patina while thinking, brass while a tool runs. */
 .trace > summary .tactivity {
-  display: none; width: 7px; height: 7px; border-radius: 50%;
+  display: none; flex-shrink: 0; width: 7px; height: 7px; border-radius: 50%;
   background: var(--patina); box-shadow: 0 0 8px -1px var(--patina);
   animation: trace-blink 0.9s steps(2, end) infinite;
-  margin-left: -3px; align-self: center;
 }
 .trace > summary .tactivity.thinking { display: inline-block; }
 .trace > summary .tactivity.tool {
@@ -484,15 +467,12 @@ select:focus { outline: none; border-color: var(--patina-dim); }
   background: var(--brass); box-shadow: 0 0 8px -1px var(--brass);
 }
 @keyframes trace-blink { 0%, 49% { opacity: 1; } 50%, 100% { opacity: 0.15; } }
-.trace[open] > summary { border-bottom: 1px solid var(--line-soft); }
-.trace-body {
-  padding: 8px; display: flex; flex-direction: column; gap: 6px;
-  background: linear-gradient(180deg, rgba(0,0,0,0.12), transparent);
-}
-/* Inner items fill the trace width — override the standalone margins/widths */
-.trace-body > .tool,
-.trace-body > .thinking {
-  margin: 0; max-width: none; width: auto; animation: none;
+/* The rail: a hairline the step nodes sit on. Node centers land at 5.5px
+   (2px margin + half of 7px), so the 1px line runs at left 5px. */
+.trace-body { position: relative; padding: 3px 0 4px; }
+.trace-body::before {
+  content: ""; position: absolute; left: 5px; top: 10px; bottom: 12px;
+  width: 1px; background: var(--line);
 }
 
 /* ---- Empty state --------------------------------------------------------- */

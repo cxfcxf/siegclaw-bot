@@ -734,70 +734,55 @@ function detailsBlock(cls, summaryHtml, open = false) {
   return { d, summary };
 }
 
+// A tool step on the timeline rail: brass diamond node, one-line summary
+// (name + args + duration), result pre expands inline.
 function addToolBlock(name, args) {
   const { d, summary } = detailsBlock(
-    "tool",
-    `<span class="tname">${name}</span><span class="args"></span><span class="spinner">●</span>`
+    "step tool",
+    '<span class="node"></span><span class="tname"></span><span class="args"></span><span class="sdur spinner">●</span>'
   );
+  summary.querySelector(".tname").textContent = name;
   summary.querySelector(".args").textContent = truncate(args, 80);
   const body = el("div", "body");
   const pre = el("pre");
   pre.textContent = "running…";
   body.appendChild(pre);
   d.append(summary, body);
-  if (stepTools) {
-    // Nest under the reasoning step that triggered it.
-    stepTools.appendChild(d);
-    stepCount += 1;
-    if (stepCountEl) stepCountEl.textContent = `· ${stepCount} tool${stepCount === 1 ? "" : "s"}`;
-  } else {
-    ensureTrace().appendChild(d);  // no preceding thinking — keep it top-level
-  }
+  ensureTrace().appendChild(d);
   bumpTrace("tool");
   scroll();
-  return { details: d, pre, spinner: summary.querySelector(".spinner") };
+  return { details: d, pre, dur: summary.querySelector(".sdur"), started: performance.now() };
 }
 
+// A thought step on the rail: patina ring node, "Thinking… / Thought for Xs"
+// label, the reasoning text expands inline.
 function addThinkingBlock(initial, open = false) {
   const { d, summary } = detailsBlock(
-    "thinking",
-    '<span>Thinking</span><span class="step-count"></span><span class="live"></span>',
+    "step think",
+    '<span class="node"></span><span class="slabel">Thought</span><span class="sdur"></span>',
     open
   );
   const reason = el("div", "reason");
   reason.textContent = initial || "";
-  const tools = el("div", "step-tools");  // tools from this reasoning step nest here
-  d.append(summary, reason, tools);
+  d.append(summary, reason);
   ensureTrace().appendChild(d);
   bumpTrace("thinking");
-  // This block becomes the active step; subsequent tool calls nest into it.
-  stepTools = tools;
-  stepCount = 0;
-  stepCountEl = summary.querySelector(".step-count");
   scroll();
-  return { details: d, reason, live: summary.querySelector(".live") };
+  return { details: d, reason, label: summary.querySelector(".slabel"), started: performance.now() };
 }
 
-// --- Trace container: one collapsed wrapper per turn for all process events ---
+// --- Trace: one quiet collapsible timeline per turn --------------------------
+// Collapsed, its header narrates the live step ("thinking…", "web_search · …")
+// and settles to "2 thoughts · 3 tools"; open, it shows the flat step rail.
 let currentTrace = null;        // the outer <details class="trace">
 let currentTraceBody = null;    // its .trace-body div
 const currentTraceCounts = { tool: 0, thinking: 0 };
-
-// The active "step": tools called after a reasoning phase nest inside that
-// thinking block, so collapsing the thinking hides its tools too. Null when no
-// thinking preceded the tools (e.g. thinking off) — those stay top-level.
-let stepTools = null;     // the active thinking block's .step-tools container
-let stepCount = 0;        // tools nested in the active step
-let stepCountEl = null;   // the active step's "· N tools" badge
 
 function resetTrace() {
   currentTrace = null;
   currentTraceBody = null;
   currentTraceCounts.tool = 0;
   currentTraceCounts.thinking = 0;
-  stepTools = null;
-  stepCount = 0;
-  stepCountEl = null;
 }
 
 function ensureTrace() {
@@ -806,7 +791,7 @@ function ensureTrace() {
   if (empty) empty.remove();
   const { d, summary } = detailsBlock(
     "trace",
-    '<span class="tlabel">process</span><span class="tactivity"></span><span class="tmeta"></span><span class="tclock"></span>'
+    '<span class="tactivity"></span><span class="tstatus"></span><span class="tclock"></span>'
   );
   const body = el("div", "trace-body");
   d.append(summary, body);
@@ -817,32 +802,41 @@ function ensureTrace() {
   return body;
 }
 
+function traceCountsText() {
+  const c = currentTraceCounts;
+  const parts = [];
+  if (c.thinking) parts.push(`${c.thinking} thought${c.thinking === 1 ? "" : "s"}`);
+  if (c.tool) parts.push(`${c.tool} tool${c.tool === 1 ? "" : "s"}`);
+  return parts.join(" · ") || "process";
+}
+
 function bumpTrace(kind) {
   currentTraceCounts[kind] = (currentTraceCounts[kind] || 0) + 1;
   updateTraceSummary();
 }
 
+// Refresh the header counts, but never overwrite a live narration.
 function updateTraceSummary() {
   if (!currentTrace) return;
-  const c = currentTraceCounts;
-  const parts = [];
-  if (c.tool) parts.push(`${c.tool} tool${c.tool === 1 ? "" : "s"}`);
-  if (c.thinking) parts.push("thinking");
-  currentTrace.querySelector(".tmeta").textContent = parts.join(" · ") || "—";
+  const act = currentTrace.querySelector(".tactivity");
+  if (act.className === "tactivity") {
+    currentTrace.querySelector(".tstatus").textContent = traceCountsText();
+  }
 }
 
 function setTraceLive(on) {
   if (currentTrace) currentTrace.classList.toggle("live", on);
 }
 
-// Toggle the trace activity light's mode ("thinking" patina dot / "tool" brass dot).
-function setTraceActivity(kind, on) {
+// Drive the header narration: a colored activity dot (patina = thinking,
+// brass = tool) plus a label of what's happening right now; off → counts.
+function setTraceActivity(kind, on, label) {
   if (!currentTrace) return;
-  const act = currentTrace.querySelector(".tactivity");
-  if (act) act.classList.toggle(kind, on);
+  currentTrace.querySelector(".tactivity").className = "tactivity" + (on ? " " + kind : "");
+  currentTrace.querySelector(".tstatus").textContent = (on && label) || traceCountsText();
 }
-const setTraceThinking = (on) => setTraceActivity("thinking", on);
-const setTraceTool = (on) => setTraceActivity("tool", on);
+const setTraceThinking = (on) => setTraceActivity("thinking", on, "thinking…");
+const setTraceTool = (on, label) => setTraceActivity("tool", on, label);
 
 function renderHistory(messages) {
   const toolBlocks = {};
@@ -861,7 +855,8 @@ function renderHistory(messages) {
       });
     } else if (m.role === "tool") {
       const block = toolBlocks[m.tool_call_id];
-      if (block) { block.pre.textContent = m.content || ""; block.spinner.remove(); }
+      // Replayed history has no timings — clear the spinner, leave no duration.
+      if (block) { block.pre.textContent = m.content || ""; block.dur.textContent = ""; block.dur.classList.remove("spinner"); }
     }
   }
   if (!messages.length) $("#messages").innerHTML = EMPTY_STATE;
@@ -1164,7 +1159,11 @@ async function send(providedText, providedImages) {
   }
 
   function endThinking() {
-    if (thinkingBlock) { thinkingBlock.live.textContent = ""; thinkingBlock = null; }
+    if (thinkingBlock) {
+      thinkingBlock.label.textContent = "Thought for " + fmtDur(performance.now() - thinkingBlock.started);
+      thinkingBlock.details.classList.remove("live");
+      thinkingBlock = null;
+    }
     setTraceThinking(false);
   }
 
@@ -1215,9 +1214,10 @@ async function send(providedText, providedImages) {
         thinkTick(true);
         if (!thinkingBlock) {
           thinkingBlock = addThinkingBlock("", false);
+          thinkingBlock.label.textContent = "Thinking…";
+          thinkingBlock.details.classList.add("live");
           setTraceThinking(true);
         }
-        thinkingBlock.live.textContent = "…";
         thinkingBlock.reason.textContent += ev.text;
         if (thinkingBlock.details.open) scroll();
         break;
@@ -1234,13 +1234,17 @@ async function send(providedText, providedImages) {
       case "tool_call":
         thinkTick(false);
         endThinking();
-        setTraceTool(true);
         toolBlocks[ev.id] = addToolBlock(ev.name, ev.arguments || "");
+        setTraceTool(true, `${ev.name} · ${truncate(ev.arguments || "", 48)}`);
         assistantBubble = null; assistantText = "";  // text after a tool is a new bubble
         break;
       case "tool_result": {
         const b = toolBlocks[ev.id];
-        if (b) { b.pre.textContent = ev.result; b.spinner.remove(); }
+        if (b) {
+          b.pre.textContent = ev.result;
+          b.dur.classList.remove("spinner");
+          b.dur.textContent = fmtDur(performance.now() - b.started);
+        }
         setTraceTool(false);
         break;
       }
