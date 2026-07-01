@@ -373,8 +373,11 @@ def _chunk_message(text: str) -> list[str]:
 
 
 async def _send_long_message(message: discord.Message, text: str) -> None:
+    # In a channel, reply-quote the triggering message so it's clear who is
+    # being answered; in a DM it's 1-on-1, so the quote is just noise.
+    quote_first = message.guild is not None
     for i, chunk in enumerate(_chunk_message(text)):
-        if i == 0:
+        if i == 0 and quote_first:
             await message.reply(chunk)
         else:
             await message.channel.send(chunk)
@@ -396,17 +399,20 @@ def create_client(mcp_manager) -> discord.Client:
     client = discord.Client(intents=intents)
     tree = app_commands.CommandTree(client)
 
-    # --- Slash commands (the primary UI; replies are ephemeral) ---------------
+    # --- Slash commands (the primary UI) ---------------------------------------
     # Restricted to DMs (and group DMs) — these manage a user's DM conversation
     # state, which has nothing to do with @mentions in channels (those take a
     # separate, live-Discord-history path). guilds=False hides them from the
     # channel autocomplete so an @mention doesn't surface the slash menu.
+    # Replies that mark a session boundary (/new, /resume) are posted for real so
+    # they survive in the DM history; the rest stay ephemeral (Discord drops
+    # ephemeral messages on client reload).
     dm_only = app_commands.allowed_contexts(guilds=False, dms=True, private_channels=True)
 
     @tree.command(name="new", description="Start a new conversation")
     @dm_only
     async def new_cmd(interaction: discord.Interaction):
-        await _respond(interaction, cmd_new(str(interaction.user.id)))
+        await _respond(interaction, cmd_new(str(interaction.user.id)), ephemeral=False)
 
     @tree.command(name="list", description="List all conversations")
     @dm_only
@@ -417,7 +423,7 @@ def create_client(mcp_manager) -> discord.Client:
     @dm_only
     @app_commands.describe(ref="Conversation number from /list")
     async def resume_cmd(interaction: discord.Interaction, ref: int):
-        await _respond(interaction, cmd_resume(str(interaction.user.id), ref))
+        await _respond(interaction, cmd_resume(str(interaction.user.id), ref), ephemeral=False)
 
     @tree.command(name="model", description="Show or set the active conversation's model")
     @dm_only
@@ -506,7 +512,11 @@ def create_client(mcp_manager) -> discord.Client:
                     fn = _TOOL_STATUS.get(tool_name, lambda a: f"⚙️ {tool_name}")
                     line = f"-# {fn(args)}"[:300]
                     if _status_msg is None:
-                        _status_msg = await message.reply(line)
+                        # Quote-reply only in channels; DMs are 1-on-1.
+                        if message.guild is not None:
+                            _status_msg = await message.reply(line)
+                        else:
+                            _status_msg = await message.channel.send(line)
                     else:
                         content = f"{_status_msg.content}\n{line}"
                         if len(content) > 1900:  # stay under Discord's 2000-char limit
