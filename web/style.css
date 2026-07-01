@@ -40,6 +40,9 @@
 
 * { box-sizing: border-box; }
 html, body { height: 100%; margin: 0; }
+/* The hidden attribute must always win, even over author display rules
+   (e.g. #chat's display:flex silently defeating [hidden]'s display:none). */
+[hidden] { display: none !important; }
 body {
   font-family: var(--font-body);
   font-size: 15px;
@@ -121,9 +124,23 @@ body {
 }
 .icon-btn:hover { color: var(--brass); background: var(--surface-2); border-color: var(--line); }
 #collapse-sidebar { position: absolute; top: 15px; right: 12px; }
-#expand-sidebar { display: none; }
-#app.sidebar-collapsed #expand-sidebar { display: grid; }
 #app.sidebar-collapsed #sidebar { width: 0; border-right: none; opacity: 0; pointer-events: none; }
+/* New conversation + Search chats: one visual group of sidebar action rows. */
+#new-chat, #search-chats {
+  display: flex; align-items: center; gap: 9px; width: 100%;
+  padding: 9px 12px; background: transparent; border: 1px solid transparent;
+  border-radius: var(--r-sm); color: var(--text-dim); font-family: var(--font-body);
+  font-size: 13.5px; cursor: pointer; transition: all 0.14s;
+}
+#new-chat:hover, #search-chats:hover { color: var(--text); background: var(--surface-2); border-color: var(--line); }
+#search-chats { margin-top: 2px; }
+/* Collapsed state: expand + search live in ONE grouped floating pill. */
+#collapsed-tools {
+  display: none; flex-direction: column; gap: 2px; padding: 3px;
+  left: 18px; border-radius: var(--r-sm);
+}
+#app.sidebar-collapsed #collapsed-tools { display: flex; }
+#collapsed-tools .icon-btn:hover { border-color: transparent; }
 
 .sidebar-foot {
   margin-top: auto; padding: 12px; display: flex; gap: 6px;
@@ -138,31 +155,10 @@ body {
 
 /* Buttons (base) */
 button { font-family: var(--font-body); }
-#new-chat {
-  width: 100%; font-family: var(--font-display); font-weight: 600; font-size: 13.5px;
-  color: var(--brass); background: linear-gradient(180deg, rgba(214,163,92,0.1), rgba(214,163,92,0.04));
-  border: 1px solid rgba(214, 163, 92, 0.35); border-radius: var(--r-sm);
-  padding: 10px 12px; cursor: pointer; transition: all 0.15s; letter-spacing: 0.01em;
-}
-#new-chat:hover { background: rgba(214, 163, 92, 0.16); border-color: var(--brass); box-shadow: 0 0 18px -8px rgba(214,163,92,0.6); }
-
-/* Provider/model selectors at the bottom of the sidebar, just above the foot buttons */
-.sidebar-controls {
-  padding: 14px 12px; display: flex; flex-direction: column; gap: 10px;
-  border-top: 1px solid var(--line-soft);
-}
-.sidebar-controls .control { display: flex; flex-direction: column; gap: 3px; }
-.sidebar-controls .control label {
-  font-family: var(--font-mono); font-size: 9.5px; letter-spacing: 0.16em;
-  text-transform: uppercase; color: var(--text-faint); padding-left: 2px;
-}
-.sidebar-controls select { width: 100%; max-width: none; }
-/* Drop the redundant top border on the foot — the controls above already provide separation */
-.sidebar-controls + .sidebar-foot { border-top: none; }
 
 /* Model picker — searchable combobox. OpenRouter exposes hundreds of models,
    so a plain <select> is unwieldy; typing filters the list live. The dropdown
-   opens upward because the control sits at the bottom of the sidebar. */
+   opens upward because the control sits near the bottom of the window. */
 .combobox { position: relative; }
 .combobox input {
   width: 100%; font-family: var(--font-mono); font-size: 12.5px; color: var(--text);
@@ -183,7 +179,9 @@ button { font-family: var(--font-body); }
 .combobox-list li {
   font-family: var(--font-mono); font-size: 12px; padding: 5px 8px; border-radius: 4px;
   cursor: pointer; color: var(--text-dim);
-  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  /* Wrap long model ids so the full name is readable inline — a title tooltip
+     here would hover right over the popover's provider control. */
+  white-space: normal; word-break: break-all; line-height: 1.45;
 }
 .combobox-list li:hover,
 .combobox-list li.active { background: var(--surface-2); color: var(--text); }
@@ -222,8 +220,6 @@ button { font-family: var(--font-body); }
   background: rgba(20, 27, 26, 0.66); backdrop-filter: blur(8px);
   border: 1px solid var(--line); border-radius: 99px;
 }
-#expand-sidebar.floating { left: 18px; display: none; border-radius: var(--r-sm); }
-#app.sidebar-collapsed #expand-sidebar.floating { display: grid; }
 #status.floating {
   right: 18px; padding: 5px 12px 5px 10px;
   font-family: var(--font-mono); font-size: 11.5px; letter-spacing: 0.04em;
@@ -243,7 +239,7 @@ button { font-family: var(--font-body); }
 #main.is-empty #chat { justify-content: center; }
 
 /* ---- Top control strip (legacy — topbar removed; controls float) ------- */
-/* Select styling still used by the sidebar provider/model selectors. */
+/* Select styling still used by the model-menu provider selector. */
 select {
   appearance: none; -webkit-appearance: none;
   font-family: var(--font-mono); font-size: 12.5px; color: var(--text);
@@ -272,7 +268,7 @@ select:focus { outline: none; border-color: var(--patina-dim); }
 .effort {
   flex-shrink: 0; height: 38px; align-self: stretch;
   padding: 0 8px; border-radius: var(--r-sm);
-  border: 1px solid var(--border); background: var(--surface-2); color: var(--text);
+  border: 1px solid var(--line); background: var(--surface-2); color: var(--text);
   font: inherit; font-size: 12.5px; text-transform: capitalize; cursor: pointer;
 }
 .effort:hover { border-color: var(--patina-dim); }
@@ -495,57 +491,71 @@ select:focus { outline: none; border-color: var(--patina-dim); }
 }
 /* Inner items fill the trace width — override the standalone margins/widths */
 .trace-body > .tool,
-.trace-body > .thinking,
-.trace-body > .mem-chip {
+.trace-body > .thinking {
   margin: 0; max-width: none; width: auto; animation: none;
 }
-
-/* ---- Memory chip: patina channel, surfaces auto-extracted facts ------------ */
-.mem-chip {
-  max-width: 824px; width: 100%; margin: 4px auto 6px; flex-shrink: 0;
-  background: linear-gradient(180deg, rgba(95, 182, 160, 0.06), transparent);
-  border: 1px solid var(--line); border-left: 2px solid var(--patina-dim);
-  border-radius: var(--r-sm); padding: 9px 14px 11px;
-  animation: rise 0.32s cubic-bezier(0.2, 0.7, 0.2, 1);
-}
-.mem-chip .chip-label {
-  font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.12em;
-  text-transform: uppercase; color: var(--patina); margin-bottom: 5px;
-}
-.mem-chip ul { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 2px; }
-.mem-chip li { display: flex; gap: 9px; align-items: baseline; font-size: 13px; color: var(--text-dim); }
-.mem-chip li .g {
-  font-family: var(--font-mono); font-weight: 600; width: 1em; flex-shrink: 0; text-align: center;
-}
-.mem-chip li .t { flex: 1; }
-.mem-chip li.add .g { color: var(--patina); }
-.mem-chip li.update .g { color: var(--brass); }
-.mem-chip li.delete .g { color: var(--clay); }
-.mem-chip li.noop .g { color: var(--text-faint); }
 
 /* ---- Empty state --------------------------------------------------------- */
 .empty {
   margin: auto; max-width: 460px; text-align: center; padding: 40px 20px;
 }
 .empty h2 { font-family: var(--font-display); font-weight: 600; font-size: 22px; margin: 0; color: var(--text); }
-.empty p { color: var(--text-dim); margin: 0 0 22px; }
-.empty .caps { display: flex; gap: 8px; justify-content: center; flex-wrap: wrap; }
-.empty .cap {
-  font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.04em; color: var(--text-dim);
-  background: var(--surface-2); border: 1px solid var(--line); border-radius: 99px; padding: 5px 12px;
-}
 
 /* ===========================================================================
    Composer
    ========================================================================= */
 #composer { padding: 14px 22px 18px; }
 #main.is-empty #composer { padding-top: 24px; }
-.composer-row {
-  display: flex; gap: 8px; align-items: flex-end; max-width: 824px; margin: 0 auto;
+/* Two-row composer (Claude-style): textarea on top, a controls bar below with
+   attach/think on the left and the model chip + send on the right. */
+.composer-box {
+  display: flex; flex-direction: column; gap: 2px; max-width: 824px; margin: 0 auto;
   background: var(--surface-2); border: 1px solid var(--line); border-radius: var(--r);
-  padding: 7px 7px 7px 10px; transition: border-color 0.15s, box-shadow 0.15s;
+  padding: 10px 8px 7px 12px; transition: border-color 0.15s, box-shadow 0.15s;
 }
-.composer-row:focus-within { border-color: var(--patina-dim); box-shadow: 0 0 0 3px rgba(95, 182, 160, 0.08); }
+.composer-box:focus-within { border-color: var(--patina-dim); box-shadow: 0 0 0 3px rgba(95, 182, 160, 0.08); }
+.composer-bar { display: flex; align-items: center; gap: 8px; }
+.composer-bar .bar-left { display: flex; align-items: center; gap: 4px; }
+.composer-bar .bar-right { margin-left: auto; display: flex; align-items: center; gap: 8px; min-width: 0; }
+
+/* Model chip: compact "provider / model" readout that opens the picker popover. */
+#model-menu-wrap { position: relative; display: flex; min-width: 0; }
+#model-chip {
+  display: inline-flex; align-items: center; gap: 6px; max-width: 340px; height: 30px;
+  padding: 0 9px; background: transparent; border: 1px solid transparent; border-radius: var(--r-sm);
+  color: var(--text-dim); font-family: var(--font-mono); font-size: 11.5px; letter-spacing: 0.02em;
+  cursor: pointer; transition: all 0.14s; min-width: 0;
+}
+#model-chip:hover { color: var(--text); background: var(--surface-3); border-color: var(--line); }
+#model-chip[aria-expanded="true"] { color: var(--text); background: var(--surface-3); border-color: var(--line); }
+#model-chip #chip-provider { color: var(--text-faint); flex-shrink: 0; }
+#model-chip #chip-provider::after { content: "/"; margin-left: 6px; }
+#model-chip #chip-model { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#model-chip.unset #chip-model { color: var(--text-faint); font-style: italic; }
+#model-chip svg { flex-shrink: 0; opacity: 0.65; transition: transform 0.18s ease; }
+#model-chip[aria-expanded="true"] svg { transform: rotate(180deg); }
+
+/* The picker popover, anchored above the chip. Kept narrow — long model ids
+   wrap in the suggestion list and the readout, so no extra width is needed. */
+#model-menu {
+  position: absolute; bottom: calc(100% + 10px); right: 0; width: min(300px, 92vw);
+  background: var(--surface); border: 1px solid var(--line); border-radius: var(--r);
+  box-shadow: var(--shadow); padding: 14px; z-index: 40;
+  display: flex; flex-direction: column; gap: 10px;
+}
+/* Full untruncated provider/model readout of the current selection. */
+#model-current {
+  font-family: var(--font-mono); font-size: 11px; line-height: 1.5;
+  color: var(--text-faint); word-break: break-all;
+  border-top: 1px dashed var(--line-soft); padding-top: 8px;
+}
+#model-menu[hidden] { display: none; }
+#model-menu .control { display: flex; flex-direction: column; gap: 3px; }
+#model-menu .control label {
+  font-family: var(--font-mono); font-size: 9.5px; letter-spacing: 0.16em;
+  text-transform: uppercase; color: var(--text-faint); padding-left: 2px;
+}
+#model-menu select { width: 100%; max-width: none; }
 
 /* Context-window meter: a small "12% · 153.6K ctx" line under the composer.
    Shows how full the current conversation is relative to the model's limit.
@@ -599,6 +609,49 @@ select:focus { outline: none; border-color: var(--patina-dim); }
 }
 
 /* ===========================================================================
+   Chat search page — swaps in for the chat view in the main column
+   ========================================================================= */
+#search-page { flex: 1; overflow-y: auto; padding: 9vh 22px 32px; }
+.search-page-inner { max-width: 640px; margin: 0 auto; }
+.search-box {
+  display: flex; align-items: center; gap: 12px;
+  background: var(--surface-2); border: 1px solid var(--line); border-radius: 99px;
+  padding: 11px 20px; color: var(--text-faint);
+  transition: border-color 0.15s;
+}
+.search-box:focus-within { border-color: var(--patina-dim); }
+.search-box svg { flex-shrink: 0; }
+.search-box input {
+  flex: 1; background: transparent; border: none; color: var(--text);
+  font-family: var(--font-body); font-size: 15px; padding: 0;
+}
+.search-box input:focus { outline: none; }
+.search-box input::placeholder { color: var(--text-faint); }
+#search-close {
+  flex-shrink: 0; background: transparent; border: none; color: var(--text-faint);
+  cursor: pointer; font-size: 13px; padding: 2px 4px; border-radius: 50%;
+  transition: color 0.12s;
+}
+#search-close:hover { color: var(--text); }
+.search-section {
+  font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.16em;
+  text-transform: uppercase; color: var(--text-faint); padding: 16px 12px 6px;
+}
+#search-results { margin-top: 2px; }  /* the page itself scrolls */
+.search-result {
+  display: flex; align-items: baseline; gap: 14px; padding: 10px 12px;
+  border-radius: var(--r-sm); cursor: pointer; transition: background 0.12s;
+}
+.search-result:hover, .search-result.active { background: var(--surface-2); }
+.search-result .title {
+  flex: 1; color: var(--text); font-size: 14.5px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.search-result .date {
+  font-family: var(--font-mono); font-size: 11px; color: var(--text-faint); white-space: nowrap;
+}
+
+/* ===========================================================================
    Dialogs
    ========================================================================= */
 dialog {
@@ -608,7 +661,7 @@ dialog {
 dialog::backdrop { background: rgba(8, 11, 11, 0.62); backdrop-filter: blur(3px); }
 dialog h3 { font-family: var(--font-display); font-weight: 600; font-size: 18px; margin: 0 0 4px; }
 dialog .hint { color: var(--text-dim); font-size: 13px; margin: 0 0 16px; }
-dialog .hint code, .mem code { font-family: var(--font-mono); font-size: 12px; background: var(--surface-2); padding: 1px 5px; border-radius: 4px; color: var(--brass); }
+dialog .hint code { font-family: var(--font-mono); font-size: 12px; background: var(--surface-2); padding: 1px 5px; border-radius: 4px; color: var(--brass); }
 dialog textarea, .add-memory input {
   width: 100%; background: var(--surface-2); color: var(--text); border: 1px solid var(--line);
   border-radius: var(--r-sm); padding: 11px 13px; font-family: var(--font-mono); font-size: 13px; line-height: 1.5;
@@ -629,21 +682,60 @@ dialog menu button.primary:hover { box-shadow: 0 0 16px -5px rgba(214,163,92,0.7
 .add-memory { display: flex; gap: 8px; margin-bottom: 16px; }
 .add-memory input { flex: 1; font-family: var(--font-body); }
 
-#memory-list, #skills-list { max-height: 52vh; overflow-y: auto; }
-#memory-list .mem { display: flex; gap: 12px; align-items: flex-start; padding: 11px 2px; border-bottom: 1px solid var(--line-soft); }
-#memory-list .mem .id { color: var(--patina-dim); font-family: var(--font-mono); padding-top: 3px; }
-#memory-list .mem .text { flex: 1; }
-#memory-list .mem .forget { background: transparent; border: none; color: var(--text-faint); cursor: pointer; padding: 2px 4px; }
-#memory-list .mem .forget:hover { color: var(--clay); }
-#skills-list .skill { padding: 11px 2px; border-bottom: 1px solid var(--line-soft); }
-#skills-list .skill b { font-family: var(--font-display); color: var(--brass); font-weight: 600; }
-#memory-list .empty, #skills-list .empty { padding: 28px; }
+/* Memory: a board of fact cards (not a chat-log list) with a client-side filter. */
+.mem-toolbar { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }
+.mem-toolbar input {
+  flex: 1; background: var(--surface-2); color: var(--text); border: 1px solid var(--line);
+  border-radius: var(--r-sm); padding: 7px 12px; font-family: var(--font-body); font-size: 13px;
+}
+.mem-toolbar input:focus { outline: none; border-color: var(--patina-dim); }
+.mem-toolbar input::placeholder { color: var(--text-faint); }
+#memory-count {
+  font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.06em;
+  color: var(--text-faint); white-space: nowrap;
+}
 
-/* --- Scheduled jobs --- */
-#jobs-list { max-height: 42vh; overflow-y: auto; margin-bottom: 16px; }
-#jobs-list .empty { padding: 24px; }
-#jobs-list .job { padding: 12px 2px; border-bottom: 1px solid var(--line-soft); }
-#jobs-list .job.disabled { opacity: 0.5; }
+#memory-list, #skills-list { max-height: 52vh; overflow-y: auto; }
+#memory-list {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 8px; align-items: start;
+}
+.mem-card {
+  position: relative; background: var(--surface-2); border: 1px solid var(--line);
+  border-left: 2px solid var(--patina-dim); border-radius: var(--r-sm);
+  padding: 10px 30px 10px 13px; min-height: 100%;
+}
+.mem-card .text { font-size: 13px; line-height: 1.5; color: var(--text); word-break: break-word; }
+.mem-card .forget {
+  position: absolute; top: 6px; right: 6px; background: transparent; border: none;
+  color: var(--text-faint); cursor: pointer; padding: 2px 5px; font-size: 12px;
+  opacity: 0; transition: opacity 0.12s, color 0.12s;
+}
+.mem-card:hover .forget { opacity: 1; }
+.mem-card .forget:hover { color: var(--clay); }
+#memory-list .empty { grid-column: 1 / -1; }
+
+/* Skills: capability cards. */
+#skills-list { display: flex; flex-direction: column; gap: 8px; }
+.skill-card {
+  background: var(--surface-2); border: 1px solid var(--line);
+  border-left: 2px solid var(--brass-deep); border-radius: var(--r-sm); padding: 10px 13px;
+}
+.skill-card .name { font-family: var(--font-display); font-weight: 600; color: var(--brass); font-size: 14px; }
+.skill-card .desc { color: var(--text-dim); font-size: 13px; line-height: 1.5; margin-top: 2px; }
+#memory-list .empty, #skills-list .empty { padding: 28px; text-align: center; }
+
+/* --- Scheduled jobs: one card per job --- */
+#jobs-list {
+  max-height: 42vh; overflow-y: auto; margin-bottom: 16px;
+  display: flex; flex-direction: column; gap: 8px;
+}
+#jobs-list .empty { padding: 24px; text-align: center; }
+#jobs-list .job {
+  background: var(--surface-2); border: 1px solid var(--line);
+  border-left: 2px solid var(--brass-deep); border-radius: var(--r-sm); padding: 11px 13px;
+}
+#jobs-list .job.disabled { opacity: 0.55; border-left-color: var(--text-faint); }
 .job-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
 .job-head .job-name { font-family: var(--font-display); font-weight: 600; color: var(--brass); }
 .job-toggle { display: flex; align-items: center; gap: 5px; font-size: 12px; color: var(--text-dim); cursor: pointer; }
@@ -697,10 +789,10 @@ dialog menu button.primary:hover { box-shadow: 0 0 16px -5px rgba(214,163,92,0.7
 @media (max-width: 720px) {
   #sidebar { width: 64px; }
   .brand-name { display: none; }
-  #new-chat { font-size: 16px; padding: 8px; }
   .sidebar-foot { flex-direction: column; }
-  select { max-width: 150px; }
-  #messages, .composer-row, #attachments { padding-left: 14px; padding-right: 14px; }
+  #messages, .composer-box, #attachments { padding-left: 14px; padding-right: 14px; }
+  #model-chip { max-width: 46vw; }
+  #model-chip #chip-provider { display: none; }
 }
 
 @media (prefers-reduced-motion: reduce) {

@@ -137,7 +137,8 @@ class SimpleBackend:
 # are over-eager, so without this you get conversation logs ("User was told X")
 # and world facts ("War Y ended in Z") saved as "memories". This restricts
 # extraction to durable USER-centric attributes and leans hard toward skipping.
-# (Configured on the mem0 service; kept here for reference + the simple fallback.)
+# (Used only by the in-process Mem0Backend; the mem0 service container carries
+# its own equivalent via `custom_instructions` in mem0svc/server.py.)
 _EXTRACTION_PROMPT = """You are a strict, conservative memory curator for a personal assistant. From the conversation below, extract ONLY durable facts about the USER that meet ALL of these criteria:
 
 1. About the USER specifically — their identity, stable preferences, work, environment, or ongoing projects.
@@ -170,8 +171,10 @@ Return JSON: {{"facts": ["...", "..."]}}
 # Heuristic backstop: even with the strict prompt, local models sometimes slip
 # conversation-log style "facts" through. Drop those before counting them.
 import re as _re
+# Any leading subject ("User", "the assistant", "John") followed by a
+# communication verb is a conversation-log entry, not a durable fact.
 _BAD_MEMORY_RE = _re.compile(
-    r"^(?:the\s+)?(?:user|assistant|model)\s+"
+    r"^(?:the\s+)?[\w'-]+\s+"
     r"(?:"
     r"wa?s\s+(?:informed|told|shown|given|explained|taught|asked|inquired|wondered|noted|mentioned)|"
     r"were\s+(?:informed|told|shown|given|explained|taught|asked|inquired|wondered|noted|mentioned)|"
@@ -494,7 +497,6 @@ def init_memory() -> None:
 
 
 def backend() -> Backend:
-    global _backend
     if _backend is None:
         init_memory()
     assert _backend is not None
@@ -540,17 +542,18 @@ def memory_tools() -> list[Tool]:
 # timer and starts a new one, so back-to-back turns batch into one run.
 _EXTRACT_DELAY = float(os.getenv("MEMORY_DEBOUNCE_SECONDS", "300"))
 _pending_task: asyncio.Task | None = None
-_pending_turns: list[tuple[str, str]] = []
+_pending_turns: list[tuple[str, str, str | None]] = []
 
 
-def schedule_extraction(user_text: str, assistant_text: str) -> None:
+def schedule_extraction(user_text: str, assistant_text: str, scope: str | None = None) -> None:
     """Schedule a memory extraction to fire after _EXTRACT_DELAY of chat quiet.
     Re-schedules on every call — busy stretches coalesce into a single run that
-    fires once the user stops asking."""
-    global _pending_task, _pending_turns
+    fires once the user stops asking. Each turn carries its own scope (mem0
+    user_id): None for the web UI's default user, `discord:<id>` for DM turns."""
+    global _pending_task
     if not assistant_text.strip():
         return
-    _pending_turns.append((user_text, assistant_text))
+    _pending_turns.append((user_text, assistant_text, scope))
     if _pending_task is not None and not _pending_task.done():
         _pending_task.cancel()
     try:
@@ -563,23 +566,26 @@ def schedule_extraction(user_text: str, assistant_text: str) -> None:
 def _run_extraction_sync() -> None:
     global _pending_turns
     turns, _pending_turns = _pending_turns, []
-    for u, a in turns:
+    for u, a, scope in turns:
         try:
-            record_turn(u, a)
+            record_turn(u, a, scope)
         except Exception as exc:  # never let extraction break anything
             print(f"[memory] extraction failed: {type(exc).__name__}: {exc}")
 
 
 async def _run_extraction() -> None:
+    global _pending_turns
     try:
         await asyncio.sleep(_EXTRACT_DELAY)
     except asyncio.CancelledError:
         return
-    turns, _pending_turns[:] = _pending_turns, []
+    # Rebind (don't clear in place): slice-assigning [] would also empty `turns`,
+    # which aliases the same list — that bug silently disabled all extraction.
+    turns, _pending_turns = _pending_turns, []
     if not turns:
         return
-    for user_text, assistant_text in turns:
+    for user_text, assistant_text, scope in turns:
         try:
-            await asyncio.to_thread(record_turn, user_text, assistant_text)
+            await asyncio.to_thread(record_turn, user_text, assistant_text, scope)
         except Exception as exc:
             print(f"[memory] background extraction failed: {type(exc).__name__}: {exc}")

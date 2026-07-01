@@ -27,6 +27,29 @@ os.environ.setdefault("ANONYMIZED_TELEMETRY", "False")
 
 EMBED_DIMS = int(os.getenv("MEM0_EMBED_DIMS", "768"))
 
+# Layered onto mem0's built-in extraction prompt (mem0 2.x `custom_instructions`).
+# Two goals: (1) catch facts the user states only in passing — inside a question,
+# a comparison, an aside; (2) keep out conversation-log noise and world facts.
+CUSTOM_INSTRUCTIONS = os.getenv("MEM0_CUSTOM_INSTRUCTIONS", """\
+Extract only durable facts about people: identity, stable preferences, work,
+environment, and ongoing projects.
+
+- Facts may be stated directly ("I am 42, I live in California") OR implied in
+  passing. For example, "for people like me around 42, how much wealth is
+  successful in California" implies "User is around 42 years old" and "User
+  lives in California" — extract implied self-referential facts like these too.
+- Attribute every fact to the right person. Some conversations are multi-speaker
+  transcripts with named lines like "[12:03] John: I just moved to NYC" — store
+  those facts under the speaker's name ("John lives in NYC", "Edwin is 35"),
+  and resolve "I"/"me" to the line's speaker. Use "User" only when the speaker
+  has no name in the conversation (a plain 1-on-1 chat).
+- Never record conversation events ("User asked about X", "John was told Y"),
+  general world facts, or summaries of what was discussed.
+- A good fact would still be true a month from now and would change how the
+  assistant should answer in the future. When unsure, skip — an empty result is
+  better than noise.
+""")
+
 CONFIG: dict[str, Any] = {
     "version": "v1.1",
     "llm": {
@@ -60,6 +83,7 @@ CONFIG: dict[str, Any] = {
         },
     },
     "history_db_path": os.getenv("HISTORY_DB_PATH", "/app/history/history.db"),
+    "custom_instructions": CUSTOM_INSTRUCTIONS,
 }
 
 # mem0's OpenAI clients also read OPENAI_API_KEY/OPENAI_BASE_URL from env in some

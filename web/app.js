@@ -170,6 +170,7 @@ function currentMaxContext() {
 }
 
 function renderCtxMeter() {
+  updateModelChip();  // renderCtxMeter runs on every selection change — the chip rides along
   const meter = $("#ctx-meter");
   if (!meter) return;
   const max = currentMaxContext();
@@ -199,8 +200,7 @@ function renderModelList() {
   list.innerHTML = "";
   matches.slice(0, MODEL_LIST_CAP).forEach((m) => {
     const li = el("li");
-    li.textContent = m;
-    li.title = m;
+    li.textContent = m;   // items wrap in CSS, so the full id is readable inline
     li.dataset.value = m;
     if (m === input.value) li.classList.add("selected");
     list.appendChild(li);
@@ -226,11 +226,52 @@ function pickModel(value) {
   list.hidden = true;
   savePref(modelKey($("#provider").value), value);
   renderCtxMeter();
+  // Picking a model is the terminal action of the menu — close it and hand
+  // focus back to the composer, like the Claude/Gemini pickers.
+  setModelMenu(false);
+  $("#input").focus();
 }
 
 $("#provider").addEventListener("change", () => {
   savePref(PROVIDER_KEY, $("#provider").value);
   populateModels();
+});
+
+// --- Model chip + popover ----------------------------------------------------
+// The provider/model controls live in a popover anchored to a compact
+// "provider / model" chip in the composer bar (next to send).
+function updateModelChip() {
+  const psel = $("#provider");
+  const opt = psel.selectedIndex >= 0 ? psel.options[psel.selectedIndex] : null;
+  const pname = state.providers.length && opt ? opt.textContent : "";
+  const m = $("#model").value.trim();
+  $("#chip-provider").textContent = pname;
+  $("#chip-provider").hidden = !pname;
+  $("#chip-model").textContent = m || (state.providers.length ? "choose model" : "no providers");
+  $("#model-chip").classList.toggle("unset", !m);
+  // Full untruncated readout inside the popover — the chip ellipsizes long ids,
+  // and a hover tooltip would cover the popover's own controls.
+  $("#model-current").textContent = m ? `${pname ? pname + " / " : ""}${m}` : "no model selected";
+}
+
+function setModelMenu(open) {
+  const menu = $("#model-menu");
+  if (menu.hidden === !open) return;
+  menu.hidden = !open;
+  $("#model-chip").setAttribute("aria-expanded", String(open));
+  if (open) {
+    const mi = $("#model");
+    if (!mi.disabled) { mi.focus(); mi.select(); }  // focus opens the filtered list
+  } else {
+    $("#model-list").hidden = true;
+  }
+}
+$("#model-chip").onclick = () => setModelMenu($("#model-menu").hidden);
+document.addEventListener("mousedown", (e) => {
+  if (!$("#model-menu").hidden && !$("#model-menu-wrap").contains(e.target)) setModelMenu(false);
+});
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && !$("#model-menu").hidden) setModelMenu(false);
 });
 
 // Combobox interactions on the model input.
@@ -250,6 +291,19 @@ $("#provider").addEventListener("change", () => {
     renderCtxMeter();
   });
   input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      // The input lives inside the composer form — never let Enter submit it.
+      e.preventDefault();
+      const active = list.hidden ? null : list.querySelector("li.active");
+      if (active) { pickModel(active.dataset.value); return; }
+      // No highlighted suggestion: accept the free-typed model id.
+      const v = input.value.trim();
+      if (v) savePref(modelKey($("#provider").value), v);
+      renderCtxMeter();
+      setModelMenu(false);
+      $("#input").focus();
+      return;
+    }
     if (list.hidden) return;
     const items = [...list.querySelectorAll("li:not(.more)")];
     if (!items.length) return;
@@ -257,17 +311,19 @@ $("#provider").addEventListener("change", () => {
     let idx = cur ? items.indexOf(cur) : -1;
     if (e.key === "ArrowDown") { e.preventDefault(); markActive((idx + 1) % items.length); items[(idx + 1) % items.length].scrollIntoView({ block: "nearest" }); }
     else if (e.key === "ArrowUp") { e.preventDefault(); markActive((idx - 1 + items.length) % items.length); items[(idx - 1 + items.length) % items.length].scrollIntoView({ block: "nearest" }); }
-    else if (e.key === "Enter" && idx >= 0) { e.preventDefault(); pickModel(items[idx].dataset.value); }
-    else if (e.key === "Escape") { list.hidden = true; }
+    // Two-stage Escape: first closes the suggestion list, a second closes the menu.
+    else if (e.key === "Escape") { e.stopPropagation(); list.hidden = true; }
   });
   list.addEventListener("mousedown", (e) => {
-    // mousedown fires before the input's blur; use it so we can pick + keep focus.
+    // mousedown fires before the input's blur, so the pick registers first.
     const li = e.target.closest("li:not(.more)");
-    if (li) { e.preventDefault(); pickModel(li.dataset.value); input.focus(); }
+    if (li) { e.preventDefault(); pickModel(li.dataset.value); }
   });
 })();
 
 // --- Conversations ----------------------------------------------------------
+// Today / Yesterday / Previous 7 days; anything older is headed by its exact
+// date (year added once it's not the current year).
 function convGroup(ts) {
   const now = new Date();
   const startToday = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
@@ -276,15 +332,17 @@ function convGroup(ts) {
   if (t >= startToday) return "Today";
   if (t >= startToday - day) return "Yesterday";
   if (t >= startToday - 7 * day) return "Previous 7 days";
-  if (t >= startToday - 30 * day) return "Previous 30 days";
   const d = new Date(t);
-  return d.getFullYear() === now.getFullYear()
-    ? d.toLocaleString(undefined, { month: "long" })
-    : d.toLocaleString(undefined, { month: "long", year: "numeric" });
+  return d.toLocaleDateString(undefined, d.getFullYear() === now.getFullYear()
+    ? { month: "long", day: "numeric" }
+    : { month: "long", day: "numeric", year: "numeric" });
 }
+
+let convCache = [];  // newest-first; feeds both the sidebar and chat search
 
 async function loadConversations() {
   const data = await fetch("/api/conversations").then((r) => r.json());
+  convCache = data.conversations || [];
   const box = $("#conversations");
   box.innerHTML = "";
   let lastGroup = null;
@@ -318,6 +376,80 @@ async function loadConversations() {
   });
 }
 
+// --- Chat search --------------------------------------------------------------
+// A Gemini-style overlay: pill search input, "Recent"/"Results" section label,
+// rows of title + date. Client-side title filter over the cached conversation
+// list; arrow keys + Enter to pick, click to open.
+function convDateLabel(ts) {
+  const now = new Date();
+  const startToday = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+  const t = (ts || 0) * 1000;
+  if (t >= startToday) return "Today";
+  if (t >= startToday - 86400000) return "Yesterday";
+  const d = new Date(t);
+  return d.toLocaleDateString(undefined, d.getFullYear() === now.getFullYear()
+    ? { month: "short", day: "numeric" }
+    : { month: "short", day: "numeric", year: "numeric" });
+}
+
+function renderSearchResults() {
+  const q = $("#chat-search-input").value.trim().toLowerCase();
+  const items = q
+    ? convCache.filter((c) => (c.title || "Untitled").toLowerCase().includes(q))
+    : convCache;
+  $("#search-section").textContent = q ? (items.length ? "Results" : "No chats match") : "Recent";
+  const box = $("#search-results");
+  box.innerHTML = "";
+  items.forEach((c, i) => {
+    const row = el("div", "search-result" + (i === 0 ? " active" : ""));
+    const title = el("span", "title");
+    title.textContent = c.title || "Untitled";
+    const date = el("span", "date");
+    date.textContent = convDateLabel(c.updated_at || c.created_at);
+    row.append(title, date);
+    row.onclick = () => openConversation(c.id);  // openConversation exits search
+    box.appendChild(row);
+  });
+}
+
+// Search is a full page in the main column (not a popup): it swaps in for the
+// chat view; opening a chat, starting a new one, or Escape swaps back.
+function setSearchOpen(open) {
+  $("#search-page").hidden = !open;
+  $("#chat").hidden = open;
+  updateScrollJump();
+  if (open) $("#chat-search-input").focus();
+}
+
+async function openChatSearch() {
+  $("#chat-search-input").value = "";
+  await loadConversations();  // fresh list (also refreshes the sidebar)
+  renderSearchResults();
+  setSearchOpen(true);
+}
+$("#search-chats").onclick = openChatSearch;
+$("#search-chats-collapsed").onclick = openChatSearch;
+$("#new-chat-collapsed").onclick = newChat;
+$("#search-close").onclick = () => setSearchOpen(false);
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && !$("#search-page").hidden) setSearchOpen(false);
+});
+
+$("#chat-search-input").addEventListener("input", renderSearchResults);
+$("#chat-search-input").addEventListener("keydown", (e) => {
+  const rows = [...$("#search-results").querySelectorAll(".search-result")];
+  if (!rows.length) return;
+  const idx = rows.findIndex((r) => r.classList.contains("active"));
+  const move = (to) => {
+    rows.forEach((r) => r.classList.remove("active"));
+    rows[to].classList.add("active");
+    rows[to].scrollIntoView({ block: "nearest" });
+  };
+  if (e.key === "ArrowDown") { e.preventDefault(); move((idx + 1) % rows.length); }
+  else if (e.key === "ArrowUp") { e.preventDefault(); move((idx - 1 + rows.length) % rows.length); }
+  else if (e.key === "Enter") { e.preventDefault(); if (idx >= 0) rows[idx].click(); }
+});
+
 // --- Collapsible sidebar ----------------------------------------------------
 function setSidebarCollapsed(collapsed) {
   $("#app").classList.toggle("sidebar-collapsed", collapsed);
@@ -328,6 +460,7 @@ $("#expand-sidebar").onclick = () => setSidebarCollapsed(false);
 try { if (localStorage.getItem("harness.sidebar") === "1") setSidebarCollapsed(true); } catch (_) {}
 
 async function openConversation(id) {
+  setSearchOpen(false);
   state.conversationId = id;
   const data = await fetch(`/api/conversations/${id}`).then((r) => r.json());
   state.promptTokens = (data.conversation && data.conversation.prompt_tokens) || null;
@@ -359,6 +492,7 @@ const EMPTY_STATE = `
   </div>`;
 
 function newChat() {
+  setSearchOpen(false);
   state.conversationId = null;
   state.promptTokens = null;
   state.stick = true;
@@ -644,31 +778,10 @@ function addThinkingBlock(initial, open = false) {
   return { details: d, reason, live: summary.querySelector(".live") };
 }
 
-const MEM_GLYPH = { ADD: "+", UPDATE: "~", DELETE: "−", NOOP: "·" };
-function addMemoryChip(changes) {
-  const chip = el("div", "mem-chip");
-  const label = el("div", "chip-label");
-  label.textContent = `memory updated · ${changes.length} change${changes.length === 1 ? "" : "s"}`;
-  const list = el("ul");
-  changes.forEach((c) => {
-    const li = el("li");
-    const ev = (c.event || "ADD").toUpperCase();
-    li.classList.add(ev.toLowerCase());
-    const g = el("span", "g"); g.textContent = MEM_GLYPH[ev] || "·";
-    const t = el("span", "t"); t.textContent = c.memory;
-    li.append(g, t);
-    list.appendChild(li);
-  });
-  chip.append(label, list);
-  ensureTrace().appendChild(chip);
-  bumpTrace("memory");
-  scroll();
-}
-
 // --- Trace container: one collapsed wrapper per turn for all process events ---
 let currentTrace = null;        // the outer <details class="trace">
 let currentTraceBody = null;    // its .trace-body div
-const currentTraceCounts = { tool: 0, thinking: 0, memory: 0 };
+const currentTraceCounts = { tool: 0, thinking: 0 };
 
 // The active "step": tools called after a reasoning phase nest inside that
 // thinking block, so collapsing the thinking hides its tools too. Null when no
@@ -682,7 +795,6 @@ function resetTrace() {
   currentTraceBody = null;
   currentTraceCounts.tool = 0;
   currentTraceCounts.thinking = 0;
-  currentTraceCounts.memory = 0;
   stepTools = null;
   stepCount = 0;
   stepCountEl = null;
@@ -716,7 +828,6 @@ function updateTraceSummary() {
   const parts = [];
   if (c.tool) parts.push(`${c.tool} tool${c.tool === 1 ? "" : "s"}`);
   if (c.thinking) parts.push("thinking");
-  if (c.memory) parts.push(`${c.memory} memor${c.memory === 1 ? "y" : "ies"}`);
   currentTrace.querySelector(".tmeta").textContent = parts.join(" · ") || "—";
 }
 
@@ -922,7 +1033,7 @@ async function send(providedText, providedImages) {
   const model = $("#model").value;
   const images = isRetry ? (providedImages || []) : state.attachments.map((a) => a.url).filter(Boolean);
   if (!text && !images.length) return;
-  if (!provider || !model) { setStatus("Pick a provider and model first."); return; }
+  if (!provider || !model) { setStatus("Pick a provider and model first."); setModelMenu(true); return; }
 
   state.stick = true;  // a turn you just started should follow the new output
   addMessageBubble("user", text, images);
@@ -1140,13 +1251,6 @@ async function send(providedText, providedImages) {
         setStatus("⚠ " + ev.message);
         addMessageBubble("assistant", "_Error: " + ev.message + "_");
         break;
-      case "memory_saving":
-        endThinking();
-        setStatus("saving memory…");
-        break;
-      case "memory_updated":
-        addMemoryChip(ev.changes || []);
-        break;
       case "done":
         if (ev.tokens) completionTokens = ev.tokens;
         if (ev.prompt_tokens) state.promptTokens = ev.prompt_tokens;
@@ -1192,34 +1296,51 @@ $("#soul-save").onclick = async (e) => {
   setStatus("soul.md saved — applies to the next turn.");
 };
 // --- Memory -----------------------------------------------------------------
+// Facts are cached client-side so the filter box works instantly; renderMemories
+// re-fetches, renderMemoryList re-renders the cached set through the filter.
+let memCache = [];
+
 async function renderMemories() {
   const data = await fetch("/api/memories").then((r) => r.json());
+  memCache = data.memories || [];
+  renderMemoryList();
+}
+
+function renderMemoryList() {
   const list = $("#memory-list");
-  if (!data.memories.length) {
-    list.innerHTML = '<div class="empty">No memories yet.</div>';
-    return;
-  }
+  const q = $("#memory-filter").value.trim().toLowerCase();
+  const items = q ? memCache.filter((m) => (m.content || "").toLowerCase().includes(q)) : memCache;
+  $("#memory-count").textContent = !memCache.length ? ""
+    : q ? `${items.length} / ${memCache.length}`
+    : `${memCache.length} fact${memCache.length === 1 ? "" : "s"}`;
+  if (!memCache.length) { list.innerHTML = '<div class="empty">No memories yet.</div>'; return; }
+  if (!items.length) { list.innerHTML = '<div class="empty">No facts match the filter.</div>'; return; }
   list.innerHTML = "";
-  data.memories.forEach((m) => {
-    const row = el("div", "mem");
-    const id = el("span", "id"); id.textContent = "•";
-    const text = el("span", "text"); text.textContent = m.content;
+  items.forEach((m) => {
+    const card = el("div", "mem-card");
+    const text = el("div", "text"); text.textContent = m.content;
     const forget = el("button", "forget"); forget.type = "button"; forget.textContent = "✕"; forget.title = "Forget";
     forget.onclick = async () => {
       await fetch(`/api/memories/${m.id}`, { method: "DELETE" });
       renderMemories();
     };
-    row.append(id, text, forget);
-    list.appendChild(row);
+    card.append(text, forget);
+    list.appendChild(card);
   });
 }
 
+$("#memory-filter").addEventListener("input", renderMemoryList);
+// The filter lives inside the dialog's <form method="dialog"> — Enter must not
+// close the dialog.
+$("#memory-filter").addEventListener("keydown", (e) => { if (e.key === "Enter") e.preventDefault(); });
+
 $("#show-memory").onclick = async () => {
+  $("#memory-filter").value = "";
   await renderMemories();
   $("#memory-dialog").showModal();
 };
-$("#memory-add").onclick = async (e) => {
-  e.preventDefault();
+
+async function addMemoryFromInput() {
   const input = $("#memory-input");
   const content = input.value.trim();
   if (!content) return;
@@ -1230,14 +1351,28 @@ $("#memory-add").onclick = async (e) => {
   });
   input.value = "";
   renderMemories();
-};
+}
+$("#memory-add").onclick = (e) => { e.preventDefault(); addMemoryFromInput(); };
+// Enter in the add box saves the fact instead of closing the dialog.
+$("#memory-input").addEventListener("keydown", (e) => {
+  if (e.key === "Enter") { e.preventDefault(); addMemoryFromInput(); }
+});
 
 $("#show-skills").onclick = async () => {
   const data = await fetch("/api/skills").then((r) => r.json());
   const list = $("#skills-list");
-  list.innerHTML = data.skills.length
-    ? data.skills.map((s) => `<div class="skill"><b>${s.name}</b><br>${s.description}</div>`).join("")
-    : '<div class="empty">No skills in ./skills</div>';
+  list.innerHTML = "";
+  if (!data.skills.length) {
+    list.innerHTML = '<div class="empty">No skills in ./skills</div>';
+  } else {
+    data.skills.forEach((s) => {
+      const card = el("div", "skill-card");
+      const name = el("div", "name"); name.textContent = s.name;
+      const desc = el("div", "desc"); desc.textContent = s.description || "";
+      card.append(name, desc);
+      list.appendChild(card);
+    });
+  }
   $("#skills-dialog").showModal();
 };
 

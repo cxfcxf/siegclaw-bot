@@ -47,14 +47,8 @@ class Registry:
         for t in tools:
             self.add(t)
 
-    def get(self, name: str) -> Tool | None:
-        return self._tools.get(name)
-
     def schemas(self) -> list[dict[str, Any]]:
         return [t.schema() for t in self._tools.values()]
-
-    def names(self) -> list[str]:
-        return list(self._tools.keys())
 
     async def call(self, name: str, args: dict[str, Any]) -> str:
         tool = self._tools.get(name)

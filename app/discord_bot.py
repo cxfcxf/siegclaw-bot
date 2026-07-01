@@ -563,7 +563,11 @@ def create_client(mcp_manager) -> discord.Client:
                     # Channel mention: live Discord history is the source of truth
                     # (not persisted). Build the timestamped transcript + question,
                     # then drive the non-streaming tool loop to a single reply.
-                    scope = f"discord:{user_id}"
+                    # Memory is scoped per SERVER, not per triggering user: channel
+                    # transcripts carry many speakers, extraction attributes facts
+                    # by display name ("John lives in NYC"), and a shared guild pool
+                    # makes them retrievable no matter who pings the bot next.
+                    scope = f"discord-guild:{message.guild.id}"
                     registry, skills = build_discord_registry(
                         message.channel, client.user.id, scope, mcp_manager.tools
                     )

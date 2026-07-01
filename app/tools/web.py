@@ -66,10 +66,7 @@ def web_scrape(url: str) -> str:
     md = data.get("markdown", "")
     title = data.get("metadata", {}).get("title", "")
     header = f"# {title}\n({url})\n\n" if title else f"({url})\n\n"
-    body = md[:MAX_OUTPUT]
-    if len(md) > MAX_OUTPUT:
-        body += f"\n... [truncated, {len(md) - MAX_OUTPUT} more chars]"
-    return header + (body or "(no content extracted)")
+    return header + (_truncate(md) or "(no content extracted)")
 
 
 def web_map(url: str, limit: int = 100, search: str | None = None) -> str:

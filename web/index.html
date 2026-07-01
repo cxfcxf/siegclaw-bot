@@ -22,22 +22,16 @@
           <span class="brand-mark"></span>
           <span class="brand-name">siegclaw</span>
         </div>
-        <button id="new-chat" type="button">＋ New conversation</button>
+        <button id="new-chat" type="button" title="New conversation">
+          <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"/></svg>
+          New conversation
+        </button>
+        <button id="search-chats" type="button" title="Search chats">
+          <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
+          Search chats
+        </button>
       </div>
       <div id="conversations"></div>
-      <div class="sidebar-controls">
-        <div class="control">
-          <label for="provider">provider</label>
-          <select id="provider"></select>
-        </div>
-        <div class="control">
-          <label for="model">model</label>
-          <div class="combobox">
-            <input id="model" type="text" placeholder="Pick or type a model…" autocomplete="off" spellcheck="false" />
-            <ul id="model-list" class="combobox-list" role="listbox" hidden></ul>
-          </div>
-        </div>
-      </div>
       <div class="sidebar-foot">
         <button id="edit-soul" type="button" title="Edit system prompt">soul</button>
         <button id="show-memory" type="button" title="Stored memories">memory</button>
@@ -47,32 +41,82 @@
     </aside>
 
     <main id="main" class="is-empty">
-      <button id="expand-sidebar" class="icon-btn floating" type="button" title="Show panel" aria-label="Show panel">
-        <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M9 4v16"/><path d="M12.5 9.5 15 12l-2.5 2.5"/></svg>
-      </button>
+      <div id="collapsed-tools" class="floating">
+        <button id="expand-sidebar" class="icon-btn" type="button" title="Show panel" aria-label="Show panel">
+          <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M9 4v16"/><path d="M12.5 9.5 15 12l-2.5 2.5"/></svg>
+        </button>
+        <button id="new-chat-collapsed" class="icon-btn" type="button" title="New conversation" aria-label="New conversation">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"/></svg>
+        </button>
+        <button id="search-chats-collapsed" class="icon-btn" type="button" title="Search chats" aria-label="Search chats">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
+        </button>
+      </div>
       <span id="status" class="floating"></span>
 
       <button id="scroll-jump" type="button" aria-label="Scroll" title="Jump to top">
         <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 15l6-6 6 6"/></svg>
       </button>
 
+      <div id="search-page" hidden>
+        <div class="search-page-inner">
+          <div class="search-box">
+            <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
+            <input id="chat-search-input" type="text" placeholder="Search chats" autocomplete="off" spellcheck="false" />
+            <button id="search-close" type="button" title="Close search (Esc)" aria-label="Close search">✕</button>
+          </div>
+          <div id="search-section" class="search-section">Recent</div>
+          <div id="search-results"></div>
+        </div>
+      </div>
+
       <div id="chat">
         <div id="messages"></div>
 
         <form id="composer">
           <div id="attachments"></div>
-          <div class="composer-row">
-            <button id="attach" type="button" title="Attach image" aria-label="Attach image">
-              <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M21.4 11.05 12.25 20.2a5 5 0 0 1-7.07-7.07l9.19-9.19a3 3 0 0 1 4.24 4.24l-9.2 9.19a1 1 0 0 1-1.41-1.41l8.48-8.49"/></svg>
-            </button>
-            <button id="think-toggle" class="think-btn on" type="button" aria-pressed="true" title="Toggle model reasoning">
-              <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6"/><path d="M10 22h4"/><path d="M15.09 14c.18-.98.65-1.74 1.41-2.5A4.65 4.65 0 0 0 18 8 6 6 0 0 0 6 8c0 1 .23 2.23 1.5 3.5A4.61 4.61 0 0 1 8.91 14"/></svg>
-            </button>
-            <select id="effort" class="effort" hidden title="Reasoning effort"></select>
+          <div class="composer-box">
             <textarea id="input" rows="1" placeholder="Message the model — it can run code, search, and see images…"></textarea>
-            <button id="send" type="submit" aria-label="Send">
-              <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h13M12 5l7 7-7 7"/></svg>
-            </button>
+            <div class="composer-bar">
+              <div class="bar-left">
+                <button id="attach" type="button" title="Attach image" aria-label="Attach image">
+                  <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M21.4 11.05 12.25 20.2a5 5 0 0 1-7.07-7.07l9.19-9.19a3 3 0 0 1 4.24 4.24l-9.2 9.19a1 1 0 0 1-1.41-1.41l8.48-8.49"/></svg>
+                </button>
+                <button id="think-toggle" class="think-btn on" type="button" aria-pressed="true" title="Toggle model reasoning">
+                  <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6"/><path d="M10 22h4"/><path d="M15.09 14c.18-.98.65-1.74 1.41-2.5A4.65 4.65 0 0 0 18 8 6 6 0 0 0 6 8c0 1 .23 2.23 1.5 3.5A4.61 4.61 0 0 1 8.91 14"/></svg>
+                </button>
+                <select id="effort" class="effort" hidden title="Reasoning effort"></select>
+              </div>
+              <div class="bar-right">
+                <div id="model-menu-wrap">
+                  <button id="model-chip" type="button" aria-haspopup="true" aria-expanded="false">
+                    <span id="chip-provider"></span>
+                    <span id="chip-model">model</span>
+                    <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg>
+                  </button>
+                  <div id="model-menu" hidden>
+                    <!-- Model first: its suggestion list opens upward, so with the
+                         model control at the top the list floats above the popover
+                         (over the chat) instead of covering the provider select. -->
+                    <div class="control">
+                      <label for="model">model</label>
+                      <div class="combobox">
+                        <input id="model" type="text" placeholder="Pick or type a model…" autocomplete="off" spellcheck="false" />
+                        <ul id="model-list" class="combobox-list" role="listbox" hidden></ul>
+                      </div>
+                    </div>
+                    <div class="control">
+                      <label for="provider">provider</label>
+                      <select id="provider"></select>
+                    </div>
+                    <div id="model-current"></div>
+                  </div>
+                </div>
+                <button id="send" type="submit" aria-label="Send">
+                  <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h13M12 5l7 7-7 7"/></svg>
+                </button>
+              </div>
+            </div>
           </div>
           <div id="ctx-meter" class="ctx-meter"></div>
           <input id="file-input" type="file" accept="image/*" multiple hidden />
@@ -100,6 +144,10 @@
       <div class="add-memory">
         <input id="memory-input" type="text" placeholder="Add a fact to remember…" />
         <button id="memory-add" value="add" class="primary">Add</button>
+      </div>
+      <div class="mem-toolbar">
+        <input id="memory-filter" type="search" placeholder="Filter facts…" autocomplete="off" spellcheck="false" />
+        <span id="memory-count"></span>
       </div>
       <div id="memory-list"></div>
       <menu><button value="close">Close</button></menu>

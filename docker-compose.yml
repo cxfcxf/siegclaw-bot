@@ -51,10 +51,12 @@ services:
       - "host.docker.internal:host-gateway"
     environment:
       <<: *noproxy
-      # Extraction LLM (OpenAI-compatible). Point at your llama.cpp.
-      MEM0_LLM_BASE_URL: http://192.168.1.121:8080/v1
-      MEM0_LLM_MODEL: "unsloth/Qwen3.6-27B-MTP-GGUF:UD-Q4_K_XL"
-      MEM0_LLM_API_KEY: not-needed
+      # Extraction LLM (OpenAI-compatible). DeepSeek V4 Flash by default — the
+      # local llama.cpp box is often down, which silently no-ops extraction.
+      # Reuses DEEPSEEK_API_KEY from .env (compose interpolates it from there).
+      MEM0_LLM_BASE_URL: https://api.deepseek.com/v1
+      MEM0_LLM_MODEL: "deepseek-v4-flash"
+      MEM0_LLM_API_KEY: ${DEEPSEEK_API_KEY}
       # Embedder -> the fastembed service.
       MEM0_EMBED_BASE_URL: http://embed:8090/v1
       MEM0_EMBED_MODEL: nomic-embed-text

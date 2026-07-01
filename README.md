@@ -19,8 +19,11 @@ is set; without it you get the web UI alone.
   SQLite store), refers to people by name, posts live `-#` tool-status lines, chunks
   replies over Discord's 2000-char limit, reads image attachments, and understands
   pasted YouTube links. Extra Discord-only tools `fetch_user_messages` /
-  `fetch_channel_history` read older history on demand. Memory is scoped **per
-  Discord user**. The shell/file tools are withheld from Discord unless
+  `fetch_channel_history` read older history on demand. Channel memory is scoped
+  **per server** (one shared pool per guild, facts attributed by display name —
+  "John lives in NYC" — so anyone's mention can recall them); DM turns share the
+  web UI's default scope (the DM surface is the owner's). The shell/file tools
+  are withheld from Discord unless
   `DISCORD_ENABLE_SHELL=true`. **DM slash commands** (DM-only, hidden from channel
   autocomplete): `/new` (start a fresh conversation — reports the model + context
   window it'll use), `/list`, `/resume <ref>`, and `/model` (switch the active DM
@@ -113,24 +116,36 @@ is set; without it you get the web UI alone.
   system prompt cacheable, the **semantically relevant facts are snapshotted once
   at the conversation's start** into the prefix and reused for that conversation;
   the model pulls fresher or differently-relevant ones on demand via the
-  `search_memory` tool. A heuristic filter keeps out conversation-log junk like
-  "User was told…". Memory runs as a small **self-hosted stack of side
-  containers** so the bot image stays lean (no torch): a tiny custom **mem0
-  service** (`mem0svc/`) + **pgvector** (Postgres) for storage + a featherweight
-  **fastembed** embeddings service (`embed/`, ONNX Runtime — no torch, no GPU).
-  Extraction runs on your llama.cpp; the bot talks to mem0 over HTTP via
-  `MEM0_API_URL`. The web UI shares one default scope; **Discord scopes memory
-  per user**. View/add/delete via the **memory** button in the sidebar footer. If
-  `MEM0_API_URL` is unset it falls back to a simple all-facts SQLite store.
+  `search_memory` tool. Extraction runs **debounced in the background**
+  (`MEMORY_DEBOUNCE_SECONDS`, default 300s of chat quiet), catches facts stated
+  **in passing** ("for people like me around 42…" → "User is around 42"), and in
+  multi-speaker channel transcripts **attributes facts by display name** ("John
+  lives in NYC") — tune via `MEM0_CUSTOM_INSTRUCTIONS` on the mem0 service. A
+  heuristic filter keeps out conversation-log junk like "User was told…". Memory
+  runs as a small **self-hosted stack of side containers** so the bot image stays
+  lean (no torch): a tiny custom **mem0 service** (`mem0svc/`) + **pgvector**
+  (Postgres) for storage + a featherweight **fastembed** embeddings service
+  (`embed/`, ONNX Runtime — no torch, no GPU). Extraction runs on your llama.cpp;
+  the bot talks to mem0 over HTTP via `MEM0_API_URL`. The web UI and Discord DMs
+  share one default scope (both are the owner's); **channel memory is scoped per
+  server**. View, **filter**, add, or delete facts on the card board behind the
+  **memory** button in the sidebar footer. If `MEM0_API_URL` is unset it falls
+  back to a simple all-facts SQLite store.
 - **History / resume** — every conversation is saved; pick one from the sidebar to
-  resume it with full context. Stored in `data/conversations.db`.
+  resume it with full context. Grouped by Today / Yesterday / Previous 7 days, then
+  by exact date. Stored in `data/conversations.db`.
+- **Chat search** — a full-page search view (the **Search chats** row under
+  New conversation, or the magnifier in the collapsed rail's grouped pill):
+  type to filter every conversation by title, arrow-keys + Enter (or click) to
+  open, Esc to go back to the chat.
 - **Skills** — Claude-style `skills/<name>/SKILL.md` folders. The index is shown
   to the model; full instructions load on demand via the `load_skill` tool.
 - **MCP** — declare servers in `mcp.json` (stdio or HTTP); their tools are exposed
   to the agent, namespaced `mcp__<server>__<tool>`.
 - **Streaming** chat over SSE with live tool-call/result rendering and SQLite
-  conversation history. Provider and model selectors live in the sidebar (no top
-  bar); the live timer signals activity, and a small floating pill surfaces only
+  conversation history. The provider/model picker is a compact chip in the
+  composer bar (next to send, Claude/Gemini-style) that opens a popover with the
+  provider select and the searchable model combobox; the live timer signals activity, and a small floating pill surfaces only
   one-off notices (errors, "stopped"). Assistant markdown renders GFM tables,
   including tab-separated rows that local models sometimes emit raw.
 
