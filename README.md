@@ -102,8 +102,9 @@ data/                SQLite DBs + uploads (created at runtime)
 - Posts live `-#` tool-status lines, chunks replies over the 2000-char limit,
   reads image attachments, understands pasted YouTube links. Replies
   quote-reply in channels but send plain messages in DMs (1-on-1, no need).
-  **DM replies stream**: the message is sent as soon as text starts and edited
-  in place as tokens arrive (▌ cursor), finalized when the turn completes.
+  Optional **DM streaming** (`DISCORD_STREAM_DMS=true`, off by default): the
+  reply is sent early and edited in place as tokens arrive (~1 edit/s — the
+  most Discord's API allows); off, the reply lands as one complete message.
 - **DM slash commands** (hidden from channel autocomplete): `/new`, `/list`,
   `/resume <ref>`, `/model` (provider → model autocomplete). `/new` and
   `/resume` confirmations are posted non-ephemerally so session boundaries
@@ -180,6 +181,7 @@ All via `.env` (see `.env.example`) unless noted.
 | `SEND_FALLBACK_RETRIES` / `SEND_FALLBACK_RETRY_DELAY` / `PROVIDER_LIVENESS_CACHE_TTL` | Send-time fallback tuning |
 | `DISCORD_BOT_TOKEN` | Run the Discord bot (omit for web UI only) |
 | `DISCORD_ENABLE_SHELL` | Allow shell/file tools from Discord (default off) |
+| `DISCORD_STREAM_DMS` | Edit-in-place streaming for DM replies (default off) |
 | `HARNESS_TZ` | IANA timezone for the frozen prompt date and cron |
 | `WORKSPACE_DIR` | Working directory for the bash/file tools |
 | `MEM0_API_URL` | mem0 service URL (unset → simple SQLite memory) |

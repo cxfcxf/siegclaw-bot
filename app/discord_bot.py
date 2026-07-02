@@ -40,6 +40,7 @@ from .agent import (
 )
 from .config import (
     DISCORD_ENABLE_SHELL,
+    DISCORD_STREAM_DMS,
     MAX_AGENT_ITERATIONS,
     MAX_DISCORD_LENGTH,
     UPLOADS_DIR,
@@ -574,12 +575,12 @@ def create_client(mcp_manager) -> discord.Client:
                         et = event.get("type")
                         if et == "token":
                             reply_text += event.get("text", "")
-                            # Stream into a live message: send once there's text,
-                            # then edit in place (throttled to respect rate
-                            # limits). Overflow past one Discord message is
-                            # handled by the final chunked delivery below.
+                            # Optionally stream into a live message: send once
+                            # there's text, then edit in place (throttled to
+                            # respect rate limits). Overflow past one Discord
+                            # message is handled by the final chunked delivery.
                             now = time.monotonic()
-                            if reply_text.strip() and now - stream_edit_at >= STREAM_EDIT_SECONDS:
+                            if DISCORD_STREAM_DMS and reply_text.strip() and now - stream_edit_at >= STREAM_EDIT_SECONDS:
                                 stream_edit_at = now
                                 preview = reply_text[: MAX_DISCORD_LENGTH - 2] + " ▌"
                                 try:

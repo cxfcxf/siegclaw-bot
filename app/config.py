@@ -67,6 +67,10 @@ DISCORD_BOT_TOKEN = os.getenv("DISCORD_BOT_TOKEN", "").strip()
 # Discord is multi-user; the builtin shell/file tools run in this container, so
 # they're withheld from Discord unless explicitly enabled.
 DISCORD_ENABLE_SHELL = os.getenv("DISCORD_ENABLE_SHELL", "false").lower() in ("1", "true", "yes")
+# Stream DM replies by editing the message in place (~1s per edit — Discord has
+# no real streaming, so this is send-then-overwrite). Off by default: the reply
+# lands as one complete message when the turn finishes.
+DISCORD_STREAM_DMS = os.getenv("DISCORD_STREAM_DMS", "false").lower() in ("1", "true", "yes")
 MAX_DISCORD_LENGTH = 2000
 
 # --- Default model order (shared by every surface) -------------------------
