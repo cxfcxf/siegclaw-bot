@@ -338,16 +338,248 @@ function convGroup(ts) {
     : { month: "long", day: "numeric", year: "numeric" });
 }
 
-let convCache = [];  // newest-first; feeds both the sidebar and chat search
+let convCache = [];   // newest-first; feeds both the sidebar and chat search
+let groupCache = [];  // group names (empties included) for the assign dropdown
+
+const FOLDER_ICON = '<svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>';
+const PENCIL_ICON = '<svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>';
+
+async function patchConversation(id, body) {
+  await fetch(`/api/conversations/${id}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
+// Swap a conversation row's content for an inline input editing its title or
+// group. Enter saves, Escape/blur cancels. For groups, a dropdown of every
+// existing group opens immediately (click to pick); the input filters it.
+function editConvInline(item, c, kind) {
+  const input = el("input", "conv-edit");
+  input.value = kind === "title" ? (c.title || "") : (c.grp || "");
+  input.placeholder = kind === "title" ? "Chat title" : "Pick or type a group…";
+  item.classList.add("editing");  // lift the row's overflow so the dropdown shows
+  item.replaceChildren(input);
+
+  let done = false;
+  const finish = async (save) => {
+    if (done) return;
+    done = true;
+    if (save) {
+      const v = input.value.trim();
+      if (kind === "title") { if (v) await patchConversation(c.id, { title: v }); }
+      else await patchConversation(c.id, { group: v });
+    }
+    loadConversations();
+  };
+
+  if (kind === "grp") {
+    const list = el("ul", "conv-edit-list");
+    const render = () => {
+      const f = input.value.trim().toLowerCase();
+      list.innerHTML = "";
+      if (c.grp) {
+        const li = el("li", "clear");
+        li.textContent = "✕ remove from group";
+        li.dataset.value = "";
+        list.appendChild(li);
+      }
+      groupCache
+        .filter((g) => !f || g.toLowerCase().includes(f))
+        .forEach((g) => {
+          const li = el("li");
+          li.textContent = g;
+          li.dataset.value = g;
+          if (g === c.grp) li.classList.add("selected");
+          list.appendChild(li);
+        });
+      const t = input.value.trim();
+      if (t && !groupCache.some((g) => g.toLowerCase() === t.toLowerCase())) {
+        const li = el("li", "create");
+        li.textContent = `＋ create “${t}”`;
+        li.dataset.value = t;
+        list.appendChild(li);
+      }
+      list.hidden = !list.children.length;
+    };
+    // mousedown fires before the input's blur, so the pick lands first.
+    list.onmousedown = async (e) => {
+      const li = e.target.closest("li");
+      if (!li) return;
+      e.preventDefault();
+      e.stopPropagation();
+      if (done) return;
+      done = true;
+      await patchConversation(c.id, { group: li.dataset.value });
+      loadConversations();
+    };
+    input.addEventListener("input", render);
+    item.appendChild(list);
+    render();
+  }
+
+  input.focus();
+  input.select();
+  input.onclick = (e) => e.stopPropagation();
+  input.onkeydown = (e) => {
+    e.stopPropagation();
+    if (e.key === "Enter") { e.preventDefault(); finish(true); }
+    else if (e.key === "Escape") finish(false);
+  };
+  input.onblur = () => finish(false);
+}
+
+function convRow(c) {
+  const item = el("div", "conv");
+  if (c.id === state.conversationId) item.classList.add("active");
+  if (state.streaming && c.id === state.streamConvId) item.classList.add("streaming");
+  const title = el("span", "title");
+  title.textContent = c.title || "Untitled";
+
+  const rename = el("button", "cact");
+  rename.type = "button";
+  rename.innerHTML = PENCIL_ICON;
+  rename.title = "Rename";
+  rename.onclick = (e) => { e.stopPropagation(); editConvInline(item, c, "title"); };
+
+  const grp = el("button", "cact");
+  grp.type = "button";
+  grp.innerHTML = FOLDER_ICON;
+  grp.title = c.grp ? `Group: ${c.grp}` : "Add to a group";
+  grp.onclick = (e) => { e.stopPropagation(); editConvInline(item, c, "grp"); };
+
+  const del = el("button", "del");
+  del.type = "button";
+  del.textContent = "✕";
+  del.title = "Delete conversation";
+  del.onclick = async (e) => {
+    e.stopPropagation();
+    await fetch(`/api/conversations/${c.id}`, { method: "DELETE" });
+    if (state.conversationId === c.id) newChat();
+    loadConversations();
+  };
+  item.append(title, rename, grp, del);
+  item.onclick = () => openConversation(c.id);
+  return item;
+}
+
+// Collapsed-group names, persisted across reloads.
+function loadGrpCollapsed() {
+  try { return JSON.parse(localStorage.getItem("harness.groupsCollapsed")) || {}; }
+  catch { return {}; }
+}
+function saveGrpCollapsed(o) {
+  try { localStorage.setItem("harness.groupsCollapsed", JSON.stringify(o)); } catch (_) {}
+}
 
 async function loadConversations() {
   const data = await fetch("/api/conversations").then((r) => r.json());
   convCache = data.conversations || [];
+  const groups = data.groups || [];  // first-class: includes empty groups
+  groupCache = groups.map((g) => g.name);
   const box = $("#conversations");
   box.innerHTML = "";
+
+  // Group sections first (server orders by recent activity, empties last).
+  const collapsed = loadGrpCollapsed();
+  const byGroup = new Map();
+  convCache.forEach((c) => {
+    if (!c.grp) return;
+    if (!byGroup.has(c.grp)) byGroup.set(c.grp, []);
+    byGroup.get(c.grp).push(c);
+  });
+  groups.forEach((g) => {
+    const items = byGroup.get(g.name) || [];
+    const isCollapsed = !!collapsed[g.name];
+    const h = el("div", "conv-group grp" + (isCollapsed ? " closed" : ""));
+    h.innerHTML = `<span class="tri">▾</span>${FOLDER_ICON}<span class="gname"></span><span class="gcount"></span><button class="gact" type="button" title="Rename group">${PENCIL_ICON}</button><button class="gdel" type="button" title="Delete group">✕</button>`;
+    h.querySelector(".gname").textContent = g.name;
+    h.querySelector(".gcount").textContent = items.length || "empty";
+    h.onclick = () => {
+      if (isCollapsed) delete collapsed[g.name]; else collapsed[g.name] = 1;
+      saveGrpCollapsed(collapsed);
+      loadConversations();
+    };
+    h.querySelector(".gact").onclick = (e) => {
+      e.stopPropagation();
+      const input = el("input", "conv-edit");
+      input.value = g.name;
+      h.replaceChildren(input);
+      h.onclick = null;
+      input.focus();
+      input.select();
+      let done = false;
+      const finish = async (save) => {
+        if (done) return;
+        done = true;
+        const v = input.value.trim();
+        if (save && v && v !== g.name) {
+          await fetch(`/api/groups/${encodeURIComponent(g.name)}`, {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ name: v }),
+          });
+          if (collapsed[g.name]) { delete collapsed[g.name]; collapsed[v] = 1; saveGrpCollapsed(collapsed); }
+        }
+        loadConversations();
+      };
+      input.onclick = (ev) => ev.stopPropagation();
+      input.onkeydown = (ev) => {
+        ev.stopPropagation();
+        if (ev.key === "Enter") { ev.preventDefault(); finish(true); }
+        else if (ev.key === "Escape") finish(false);
+      };
+      input.onblur = () => finish(false);
+    };
+    h.querySelector(".gdel").onclick = async (e) => {
+      e.stopPropagation();
+      const warn = items.length
+        ? `Delete group “${g.name}”? Its ${items.length} chat${items.length === 1 ? "" : "s"} move back to the main list (nothing is deleted).`
+        : `Delete empty group “${g.name}”?`;
+      if (!confirm(warn)) return;
+      await fetch(`/api/groups/${encodeURIComponent(g.name)}`, { method: "DELETE" });
+      loadConversations();
+    };
+    box.appendChild(h);
+    if (!isCollapsed) items.forEach((c) => box.appendChild(convRow(c)));
+  });
+
+  // "+ new group": creates an empty group (chats can be moved in later).
+  const add = el("div", "conv-group grp new");
+  add.innerHTML = `<span class="tri">＋</span><span class="gname">new group</span>`;
+  add.onclick = () => {
+    const input = el("input", "conv-edit");
+    input.placeholder = "Group name";
+    add.replaceChildren(input);
+    input.focus();
+    let done = false;
+    const finish = async (save) => {
+      if (done) return;
+      done = true;
+      const v = input.value.trim();
+      if (save && v) {
+        await fetch("/api/groups", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ name: v }),
+        });
+      }
+      loadConversations();
+    };
+    input.onclick = (e) => e.stopPropagation();
+    input.onkeydown = (e) => {
+      e.stopPropagation();
+      if (e.key === "Enter") { e.preventDefault(); finish(true); }
+      else if (e.key === "Escape") finish(false);
+    };
+    input.onblur = () => finish(false);
+  };
+  box.appendChild(add);
+
+  // Ungrouped conversations in the usual date sections.
   let lastGroup = null;
-  // API returns newest-first, so groups emerge in order.
-  data.conversations.forEach((c) => {
+  convCache.filter((c) => !c.grp).forEach((c) => {
     const group = convGroup(c.updated_at || c.created_at);
     if (group !== lastGroup) {
       const h = el("div", "conv-group");
@@ -355,24 +587,7 @@ async function loadConversations() {
       box.appendChild(h);
       lastGroup = group;
     }
-    const item = el("div", "conv");
-    if (c.id === state.conversationId) item.classList.add("active");
-    if (state.streaming && c.id === state.streamConvId) item.classList.add("streaming");
-    const title = el("span", "title");
-    title.textContent = c.title || "Untitled";
-    const del = el("button", "del");
-    del.type = "button";
-    del.textContent = "✕";
-    del.title = "Delete conversation";
-    del.onclick = async (e) => {
-      e.stopPropagation();
-      await fetch(`/api/conversations/${c.id}`, { method: "DELETE" });
-      if (state.conversationId === c.id) newChat();
-      loadConversations();
-    };
-    item.append(title, del);
-    item.onclick = () => openConversation(c.id);
-    box.appendChild(item);
+    box.appendChild(convRow(c));
   });
 }
 

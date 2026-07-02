@@ -101,10 +101,12 @@ data/                SQLite DBs + uploads (created at runtime)
   reply is sent early and edited in place as tokens arrive (~1 edit/s — the
   most Discord's API allows); off, the reply lands as one complete message.
 - **DM slash commands** (hidden from channel autocomplete): `/new`, `/resume`,
-  and `/model` — all argument-free, pure **clickable pickers**: `/resume`
-  opens a dropdown of conversations, `/model` a provider dropdown then that
-  provider's models (◀ ▶ paged past Discord's 25-option cap). `/model` right
-  after `/new` works: it creates the pending conversation and sets its model.
+  `/model`, and `/rename` — all argument-free. `/resume` opens a dropdown of
+  conversations (with a group filter first when groups exist), `/model` a
+  provider dropdown then that provider's models (◀ ▶ paged past Discord's
+  25-option cap), and `/rename` pops a native **modal form** to rename the
+  active chat and set its group. `/model` right after `/new` works: it creates
+  the pending conversation and sets its model.
   `/new` and `/resume` confirmations are posted non-ephemerally so session
   boundaries stay visible in DM history. DMs and the web UI share one
   conversation pool (`/resume` works across surfaces). Channel @mentions are
@@ -175,7 +177,15 @@ nested tool calls, live activity light and timer); **per-response metrics**
 (wall time, thinking time, tok/s); a **context meter** under the composer
 (used vs. the model's max context, from the provider's `/models`); **stop**
 mid-turn; message **copy / retry / edit-and-resend**; conversation history
-grouped Today / Yesterday / Previous 7 days then exact dates; full-page
+grouped Today / Yesterday / Previous 7 days then exact dates, with **rename**
+and **user-defined groups** (hover a chat for the pencil/folder actions;
+groups render as collapsible sections and sync with Discord's `/rename` and
+`/resume` filter). Groups are first-class: create one empty ("+ new group"),
+it persists with no chats in it; assigning opens a dropdown of all groups
+with the input as filter (pick, create, or remove in one click); rename a
+group from its header pencil (renaming onto an existing name **merges** the
+two); deleting a group (✕ on its header) only removes the folder — its chats
+move back to the date-sectioned root list, nothing is deleted; full-page
 **chat search** (instant title matches + **full-text search over message
 bodies** via SQLite FTS5, with highlighted snippets); and sidebar tabs for the
 **wiki** (browse/edit/delete the LLM-Wiki pages, including `home` = the system

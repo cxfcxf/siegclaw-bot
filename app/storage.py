@@ -73,6 +73,18 @@ def init_db() -> None:
         ccols = [r["name"] for r in conn.execute("PRAGMA table_info(conversations)").fetchall()]
         if "prompt_tokens" not in ccols:
             conn.execute("ALTER TABLE conversations ADD COLUMN prompt_tokens INTEGER")
+        # grp: optional user-assigned group name for organizing the sidebar /
+        # /resume picker (NULL = ungrouped). "grp" because GROUP is an SQL keyword.
+        if "grp" not in ccols:
+            conn.execute("ALTER TABLE conversations ADD COLUMN grp TEXT")
+        # Groups are first-class (a group can exist empty); membership is still
+        # the conversations.grp column. Seed from any legacy labels.
+        conn.execute("CREATE TABLE IF NOT EXISTS groups (name TEXT PRIMARY KEY, created_at REAL)")
+        conn.execute(
+            "INSERT OR IGNORE INTO groups (name, created_at)"
+            " SELECT DISTINCT grp, ? FROM conversations WHERE grp IS NOT NULL",
+            (time.time(),),
+        )
         # ref: a short, human-typable number identifying a conversation (used by
         # Discord /list and /resume so webui UUID conversations can be resumed
         # from Discord). Backfilled for existing rows.
@@ -189,7 +201,7 @@ def list_all_conversations() -> list[dict[str, Any]]:
     """All conversations with message counts, newest first (for Discord /list)."""
     with _conn() as conn:
         rows = conn.execute(
-            "SELECT c.id, c.ref, c.title, c.provider, c.model, c.updated_at,"
+            "SELECT c.id, c.ref, c.title, c.provider, c.model, c.updated_at, c.grp,"
             " (SELECT COUNT(*) FROM messages m WHERE m.conversation_id = c.id) AS msg_count"
             " FROM conversations c ORDER BY c.updated_at DESC"
         ).fetchall()
@@ -210,7 +222,7 @@ def update_conversation_model(cid: str, provider: str, model: str) -> bool:
 def list_conversations() -> list[dict[str, Any]]:
     with _conn() as conn:
         rows = conn.execute(
-            "SELECT id, title, provider, model, ref, prompt_tokens, created_at, updated_at"
+            "SELECT id, title, provider, model, ref, prompt_tokens, grp, created_at, updated_at"
             " FROM conversations ORDER BY updated_at DESC"
         ).fetchall()
     return [dict(r) for r in rows]
@@ -231,6 +243,47 @@ def delete_conversation(cid: str) -> None:
 def rename_conversation(cid: str, title: str) -> None:
     with _conn() as conn:
         conn.execute("UPDATE conversations SET title=? WHERE id=?", (title, cid))
+
+
+def set_conversation_group(cid: str, grp: str | None) -> None:
+    with _conn() as conn:
+        if grp:
+            conn.execute("INSERT OR IGNORE INTO groups (name, created_at) VALUES (?,?)", (grp, time.time()))
+        conn.execute("UPDATE conversations SET grp=? WHERE id=?", (grp or None, cid))
+
+
+def list_groups() -> list[dict[str, Any]]:
+    with _conn() as conn:
+        rows = conn.execute(
+            "SELECT g.name, g.created_at,"
+            " (SELECT COUNT(*) FROM conversations c WHERE c.grp = g.name) AS count,"
+            " (SELECT MAX(c.updated_at) FROM conversations c WHERE c.grp = g.name) AS last_active"
+            " FROM groups g ORDER BY last_active DESC NULLS LAST, g.name"
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def create_group(name: str) -> None:
+    with _conn() as conn:
+        conn.execute("INSERT OR IGNORE INTO groups (name, created_at) VALUES (?,?)", (name, time.time()))
+
+
+def rename_group(old: str, new: str) -> None:
+    """Rename a group; if the new name already exists, the two merge."""
+    with _conn() as conn:
+        conn.execute("INSERT OR IGNORE INTO groups (name, created_at) VALUES (?,?)", (new, time.time()))
+        conn.execute("UPDATE conversations SET grp=? WHERE grp=?", (new, old))
+        if old != new:
+            conn.execute("DELETE FROM groups WHERE name=?", (old,))
+
+
+def delete_group(name: str) -> int:
+    """Delete a group. Its conversations are NOT deleted — they're ungrouped
+    (back to the date-sectioned root list). Returns how many were ungrouped."""
+    with _conn() as conn:
+        cur = conn.execute("UPDATE conversations SET grp=NULL WHERE grp=?", (name,))
+        conn.execute("DELETE FROM groups WHERE name=?", (name,))
+        return cur.rowcount
 
 
 def touch_conversation(cid: str, provider: str | None = None, model: str | None = None) -> None:

@@ -6,8 +6,9 @@ its conversation context. For channel mentions/replies that context is live
 Discord history (Discord is the source of truth — those turns are not stored).
 For DMs, the stored conversation IS the source of truth and is shared with the
 web UI: a DM appends to the same conversation the web UI reads, so either side
-can resume the other. DM sessions are managed with text commands:
-/new /resume /model (clickable pickers; args optional). Either way, the handler
+can resume the other. DM sessions are managed with slash commands:
+/new /resume /model (clickable pickers) and /rename (a modal form that renames
+the chat and sets its group; /resume filters by group). Either way, the handler
 assembles a per-message tool registry (reusing the web/browser/wiki/MCP tools
 plus Discord-history tools), runs a non-streaming
 tool-calling loop, and posts a chunked reply.
@@ -438,25 +439,30 @@ class _PagedSelect(discord.ui.View):
             self.add_item(nxt)
 
 
-def _conversation_options(user_id: str) -> list[discord.SelectOption]:
+def _conversation_options(user_id: str, grp: str | None = None) -> list[discord.SelectOption]:
+    """grp=None -> all conversations (group shown in the description);
+    grp='name' -> only that group's conversations."""
     active_cid = storage.dm_active_cid(user_id)
     opts = []
     for c in storage.list_all_conversations():
+        if grp is not None and (c.get("grp") or "") != grp:
+            continue
         mark = "→ " if c["id"] == active_cid else ""
+        tag = f"📁{c['grp']} · " if c.get("grp") and grp is None else ""
         opts.append(discord.SelectOption(
             label=f"{mark}{c['title'] or 'Untitled'}"[:100],
             value=str(c["ref"]),
-            description=f"#{c['ref']} · {c['provider']}/{c['model']} · "
+            description=f"#{c['ref']} · {tag}{c['provider']}/{c['model']} · "
                         f"{c['msg_count']} msgs · {_rel_time(c['updated_at'])}"[:100],
         ))
     return opts
 
 
-def _resume_view(user_id: str) -> _PagedSelect | None:
+def _resume_view(user_id: str, grp: str | None = None) -> _PagedSelect | None:
     """A conversation dropdown that resumes on click. The picker itself is
     ephemeral, but the confirmation is posted for real — it marks a session
     boundary and should survive in DM history."""
-    opts = _conversation_options(user_id)
+    opts = _conversation_options(user_id, grp)
     if not opts:
         return None
 
@@ -466,6 +472,30 @@ def _resume_view(user_id: str) -> _PagedSelect | None:
             await inter.channel.send(chunk)
 
     return _PagedSelect(opts, "Conversation…", on_pick)
+
+
+class _EditChatModal(discord.ui.Modal):
+    """The /rename popup: a native Discord form pre-filled with the active
+    conversation's title and group. Submit renames (and re-groups) in place."""
+
+    def __init__(self, cid: str, cur_title: str, cur_grp: str | None):
+        super().__init__(title="Edit chat")
+        self.cid = cid
+        self.title_in = discord.ui.TextInput(
+            label="Title", default=(cur_title or "")[:100], max_length=100)
+        self.grp_in = discord.ui.TextInput(
+            label="Group (empty = none)", default=(cur_grp or "")[:50],
+            required=False, max_length=50)
+        self.add_item(self.title_in)
+        self.add_item(self.grp_in)
+
+    async def on_submit(self, inter: discord.Interaction):
+        title = self.title_in.value.strip()[:100] or "Untitled"
+        grp = self.grp_in.value.strip()[:50] or None
+        storage.rename_conversation(self.cid, title)
+        storage.set_conversation_group(self.cid, grp)
+        # Posted for real (not ephemeral): the new name marks the session in DM history.
+        await inter.response.send_message(f"✏️ **{title}**" + (f" · 📁 {grp}" if grp else ""))
 
 
 # --------------------------------------------------------------------------- #
@@ -496,12 +526,47 @@ def create_client(mcp_manager) -> discord.Client:
     @dm_only
     async def resume_cmd(interaction: discord.Interaction):
         user_id = str(interaction.user.id)
-        view = _resume_view(user_id)
-        if view is None:
+        convos = storage.list_all_conversations()
+        if not convos:
             await _respond(interaction, "No conversations yet. Send a message or use `/new`.")
             return
+        # With groups in play, filter first: All chats / one group per row.
+        counts: dict[str, int] = {}
+        for c in convos:
+            if c.get("grp"):
+                counts[c["grp"]] = counts.get(c["grp"], 0) + 1
+        if counts:
+            gopts = [discord.SelectOption(
+                label="All chats", value="all", emoji="💬",
+                description=f"{len(convos)} conversations")]
+            gopts += [discord.SelectOption(
+                label=g[:100], value=f"g:{g}"[:100], emoji="📁",
+                description=f"{n} conversation{'s' if n != 1 else ''}")
+                for g, n in sorted(counts.items())]
+
+            async def on_group(inter: discord.Interaction, value: str):
+                grp = value[2:] if value.startswith("g:") else None
+                view = _resume_view(user_id, grp)
+                if view is None:
+                    await inter.response.edit_message(content="That group is empty now.", view=None)
+                    return
+                await inter.response.edit_message(content="Pick a conversation to resume:", view=view)
+
+            await interaction.response.send_message(
+                "Pick a group:", view=_PagedSelect(gopts, "Group…", on_group), ephemeral=True,
+            )
+            return
+        view = _resume_view(user_id)
         await interaction.response.send_message(
             "Pick a conversation to resume:", view=view, ephemeral=True,
+        )
+
+    @tree.command(name="rename", description="Rename the current chat and set its group")
+    @dm_only
+    async def rename_cmd(interaction: discord.Interaction):
+        convo = _active_or_pending_conversation(str(interaction.user.id))
+        await interaction.response.send_modal(
+            _EditChatModal(convo["id"], convo.get("title") or "", convo.get("grp"))
         )
 
     @tree.command(name="model", description="Switch the active conversation's model")

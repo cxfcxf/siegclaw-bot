@@ -115,6 +115,59 @@ body {
 .conv .del { opacity: 0; color: var(--text-faint); font-size: 13px; background: transparent; border: none; cursor: pointer; padding: 0 2px; transition: opacity 0.14s, color 0.14s; }
 .conv:hover .del { opacity: 1; }
 .conv .del:hover { color: var(--clay); }
+/* Rename / group hover actions on a conversation row. */
+.conv .cact { opacity: 0; display: grid; place-items: center; color: var(--text-faint); background: transparent; border: none; cursor: pointer; padding: 0 2px; transition: opacity 0.14s, color 0.14s; }
+.conv:hover .cact { opacity: 1; }
+.conv .cact:hover { color: var(--brass); }
+/* Inline title/group editor swapped into the row. */
+.conv-edit {
+  width: 100%; background: var(--surface-2); color: var(--text); border: 1px solid var(--patina-dim);
+  border-radius: 4px; padding: 3px 8px; font-family: var(--font-body); font-size: 13px;
+}
+.conv-edit:focus { outline: none; }
+/* While editing, lift the row's overflow clip so the group dropdown shows. */
+.conv.editing { overflow: visible; z-index: 5; }
+.conv-edit-list {
+  position: absolute; top: 100%; left: 8px; right: 8px; z-index: 30;
+  margin: 3px 0 0; padding: 4px; list-style: none; max-height: 220px; overflow-y: auto;
+  background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-sm);
+  box-shadow: var(--shadow);
+}
+.conv-edit-list li {
+  padding: 6px 9px; border-radius: 4px; cursor: pointer;
+  font-size: 12.5px; color: var(--text-dim);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.conv-edit-list li:hover { background: var(--surface-2); color: var(--text); }
+.conv-edit-list li.selected { color: var(--brass); }
+.conv-edit-list li.clear { color: var(--text-faint); }
+.conv-edit-list li.clear:hover { color: var(--clay); }
+.conv-edit-list li.create { color: var(--patina); }
+/* A named group's collapsible section header. */
+.conv-group.grp {
+  display: flex; align-items: center; gap: 6px; cursor: pointer;
+  color: var(--text-dim); text-transform: none; letter-spacing: 0.02em;
+  font-family: var(--font-body); font-size: 12.5px; user-select: none;
+}
+.conv-group.grp svg { color: var(--brass-deep); flex-shrink: 0; }
+.conv-group.grp .tri { font-size: 9px; color: var(--text-faint); transition: transform 0.14s; }
+.conv-group.grp.closed .tri { transform: rotate(-90deg); }
+.conv-group.grp .gname { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.conv-group.grp .gcount { font-family: var(--font-mono); font-size: 10px; color: var(--text-faint); }
+.conv-group.grp:hover { color: var(--text); }
+.conv-group.grp .gact, .conv-group.grp .gdel {
+  opacity: 0; color: var(--text-faint); font-size: 12px; display: grid; place-items: center;
+  background: transparent; border: none; cursor: pointer; padding: 0 2px;
+  transition: opacity 0.14s, color 0.14s;
+}
+.conv-group.grp .gact { margin-left: auto; }
+.conv-group.grp:hover .gact, .conv-group.grp:hover .gdel { opacity: 1; }
+.conv-group.grp .gact:hover { color: var(--brass); }
+.conv-group.grp .gdel:hover { color: var(--clay); }
+/* "+ new group" affordance: quiet until hovered. */
+.conv-group.grp.new { color: var(--text-faint); }
+.conv-group.grp.new:hover { color: var(--text-dim); }
+.conv-group.grp.new .tri { font-size: 11px; }
 
 /* Icon buttons + collapsible sidebar */
 .icon-btn {

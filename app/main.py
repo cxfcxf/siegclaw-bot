@@ -117,6 +117,11 @@ class NewConversation(BaseModel):
     title: str | None = None
 
 
+class ConversationUpdate(BaseModel):
+    title: str | None = None   # None = unchanged
+    group: str | None = None   # None = unchanged; "" = remove from its group
+
+
 class WikiPageUpdate(BaseModel):
     summary: str = ""
     content: str
@@ -150,7 +155,39 @@ def api_providers():
 # --- Conversations ---------------------------------------------------------
 @app.get("/api/conversations")
 def api_list_conversations():
-    return {"conversations": storage.list_conversations()}
+    # groups ride along so the sidebar renders empty groups too (first-class:
+    # a group can exist with no conversations in it).
+    return {"conversations": storage.list_conversations(), "groups": storage.list_groups()}
+
+
+class GroupCreate(BaseModel):
+    name: str
+
+
+@app.post("/api/groups")
+def api_create_group(body: GroupCreate):
+    name = body.name.strip()[:50]
+    if not name:
+        raise HTTPException(400, "group name cannot be empty")
+    storage.create_group(name)
+    return {"ok": True, "name": name}
+
+
+@app.patch("/api/groups/{name}")
+def api_rename_group(name: str, body: GroupCreate):
+    """Rename a group (renaming onto an existing name merges the two)."""
+    new = body.name.strip()[:50]
+    if not new:
+        raise HTTPException(400, "group name cannot be empty")
+    storage.rename_group(name, new)
+    return {"ok": True, "name": new}
+
+
+@app.delete("/api/groups/{name}")
+def api_delete_group(name: str):
+    """Deletes the group only — its conversations are ungrouped, not deleted."""
+    moved = storage.delete_group(name)
+    return {"ok": True, "conversations_ungrouped": moved}
 
 
 @app.post("/api/conversations")
@@ -165,6 +202,20 @@ def api_get_conversation(cid: str):
     if not convo:
         raise HTTPException(404, "conversation not found")
     return {"conversation": convo, "messages": storage.get_messages(cid)}
+
+
+@app.patch("/api/conversations/{cid}")
+def api_update_conversation(cid: str, body: ConversationUpdate):
+    if not storage.get_conversation(cid):
+        raise HTTPException(404, "conversation not found")
+    if body.title is not None:
+        title = body.title.strip()
+        if not title:
+            raise HTTPException(400, "title cannot be empty")
+        storage.rename_conversation(cid, title[:100])
+    if body.group is not None:
+        storage.set_conversation_group(cid, body.group.strip()[:50] or None)
+    return {"ok": True}
 
 
 @app.delete("/api/conversations/{cid}")
