@@ -105,12 +105,15 @@ data/                SQLite DBs + uploads (created at runtime)
   Optional **DM streaming** (`DISCORD_STREAM_DMS=true`, off by default): the
   reply is sent early and edited in place as tokens arrive (~1 edit/s — the
   most Discord's API allows); off, the reply lands as one complete message.
-- **DM slash commands** (hidden from channel autocomplete): `/new`, `/list`,
-  `/resume <ref>`, `/model` (provider → model autocomplete). `/new` and
-  `/resume` confirmations are posted non-ephemerally so session boundaries
-  stay visible in DM history. DMs and the web UI share one conversation pool
-  (`/resume` works across surfaces). Channel @mentions are stateless and
-  always use the default model.
+- **DM slash commands** (hidden from channel autocomplete): `/new`, `/resume`,
+  and `/model` — all argument-free, pure **clickable pickers**: `/resume`
+  opens a dropdown of conversations, `/model` a provider dropdown then that
+  provider's models (◀ ▶ paged past Discord's 25-option cap). `/model` right
+  after `/new` works: it creates the pending conversation and sets its model.
+  `/new` and `/resume` confirmations are posted non-ephemerally so session
+  boundaries stay visible in DM history. DMs and the web UI share one
+  conversation pool (`/resume` works across surfaces). Channel @mentions are
+  stateless and always use the default model.
 - The shell/file tools are **withheld from Discord** (multi-user) unless
   `DISCORD_ENABLE_SHELL=true`.
 

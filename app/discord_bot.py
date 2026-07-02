@@ -7,7 +7,7 @@ Discord history (Discord is the source of truth — those turns are not stored).
 For DMs, the stored conversation IS the source of truth and is shared with the
 web UI: a DM appends to the same conversation the web UI reads, so either side
 can resume the other. DM sessions are managed with text commands:
-/new /list /resume <ref> /model [provider] [model]. Either way, the handler
+/new /resume /model (clickable pickers; args optional). Either way, the handler
 assembles a per-message tool registry (reusing the web/browser/skills/MCP tools
 plus per-user-scoped memory and Discord-history tools), runs a non-streaming
 tool-calling loop, and posts a chunked reply.
@@ -23,8 +23,6 @@ import logging
 import mimetypes
 import time
 import uuid
-from typing import Optional
-
 import discord
 from discord import app_commands
 
@@ -402,6 +400,80 @@ async def send_chunked(destination: discord.abc.Messageable, text: str) -> None:
 
 
 # --------------------------------------------------------------------------- #
+# Interactive pickers (DM slash-command UI)
+# --------------------------------------------------------------------------- #
+class _PagedSelect(discord.ui.View):
+    """An ephemeral dropdown picker. Discord caps a select menu at 25 options,
+    so longer lists get ◀ ▶ page buttons (e.g. OpenRouter's model list)."""
+
+    PAGE = 25
+
+    def __init__(self, options: list[discord.SelectOption], placeholder: str, on_pick):
+        super().__init__(timeout=180)
+        self._options = options
+        self._placeholder = placeholder
+        self._on_pick = on_pick  # async (interaction, value) -> None
+        self._page = 0
+        self._build()
+
+    def _build(self) -> None:
+        self.clear_items()
+        pages = (len(self._options) + self.PAGE - 1) // self.PAGE
+        start = self._page * self.PAGE
+        ph = self._placeholder if pages <= 1 else f"{self._placeholder} ({self._page + 1}/{pages})"
+        select = discord.ui.Select(placeholder=ph[:150], options=self._options[start : start + self.PAGE])
+
+        async def picked(interaction: discord.Interaction):
+            await self._on_pick(interaction, select.values[0])
+
+        select.callback = picked
+        self.add_item(select)
+        if pages > 1:
+            prev = discord.ui.Button(label="◀", disabled=self._page == 0)
+            nxt = discord.ui.Button(label="▶", disabled=self._page >= pages - 1)
+
+            async def flip(interaction: discord.Interaction, delta: int):
+                self._page += delta
+                self._build()
+                await interaction.response.edit_message(view=self)
+
+            prev.callback = lambda i: flip(i, -1)
+            nxt.callback = lambda i: flip(i, +1)
+            self.add_item(prev)
+            self.add_item(nxt)
+
+
+def _conversation_options(user_id: str) -> list[discord.SelectOption]:
+    active_cid = storage.dm_active_cid(user_id)
+    opts = []
+    for c in storage.list_all_conversations():
+        mark = "→ " if c["id"] == active_cid else ""
+        opts.append(discord.SelectOption(
+            label=f"{mark}{c['title'] or 'Untitled'}"[:100],
+            value=str(c["ref"]),
+            description=f"#{c['ref']} · {c['provider']}/{c['model']} · "
+                        f"{c['msg_count']} msgs · {_rel_time(c['updated_at'])}"[:100],
+        ))
+    return opts
+
+
+def _resume_view(user_id: str) -> _PagedSelect | None:
+    """A conversation dropdown that resumes on click. The picker itself is
+    ephemeral, but the confirmation is posted for real — it marks a session
+    boundary and should survive in DM history."""
+    opts = _conversation_options(user_id)
+    if not opts:
+        return None
+
+    async def on_pick(inter: discord.Interaction, value: str):
+        await inter.response.edit_message(content=f"Resuming **#{value}**…", view=None)
+        for chunk in _chunk_message(cmd_resume(user_id, int(value))):
+            await inter.channel.send(chunk)
+
+    return _PagedSelect(opts, "Conversation…", on_pick)
+
+
+# --------------------------------------------------------------------------- #
 # Client + event wiring
 # --------------------------------------------------------------------------- #
 def create_client(mcp_manager) -> discord.Client:
@@ -425,30 +497,57 @@ def create_client(mcp_manager) -> discord.Client:
     async def new_cmd(interaction: discord.Interaction):
         await _respond(interaction, cmd_new(str(interaction.user.id)), ephemeral=False)
 
-    @tree.command(name="list", description="List all conversations")
+    @tree.command(name="resume", description="Resume a conversation")
     @dm_only
-    async def list_cmd(interaction: discord.Interaction):
-        await _respond(interaction, cmd_list(str(interaction.user.id)))
+    async def resume_cmd(interaction: discord.Interaction):
+        user_id = str(interaction.user.id)
+        view = _resume_view(user_id)
+        if view is None:
+            await _respond(interaction, "No conversations yet. Send a message or use `/new`.")
+            return
+        await interaction.response.send_message(
+            "Pick a conversation to resume:", view=view, ephemeral=True,
+        )
 
-    @tree.command(name="resume", description="Resume a conversation by its ref number")
+    @tree.command(name="model", description="Switch the active conversation's model")
     @dm_only
-    @app_commands.describe(ref="Conversation number from /list")
-    async def resume_cmd(interaction: discord.Interaction, ref: int):
-        await _respond(interaction, cmd_resume(str(interaction.user.id), ref), ephemeral=False)
+    async def model_cmd(interaction: discord.Interaction):
+        user_id = str(interaction.user.id)
+        convo = _active_or_pending_conversation(user_id)
+        providers = detect_providers()
 
-    @tree.command(name="model", description="Show or set the active conversation's model")
-    @dm_only
-    @app_commands.describe(
-        provider="Pick a provider (autocomplete; omit to keep current)",
-        model="Pick a model (autocomplete shows the chosen provider's models)",
-    )
-    @app_commands.autocomplete(provider=_provider_autocomplete, model=_model_autocomplete)
-    async def model_cmd(
-        interaction: discord.Interaction,
-        provider: Optional[str] = None,
-        model: Optional[str] = None,
-    ):
-        await _respond(interaction, cmd_model(str(interaction.user.id), provider, model))
+        async def on_provider(inter: discord.Interaction, pid: str):
+            p = next((x for x in detect_providers() if x.id == pid), None)
+            if p is None or not p.models:
+                await inter.response.edit_message(
+                    content=f"`{pid}` doesn't list models — set one from the web UI picker.",
+                    view=None,
+                )
+                return
+
+            async def on_model(inter2: discord.Interaction, m: str):
+                await inter2.response.edit_message(content=cmd_model(user_id, pid, m), view=None)
+
+            mopts = [discord.SelectOption(label=m[:100], value=m[:100]) for m in p.models]
+            await inter.response.edit_message(
+                content=f"Provider `{pid}` — pick a model:",
+                view=_PagedSelect(mopts, "Model…", on_model),
+            )
+
+        popts = [
+            discord.SelectOption(
+                label=p.name[:100], value=p.id,
+                description=f"{len(p.models)} model{'s' if len(p.models) != 1 else ''}"[:100],
+            )
+            for p in providers
+        ]
+        if not popts:
+            await _respond(interaction, "No providers available — check provider config.")
+            return
+        await interaction.response.send_message(
+            f"Active **#{convo['ref']}**: `{convo['provider']}/{convo['model']}`\nPick a provider:",
+            view=_PagedSelect(popts, "Provider…", on_provider), ephemeral=True,
+        )
 
     @client.event
     async def on_ready():
@@ -720,9 +819,6 @@ def _rel_time(ts: float | None) -> str:
     return f"{int(delta // 86400)}d ago"
 
 
-_LIST_CAP = 20
-
-
 def _fmt_ctx(n: int | None) -> str | None:
     """Human-readable context window: 131072 -> 128K, 1048576 -> 1M."""
     if not n:
@@ -760,6 +856,11 @@ def cmd_new(user_id: str) -> str:
     # Don't create a conversation yet — just clear the active pointer. The
     # conversation is created (and titled) when the user actually sends a
     # message, matching the web UI's "new chat just resets, persists on send".
+    # (Exception: /model before any message creates it early — see below. If
+    # that pending conversation is abandoned with another /new, drop it.)
+    cid = storage.dm_active_cid(user_id)
+    if cid and storage.message_count(cid) == 0:
+        storage.delete_conversation(cid)
     storage.dm_clear_active(user_id)
     return (
         "Starting a fresh conversation — your next message begins it.\n"
@@ -767,23 +868,20 @@ def cmd_new(user_id: str) -> str:
     )
 
 
-def cmd_list(user_id: str) -> str:
-    convos = storage.list_all_conversations()
-    if not convos:
-        return "No conversations yet. Send a message or use `/new`."
-    active_cid = storage.dm_active_cid(user_id)
-    shown = convos[:_LIST_CAP]
-    lines = ["**Conversations:**"]
-    for c in shown:
-        mark = " \u2190 active" if c["id"] == active_cid else ""
-        title = c["title"] or "Untitled"
-        lines.append(
-            f"**#{c['ref']}** \u00b7 {title} \u00b7 `{c['provider']}/{c['model']}` \u00b7 "
-            f"{c['msg_count']} msgs \u00b7 {_rel_time(c['updated_at'])}{mark}"
-        )
-    if len(convos) > _LIST_CAP:
-        lines.append(f"_(showing {_LIST_CAP} of {len(convos)}; resume older by `ref`)_")
-    return "\n".join(lines)
+def _active_or_pending_conversation(user_id: str) -> dict:
+    """The active conversation, or — right after /new (or first contact) — the
+    pending one, created early so /model has something to set the model on. It
+    keeps the placeholder title and gets renamed by the first message, exactly
+    as if it had been created on send."""
+    cid = storage.dm_active_cid(user_id)
+    convo = storage.get_conversation(cid) if cid else None
+    if convo is not None:
+        return convo
+    pm = resolve_default_model()
+    provider, model = (pm[0], pm[1]) if pm else ("", "")
+    cid = storage.create_conversation(provider, model, "New chat")
+    storage.dm_set_active_cid(user_id, cid)
+    return storage.get_conversation(cid)
 
 
 _HISTORY_PREVIEW = 20
@@ -813,7 +911,7 @@ def _format_history_preview(cid: str) -> str:
 def cmd_resume(user_id: str, ref: int) -> str:
     convo = storage.conversation_by_ref(ref)
     if convo is None:
-        return f"No conversation **#{ref}**. Use `/list` to see them."
+        return f"No conversation **#{ref}**. Use `/resume` to pick from the menu."
     storage.dm_set_active_cid(user_id, convo["id"])
     return (
         f"Resumed **#{ref}** ({convo['title'] or 'Untitled'}).\n"
@@ -822,74 +920,14 @@ def cmd_resume(user_id: str, ref: int) -> str:
     )
 
 
-def cmd_model(user_id: str, provider: str | None = None, model: str | None = None) -> str:
-    cid = storage.dm_active_cid(user_id)
-    if cid is None:
-        return "No active conversation — send a message or use `/new` first."
-    convo = storage.get_conversation(cid)
-    providers = detect_providers()
-    provider_ids = {p.id for p in providers}
-
-    if not model:
-        lines = [
-            f"Active **#{convo['ref']}**: `{convo['provider']}/{convo['model']}`",
-            "**Available providers:**",
-        ]
-        for p in providers:
-            n = len(p.models)
-            lines.append(f"- `{p.id}` ({p.name}) \u2014 {n} model{'s' if n != 1 else ''}")
-        lines.append(
-            "\nSet with `/model model:<model>` (keeps current provider) "
-            "or `/model provider:<p> model:<m>`."
-        )
-        return "\n".join(lines)
-
-    provider_id = provider if (provider in provider_ids) else convo["provider"]
-    if get_provider(provider_id) is None:
-        return f"Unknown provider `{provider_id}`. Known: {', '.join(sorted(provider_ids))}."
-    storage.update_conversation_model(cid, provider_id, model)
-    return f"Conversation **#{convo['ref']}** model set to `{provider_id}/{model}`."
-
-
-async def _provider_autocomplete(
-    interaction: discord.Interaction, current: str
-) -> list[app_commands.Choice[str]]:
-    """Offer the detected providers (with model counts) as you type the provider
-    field. Substring-match on both id and display name."""
-    cur = (current or "").lower()
-    out: list[app_commands.Choice[str]] = []
-    for p in detect_providers():
-        if cur and cur not in p.id.lower() and cur not in p.name.lower():
-            continue
-        n = len(p.models)
-        label = f"{p.name} ({n} model{'s' if n != 1 else ''})"
-        out.append(app_commands.Choice(name=label[:100], value=p.id))
-    return out[:25]
-
-
-async def _model_autocomplete(
-    interaction: discord.Interaction, current: str
-) -> list[app_commands.Choice[str]]:
-    """Offer models for the provider already picked in this command (falling back
-    to the active conversation's provider). Discord caps choices at 25, so the
-    typed text filters the list — exactly like the web UI combobox."""
-    cur = (current or "").lower()
-    providers = {p.id: p for p in detect_providers()}
-    pid = (getattr(interaction.namespace, "provider", None) or "").strip()
-    if pid not in providers:
-        cid = storage.dm_active_cid(str(interaction.user.id))
-        convo = storage.get_conversation(cid) if cid else None
-        pid = convo["provider"] if (convo and convo["provider"] in providers) else None
-    chosen = providers.get(pid)
-    models = chosen.models if chosen else [m for p in providers.values() for m in p.models]
-    out: list[app_commands.Choice[str]] = []
-    for m in models:
-        if cur and cur not in m.lower():
-            continue
-        out.append(app_commands.Choice(name=m[:100], value=m))
-        if len(out) >= 25:
-            break
-    return out
+def cmd_model(user_id: str, provider: str, model: str) -> str:
+    """Set the active (or pending — right after /new) conversation's model.
+    Only reached from the /model picker, so provider/model are known-good."""
+    convo = _active_or_pending_conversation(user_id)
+    if get_provider(provider) is None:
+        return f"Unknown provider `{provider}` — it may have gone away; run `/model` again."
+    storage.update_conversation_model(convo["id"], provider, model)
+    return f"Conversation **#{convo['ref']}** model set to `{provider}/{model}`."
 
 
 async def _respond(interaction: discord.Interaction, text: str, *, ephemeral: bool = True) -> None:
