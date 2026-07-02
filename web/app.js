@@ -982,6 +982,7 @@ async function editFromMessage(userWrap) {
   input.style.height = Math.min(input.scrollHeight, 200) + "px";
   state.attachments = (imagesJson ? JSON.parse(imagesJson) : []).map((url) => ({ url }));
   renderAttachments();
+  updateSendVisibility();
 
   // If the conversation is now empty, return to the centered landing layout.
   if (!$("#messages").querySelector(".msg")) {
@@ -1276,7 +1277,74 @@ function renderAttachments() {
     thumb.append(im, rm);
     box.appendChild(thumb);
   });
+  updateSendVisibility();
 }
+
+// --- Voice input (mic button → /api/transcribe, local faster-whisper) --------
+// Click to record, click again to stop; the transcript lands in the composer.
+let micRec = null;   // active MediaRecorder while recording
+(() => {
+  const btn = $("#mic");
+
+  async function startRecording() {
+    if (!navigator.mediaDevices || !window.MediaRecorder) {
+      setStatus("Mic needs HTTPS or localhost (browser security rule).");
+      return;
+    }
+    let stream;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    } catch (err) {
+      setStatus("Mic access denied: " + err.message);
+      return;
+    }
+    const chunks = [];
+    micRec = new MediaRecorder(stream);
+    micRec.ondataavailable = (e) => { if (e.data.size) chunks.push(e.data); };
+    micRec.onstop = async () => {
+      stream.getTracks().forEach((t) => t.stop());
+      btn.classList.remove("recording");
+      btn.classList.add("busy");
+      try {
+        const mime = micRec.mimeType || "audio/webm";
+        const ext = mime.includes("mp4") ? "mp4" : mime.includes("ogg") ? "ogg" : "webm";
+        const fd = new FormData();
+        fd.append("file", new Blob(chunks, { type: mime }), `voice.${ext}`);
+        const res = await fetch("/api/transcribe", { method: "POST", body: fd });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+        if (data.text) {
+          const input = $("#input");
+          input.value = (input.value.trim() ? input.value.replace(/\s*$/, " ") : "") + data.text;
+          input.style.height = "auto";
+          input.style.height = Math.min(input.scrollHeight, 200) + "px";
+          updateSendVisibility();
+          input.focus();
+        } else {
+          setStatus("Heard nothing — try again closer to the mic.");
+        }
+      } catch (err) {
+        setStatus("Transcription failed: " + err.message);
+      } finally {
+        btn.classList.remove("busy");
+        micRec = null;
+      }
+    };
+    micRec.start();
+    btn.classList.add("recording");
+    btn.title = "Stop recording";
+  }
+
+  btn.onclick = () => {
+    if (btn.classList.contains("busy")) return;
+    if (micRec && micRec.state === "recording") {
+      btn.title = "Voice input";
+      micRec.stop();
+    } else {
+      startRecording();
+    }
+  };
+})();
 
 // --- Sending / streaming ----------------------------------------------------
 // While streaming the send button is a stop control — submitting aborts the turn.
@@ -1295,7 +1363,16 @@ function stopStream() {
 $("#input").addEventListener("input", (e) => {
   e.target.style.height = "auto";
   e.target.style.height = Math.min(e.target.scrollHeight, 200) + "px";
+  updateSendVisibility();
 });
+
+// The send button only exists once there's something to send (text or an
+// attachment); while streaming it stays visible as the stop control.
+function updateSendVisibility() {
+  const show = state.streaming || $("#input").value.trim() ||
+    state.attachments.length;
+  $("#send").hidden = !show;
+}
 
 async function send(providedText, providedImages) {
   if (state.streaming) return;
@@ -1317,7 +1394,7 @@ async function send(providedText, providedImages) {
     $("#input").value = "";
     $("#input").style.height = "auto";
     state.attachments = [];
-    renderAttachments();
+    renderAttachments();  // also refreshes send-button visibility
   }
   setStreaming(true);
   setMainEmpty(false);
@@ -1557,6 +1634,7 @@ function setStreaming(on) {
   send.innerHTML = on ? STOP_ICON : SEND_ICON;
   send.setAttribute("aria-label", on ? "Stop" : "Send");
   send.title = on ? "Stop" : "";
+  updateSendVisibility();
   // Activity is shown by the live timer now — clear any stale notice on start.
   if (on) setStatus("");
 }

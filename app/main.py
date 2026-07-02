@@ -4,7 +4,9 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import sys
+import tempfile
 import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -26,7 +28,7 @@ from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import storage, wiki
+from . import storage, stt, wiki
 from .agent import build_registry, resolve_for_turn, run_turn
 from .config import (
     DISCORD_BOT_TOKEN,
@@ -403,6 +405,22 @@ async def api_upload(file: UploadFile):
     dest = UPLOADS_DIR / name
     dest.write_bytes(await file.read())
     return {"url": f"/uploads/{name}"}
+
+
+# --- Speech-to-text (composer mic button) -----------------------------------
+@app.post("/api/transcribe")
+async def api_transcribe(file: UploadFile):
+    suffix = Path(file.filename or "voice.webm").suffix or ".webm"
+    with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+        tmp.write(await file.read())
+        path = tmp.name
+    try:
+        text = await asyncio.to_thread(stt.transcribe, path)
+    except Exception as exc:
+        raise HTTPException(500, f"transcription failed: {type(exc).__name__}: {exc}")
+    finally:
+        os.unlink(path)
+    return {"text": text}
 
 
 # --- Chat (SSE) ------------------------------------------------------------

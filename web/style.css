@@ -609,13 +609,20 @@ select:focus { outline: none; border-color: var(--patina-dim); }
 #input:focus { outline: none; }
 #input::placeholder { color: var(--text-faint); }
 
-#attach, #send {
+#attach, #mic, #send {
   flex-shrink: 0; display: grid; place-items: center; width: 38px; height: 38px;
   border-radius: var(--r-sm); cursor: pointer; transition: all 0.15s; border: 1px solid transparent;
 }
-#attach { background: transparent; color: var(--text-dim); }
-#attach:hover { color: var(--brass); background: var(--surface-3); }
+#attach, #mic { background: transparent; color: var(--text-dim); }
+#attach:hover, #mic:hover { color: var(--brass); background: var(--surface-3); }
+/* Recording: clay red pulse. Busy (transcribing): patina, non-interactive. */
+#mic.recording { color: var(--clay); animation: pulse 1.1s ease-in-out infinite; }
+#mic.recording svg { filter: drop-shadow(0 0 6px rgba(199, 91, 74, 0.6)); }
+#mic.busy { color: var(--patina); cursor: default; animation: pulse 1.1s ease-in-out infinite; }
 #send { background: linear-gradient(180deg, var(--brass), var(--brass-deep)); color: #2a1d0a; border: none; }
+/* Send only exists once there's something to send (display:grid beats the
+   hidden attribute, so spell it out). */
+#send[hidden] { display: none; }
 #send:hover { box-shadow: 0 0 18px -5px rgba(214, 163, 92, 0.7); }
 #send:disabled { opacity: 0.4; cursor: default; box-shadow: none; }
 /* While a turn is streaming the send button becomes a stop control. */

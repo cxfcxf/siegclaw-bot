@@ -172,7 +172,9 @@ in the dialog; jobs persist in SQLite and share the bot's process.
 Streaming SSE chat with: a provider/model **chip in the composer** that opens
 a popover (provider select + searchable model combobox, last choice
 remembered); a **thinking toggle** + effort select; **image upload** (attach
-or paste — needs a vision model); a collapsible **process trace** (reasoning +
+or paste — needs a vision model); **voice input** (mic button — records in
+the browser, transcribed by in-process faster-whisper, fully local, no cloud;
+`STT_MODEL` picks the size; mic access needs HTTPS or localhost); a collapsible **process trace** (reasoning +
 nested tool calls, live activity light and timer); **per-response metrics**
 (wall time, thinking time, tok/s); a **context meter** under the composer
 (used vs. the model's max context, from the provider's `/models`); **stop**
@@ -204,6 +206,7 @@ All via `.env` (see `.env.example`) unless noted.
 | `DISCORD_BOT_TOKEN` | Run the Discord bot (omit for web UI only) |
 | `DISCORD_ENABLE_SHELL` | Allow shell/file tools from Discord (default off) |
 | `DISCORD_STREAM_DMS` | Edit-in-place streaming for DM replies (default off) |
+| `STT_MODEL` | faster-whisper model for the mic button (tiny/base/small/medium, default base) |
 | `HARNESS_TZ` | IANA timezone for the frozen prompt date and cron |
 | `WORKSPACE_DIR` | Working directory for the bash/file tools |
 | `WIKI_DIR` | LLM-Wiki pages directory (default `./wiki`) |

@@ -22,7 +22,8 @@ COPY pyproject.toml ./
 RUN pip install --no-cache-dir \
         "fastapi>=0.110" "uvicorn[standard]>=0.27" "openai>=1.30" \
         "httpx>=0.27" "python-dotenv>=1.0" "pyyaml>=6.0" "mcp>=1.0" \
-        "python-multipart>=0.0.9" "discord.py>=2.3,<3" "croniter>=2.0"
+        "python-multipart>=0.0.9" "discord.py>=2.3,<3" "croniter>=2.0" \
+        "faster-whisper>=1.0"
 
 USER app
 
