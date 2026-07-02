@@ -72,12 +72,17 @@ class Scheduler:
                         continue
                     # Advance the schedule up front so a long run can't be picked
                     # up again on the next tick.
-                    try:
-                        storage.update_job(job["id"], next_run=next_run_after(job["cron"], time.time()))
-                    except Exception as e:
-                        log.warning("job %s: bad cron %r: %s", job["id"], job["cron"], e)
-                        storage.update_job(job["id"], next_run=None)
-                        continue
+                    if job["cron"]:
+                        try:
+                            storage.update_job(job["id"], next_run=next_run_after(job["cron"], time.time()))
+                        except Exception as e:
+                            log.warning("job %s: bad cron %r: %s", job["id"], job["cron"], e)
+                            storage.update_job(job["id"], next_run=None)
+                            continue
+                    else:
+                        # One-shot (created via the schedule_job tool's `at`):
+                        # disarm; the row stays so its last_result is inspectable.
+                        storage.update_job(job["id"], next_run=None, enabled=False)
                     asyncio.create_task(self._run_and_record(job))
             except Exception as e:
                 log.warning("scheduler tick error: %s", e)

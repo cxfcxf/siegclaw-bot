@@ -33,6 +33,7 @@ from .skills import discover_skills, load_skill_tool, skills_index
 from .tools.browser import browser_tools
 from .tools.builtin import builtin_tools
 from .tools.clock import clock_tools
+from .tools.jobs import job_tools
 from .tools.registry import Registry
 from .tools.web import web_tools
 
@@ -61,6 +62,7 @@ def build_registry(mcp_tools: list | None = None) -> tuple[Registry, dict]:
     registry.extend(web_tools())
     registry.extend(browser_tools())
     registry.extend(memory.memory_tools())
+    registry.extend(job_tools())
     skills = discover_skills()
     if skills:
         registry.add(load_skill_tool(skills))

@@ -102,6 +102,8 @@ data/                SQLite DBs + uploads (created at runtime)
 - Posts live `-#` tool-status lines, chunks replies over the 2000-char limit,
   reads image attachments, understands pasted YouTube links. Replies
   quote-reply in channels but send plain messages in DMs (1-on-1, no need).
+  **DM replies stream**: the message is sent as soon as text starts and edited
+  in place as tokens arrive (▌ cursor), finalized when the turn completes.
 - **DM slash commands** (hidden from channel autocomplete): `/new`, `/list`,
   `/resume <ref>`, `/model` (provider → model autocomplete). `/new` and
   `/resume` confirmations are posted non-ephemerally so session boundaries
@@ -129,11 +131,15 @@ data/                SQLite DBs + uploads (created at runtime)
 
 ### Scheduled jobs
 
-Defined in the web UI (**cron** button): name + prompt + 5-field cron
-(evaluated in `HARNESS_TZ`) + Discord destination (channel or DM). Each run is
-a headless agent turn (default model, research tools, no shell) posted to the
-target. Enable/disable/edit/delete/Run-now in the dialog; jobs persist in
-SQLite and share the bot's process.
+Defined in the web UI (**cron** button) — name + prompt + 5-field cron
+(evaluated in `HARNESS_TZ`) + Discord destination (channel or DM) — **or
+conversationally**: the agent has `schedule_job` / `list_scheduled_jobs` /
+`cancel_scheduled_job` tools, so "remind me tomorrow at 9am…" or "every
+morning send me AI news" works from any surface. Recurring jobs use cron;
+one-time jobs use an `at` timestamp and disarm after running. Each run is a
+headless agent turn (default model, research tools, no shell) posted to the
+target — a DM to the bot owner by default. Enable/disable/edit/delete/Run-now
+in the dialog; jobs persist in SQLite and share the bot's process.
 
 ### Tools, skills, MCP
 
@@ -158,7 +164,9 @@ nested tool calls, live activity light and timer); **per-response metrics**
 (used vs. the model's max context, from the provider's `/models`); **stop**
 mid-turn; message **copy / retry / edit-and-resend**; conversation history
 grouped Today / Yesterday / Previous 7 days then exact dates; full-page
-**chat search**; dialogs for **soul.md**, **memory**, **skills**, and **cron**.
+**chat search** (instant title matches + **full-text search over message
+bodies** via SQLite FTS5, with highlighted snippets); dialogs for **soul.md**,
+**memory**, **skills**, and **cron**.
 
 ## Configuration reference
 

@@ -619,7 +619,7 @@ select:focus { outline: none; border-color: var(--patina-dim); }
 }
 #search-results { margin-top: 2px; }  /* the page itself scrolls */
 .search-result {
-  display: flex; align-items: baseline; gap: 14px; padding: 10px 12px;
+  display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 14px; padding: 10px 12px;
   border-radius: var(--r-sm); cursor: pointer; transition: background 0.12s;
 }
 .search-result:hover, .search-result.active { background: var(--surface-2); }
@@ -630,6 +630,12 @@ select:focus { outline: none; border-color: var(--patina-dim); }
 .search-result .date {
   font-family: var(--font-mono); font-size: 11px; color: var(--text-faint); white-space: nowrap;
 }
+/* Full-text match context under the title, matched terms in brass. */
+.search-result .snippet {
+  width: 100%; font-family: var(--font-mono); font-size: 11.5px; line-height: 1.5;
+  color: var(--text-faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.search-result .snippet mark { background: none; color: var(--brass); }
 
 /* ===========================================================================
    Dialogs

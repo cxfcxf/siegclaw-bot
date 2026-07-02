@@ -392,12 +392,8 @@ function convDateLabel(ts) {
     : { month: "short", day: "numeric", year: "numeric" });
 }
 
-function renderSearchResults() {
-  const q = $("#chat-search-input").value.trim().toLowerCase();
-  const items = q
-    ? convCache.filter((c) => (c.title || "Untitled").toLowerCase().includes(q))
-    : convCache;
-  $("#search-section").textContent = q ? (items.length ? "Results" : "No chats match") : "Recent";
+function renderSearchRows(items, label) {
+  $("#search-section").textContent = label;
   const box = $("#search-results");
   box.innerHTML = "";
   items.forEach((c, i) => {
@@ -407,9 +403,46 @@ function renderSearchResults() {
     const date = el("span", "date");
     date.textContent = convDateLabel(c.updated_at || c.created_at);
     row.append(title, date);
+    if (c.snippet) {
+      // Matched terms arrive delimited by \x01…\x02 — render them highlighted.
+      const sn = el("div", "snippet");
+      c.snippet.split("\x01").forEach((part, j) => {
+        if (j === 0) { sn.append(part); return; }
+        const [hit, rest] = part.split("\x02");
+        const mark = document.createElement("mark");
+        mark.textContent = hit;
+        sn.append(mark, rest ?? "");
+      });
+      row.appendChild(sn);
+    }
     row.onclick = () => openConversation(c.id);  // openConversation exits search
     box.appendChild(row);
   });
+}
+
+// Two-pass search: instant title matches from the cached list, then the
+// server's full-text results (FTS5 over message bodies) merged in with
+// snippets. A sequence counter drops stale fetches on fast typing.
+let searchSeq = 0;
+async function renderSearchResults() {
+  const q = $("#chat-search-input").value.trim();
+  const seq = ++searchSeq;
+  if (!q) { renderSearchRows(convCache, "Recent"); return; }
+  const ql = q.toLowerCase();
+  const titleHits = convCache.filter((c) => (c.title || "Untitled").toLowerCase().includes(ql));
+  renderSearchRows(titleHits, titleHits.length ? "Results" : "Searching…");
+  let results = [];
+  try {
+    const data = await fetch(`/api/search?q=${encodeURIComponent(q)}`).then((r) => r.json());
+    results = data.results || [];
+  } catch (_) {}
+  if (seq !== searchSeq) return;  // a newer keystroke superseded this fetch
+  const snippets = new Map(results.map((r) => [r.id, r.snippet]));
+  const merged = [
+    ...titleHits.map((c) => ({ ...c, snippet: snippets.get(c.id) })),
+    ...results.filter((r) => !titleHits.some((c) => c.id === r.id)),
+  ];
+  renderSearchRows(merged, merged.length ? "Results" : "No chats match");
 }
 
 // Search is a full page in the main column (not a popup): it swaps in for the

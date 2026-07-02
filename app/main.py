@@ -173,6 +173,14 @@ def api_delete_conversation(cid: str):
     return {"ok": True}
 
 
+@app.get("/api/search")
+def api_search(q: str = ""):
+    """Full-text search over message bodies (FTS5): per-conversation best
+    matches, with \\x01…\\x02-delimited highlights in each snippet."""
+    q = q.strip()
+    return {"results": storage.search_messages(q) if q else []}
+
+
 @app.delete("/api/conversations/{cid}/rewind/{message_id}")
 def api_rewind(cid: str, message_id: str):
     """Delete the given message and everything after it. Used by retry."""
@@ -239,12 +247,15 @@ class JobUpdate(BaseModel):
 
 
 def _job_view(job: dict) -> dict:
-    """Augment a stored job with a human cron hint for the UI."""
-    return {**job, "cron_desc": cron_describe(job["cron"]) if job.get("cron") else ""}
+    """Augment a stored job with a human cron hint for the UI. One-shot jobs
+    (created by the schedule_job agent tool with `at`) have no cron."""
+    return {**job, "cron_desc": cron_describe(job["cron"]) if job.get("cron") else "once"}
 
 
-def _validate_job(cron: str, target_type: str, target_id: str) -> None:
-    if not cron_is_valid(cron):
+def _validate_job(cron: str | None, target_type: str, target_id: str) -> None:
+    """cron=None means "not being changed" (updates to one-shot jobs pass None
+    so toggling enabled doesn't trip cron validation)."""
+    if cron is not None and not cron_is_valid(cron):
         raise HTTPException(400, f"Invalid cron expression: {cron!r}")
     if target_type not in ("channel", "dm"):
         raise HTTPException(400, "target_type must be 'channel' or 'dm'")
@@ -283,16 +294,15 @@ def api_update_job(jid: str, body: JobUpdate):
     if job is None:
         raise HTTPException(404, "No such job")
     fields = {k: v for k, v in body.model_dump().items() if v is not None}
-    cron = fields.get("cron", job["cron"])
     target_type = fields.get("target_type", job["target_type"])
     if "target_type" in fields or "target_id" in fields:
         fields["target_id"] = _normalize_target_id(
             target_type, fields.get("target_id", job["target_id"])
         )
-    _validate_job(cron, target_type, fields.get("target_id", job["target_id"]))
+    _validate_job(fields.get("cron"), target_type, fields.get("target_id", job["target_id"]))
     # Re-arm the schedule when the cron changes.
     if "cron" in fields:
-        fields["next_run"] = next_run_after(cron)
+        fields["next_run"] = next_run_after(fields["cron"])
     storage.update_job(jid, **fields)
     return {"job": _job_view(storage.get_job(jid))}
 

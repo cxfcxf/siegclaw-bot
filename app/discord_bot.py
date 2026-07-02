@@ -62,6 +62,7 @@ from .skills import discover_skills, load_skill_tool
 from .tools.browser import browser_tools
 from .tools.builtin import builtin_tools
 from .tools.clock import clock_tools
+from .tools.jobs import job_tools
 from .tools.registry import Registry, Tool
 from .tools.web import web_tools
 
@@ -114,6 +115,9 @@ _TOOL_STATUS = {
     "fetch_channel_history": lambda a: "📜 reading older channel history",
     "browser_use": lambda a: f"🌐 browser: {a.get('action', '')} {a.get('url', '') or a.get('query', '')}".strip(),
     "load_skill": lambda a: f"📚 loading skill: {a.get('name', '')}",
+    "schedule_job": lambda a: f"⏰ scheduling: {a.get('name', 'job')}",
+    "list_scheduled_jobs": lambda a: "⏰ listing scheduled jobs",
+    "cancel_scheduled_job": lambda a: "🗑️ cancelling scheduled job",
 }
 
 
@@ -229,6 +233,7 @@ def build_discord_registry(
     registry.extend(web_tools())
     registry.extend(browser_tools())
     registry.extend(memory.scoped_tools(scope))
+    registry.extend(job_tools())
     skills = discover_skills()
     if skills:
         registry.add(load_skill_tool(skills))
@@ -359,6 +364,11 @@ async def run_discord_turn(
 # --------------------------------------------------------------------------- #
 # Sending
 # --------------------------------------------------------------------------- #
+# Minimum seconds between edits of a streaming DM reply (Discord allows roughly
+# 5 edits per 5s per channel; 1s keeps headroom for the status message too).
+STREAM_EDIT_SECONDS = 1.0
+
+
 def _chunk_message(text: str) -> list[str]:
     """Split text into Discord's 2000-char limit, preferring newline boundaries."""
     chunks = []
@@ -506,6 +516,11 @@ def create_client(mcp_manager) -> discord.Client:
             # the channel (run_discord_turn status_fn) paths can drive it.
             _status_msg: discord.Message | None = None
 
+            # DM streaming: the reply is sent early and edited as tokens arrive,
+            # so a long answer reads like the web UI instead of one late dump.
+            stream_msg: discord.Message | None = None
+            stream_edit_at = 0.0
+
             async def update_status(tool_name: str, args: dict):
                 nonlocal _status_msg
                 try:
@@ -559,6 +574,21 @@ def create_client(mcp_manager) -> discord.Client:
                         et = event.get("type")
                         if et == "token":
                             reply_text += event.get("text", "")
+                            # Stream into a live message: send once there's text,
+                            # then edit in place (throttled to respect rate
+                            # limits). Overflow past one Discord message is
+                            # handled by the final chunked delivery below.
+                            now = time.monotonic()
+                            if reply_text.strip() and now - stream_edit_at >= STREAM_EDIT_SECONDS:
+                                stream_edit_at = now
+                                preview = reply_text[: MAX_DISCORD_LENGTH - 2] + " ▌"
+                                try:
+                                    if stream_msg is None:
+                                        stream_msg = await message.channel.send(preview)
+                                    else:
+                                        await stream_msg.edit(content=preview)
+                                except Exception as e:
+                                    log.debug("Stream edit failed: %s", e)
                         elif et == "tool_call":
                             try:
                                 await update_status(event.get("name", ""), json.loads(event.get("arguments") or "{}"))
@@ -610,7 +640,25 @@ def create_client(mcp_manager) -> discord.Client:
                 reply_text = f"Sorry, I couldn't generate a response ({type(e).__name__}). Please try again."
                 turn_failed = True
 
-        await _send_long_message(message, reply_text)
+        # Deliver. If a DM was streaming into a live message, finish it in place:
+        # the first chunk replaces the preview (dropping the ▌ cursor), overflow
+        # continues as plain messages. On failure the partial preview is deleted
+        # to match the DB rollback below.
+        if stream_msg is not None:
+            try:
+                if turn_failed:
+                    await stream_msg.delete()
+                    await message.channel.send(reply_text)
+                else:
+                    chunks = _chunk_message(reply_text)
+                    await stream_msg.edit(content=chunks[0])
+                    for c in chunks[1:]:
+                        await message.channel.send(c)
+            except Exception as e:
+                log.warning("Finalizing streamed DM failed (%s); resending", e)
+                await _send_long_message(message, reply_text)
+        else:
+            await _send_long_message(message, reply_text)
 
         # If the turn failed after the user message was already stored, drop it
         # (and any partially-persisted tool messages). If that leaves the

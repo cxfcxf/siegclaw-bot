@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 import time
 import uuid
@@ -97,6 +98,28 @@ def init_db() -> None:
             conn.execute(
                 "CREATE TABLE discord_dm_state (user_id TEXT PRIMARY KEY, active_cid TEXT)"
             )
+        # Full-text search over message bodies: an external-content FTS5 index
+        # kept in sync by triggers (messages are insert/delete only, never
+        # updated). Backfilled once when first added to an existing DB.
+        had_fts = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='messages_fts'"
+        ).fetchone() is not None
+        conn.executescript(
+            """
+            CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
+                content, content='messages', content_rowid='rowid'
+            );
+            CREATE TRIGGER IF NOT EXISTS messages_fts_ai AFTER INSERT ON messages BEGIN
+                INSERT INTO messages_fts(rowid, content) VALUES (new.rowid, new.content);
+            END;
+            CREATE TRIGGER IF NOT EXISTS messages_fts_ad AFTER DELETE ON messages BEGIN
+                INSERT INTO messages_fts(messages_fts, rowid, content)
+                VALUES ('delete', old.rowid, old.content);
+            END;
+            """
+        )
+        if not had_fts:
+            conn.execute("INSERT INTO messages_fts(messages_fts) VALUES('rebuild')")
 
 
 def create_conversation(provider: str, model: str, title: str = "New chat") -> str:
@@ -337,6 +360,51 @@ def get_messages(cid: str) -> list[dict[str, Any]]:
             msg["reasoning"] = r["reasoning"]
         messages.append(msg)
     return messages
+
+
+# --- Full-text search --------------------------------------------------------- #
+def _fts_query(q: str) -> str:
+    """Turn free text into a safe FTS5 prefix query ('pgvector mem' →
+    '"pgvector"* "mem"*') so user input can't hit MATCH syntax errors."""
+    return " ".join(f'"{t}"*' for t in re.findall(r"\w+", q))
+
+
+def search_messages(query: str, limit: int = 30) -> list[dict[str, Any]]:
+    """Full-text search over user/assistant message bodies. Returns one row per
+    conversation — its best-ranked match, best first — with a snippet whose
+    matched terms are delimited by \\x01…\\x02 for the UI to highlight."""
+    fq = _fts_query(query)
+    if not fq:
+        return []
+    with _conn() as conn:
+        rows = conn.execute(
+            # bm25()/snippet() only work while the FTS table drives the query, so
+            # the match runs in a MATERIALIZED CTE (flattened into the aggregate,
+            # SQLite errors with "unable to use function bm25"). The outer
+            # bare-columns-with-MIN pick keeps, per conversation, the snippet of
+            # its best-ranked matching message.
+            """
+            WITH hits AS MATERIALIZED (
+                SELECT c.id, c.title, c.updated_at,
+                       snippet(messages_fts, 0, char(1), char(2), ' … ', 12) AS snippet,
+                       bm25(messages_fts) AS rank
+                FROM messages_fts
+                JOIN messages m ON m.rowid = messages_fts.rowid
+                JOIN conversations c ON c.id = m.conversation_id
+                WHERE messages_fts MATCH ? AND m.role IN ('user', 'assistant')
+            )
+            SELECT id, title, updated_at, snippet, MIN(rank) AS rank
+            FROM hits
+            GROUP BY id
+            ORDER BY rank
+            LIMIT ?
+            """,
+            (fq, limit),
+        ).fetchall()
+    return [
+        {"id": r["id"], "title": r["title"], "updated_at": r["updated_at"], "snippet": r["snippet"]}
+        for r in rows
+    ]
 
 
 # --- Scheduled jobs --------------------------------------------------------- #
