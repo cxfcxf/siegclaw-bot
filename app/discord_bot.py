@@ -97,13 +97,14 @@ When someone asks about things said in the channel ("what do you think of X's ra
 # Tools whose result never changes for identical arguments within one reply —
 # repeating them just burns iterations.
 _IDEMPOTENT_TOOLS = {
-    "web_search", "web_scrape", "web_map", "web_crawl",
+    "web_search", "image_search", "web_scrape", "web_map", "web_crawl",
     "search_wiki", "read_wiki_page", "fetch_user_messages", "fetch_channel_history",
 }
 
 # Short human-readable status lines shown live in Discord while a tool runs.
 _TOOL_STATUS = {
     "web_search": lambda a: f"🔍 searching: *{a.get('query', '')}*",
+    "image_search": lambda a: f"🖼️ finding images: *{a.get('query', '')}*",
     "web_scrape": lambda a: f"🌐 reading: `{a.get('url', '')}`",
     "web_map": lambda a: f"🗺️ mapping: `{a.get('url', '')}`",
     "web_crawl": lambda a: f"🕷️ crawling: `{a.get('url', '')}`",

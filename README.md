@@ -157,8 +157,11 @@ in the dialog; jobs persist in SQLite and share the bot's process.
 - **Wiki**: `read_wiki_page`, `search_wiki`, `write_wiki_page` (write is
   owner-surfaces-only — see the LLM-Wiki section).
 - **Web**: Firecrawl (`web_search`, `web_scrape`, `web_map`, `web_crawl`) via
-  `FIRECRAWL_API_URL`; `browser_use` drives a stealth CamoFox browser
-  (`CAMOFOX_URL`) for JS-rendered or bot-blocked pages.
+  `FIRECRAWL_API_URL`; `image_search` via `IMAGE_SEARCH_URL` (the searchmw
+  middleware's `/images` — Brave image API + Tavily with 429 failover) returns
+  direct image URLs the model embeds in replies (Discord auto-embeds bare
+  URLs; the web UI renders markdown images); `browser_use` drives a stealth
+  CamoFox browser (`CAMOFOX_URL`) for JS-rendered or bot-blocked pages.
 - **MCP**: declare servers in `mcp.json`; tools are exposed as
   `mcp__<server>__<tool>`.
 
@@ -195,6 +198,7 @@ All via `.env` (see `.env.example`) unless noted.
 | `WORKSPACE_DIR` | Working directory for the bash/file tools |
 | `WIKI_DIR` | LLM-Wiki pages directory (default `./wiki`) |
 | `FIRECRAWL_API_URL` | Firecrawl backend for web tools |
+| `IMAGE_SEARCH_URL` | searchmw middleware for `image_search` (its `/images` endpoint) |
 | `CAMOFOX_URL` | Stealth-browser backend for `browser_use` |
 | `THINK_KWARG` | llama.cpp chat-template kwarg for the thinking toggle |
 

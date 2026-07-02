@@ -41,6 +41,8 @@ UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
 # --- Research stack --------------------------------------------------------
 FIRECRAWL_API_URL = os.getenv("FIRECRAWL_API_URL", "").rstrip("/")
 CAMOFOX_URL = os.getenv("CAMOFOX_URL", "").rstrip("/")
+# The search middleware behind Firecrawl (searchmw), hit directly for /images.
+IMAGE_SEARCH_URL = os.getenv("IMAGE_SEARCH_URL", "").rstrip("/")
 
 # --- Locale ----------------------------------------------------------------
 # IANA timezone injected into the system prompt so the model always knows "now".

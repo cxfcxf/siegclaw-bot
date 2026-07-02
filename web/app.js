@@ -571,10 +571,24 @@ function fmtDur(ms) {
 }
 
 // Parse markdown, first converting runs of tab-separated rows into GFM pipe
-// tables. Local models sometimes emit raw tabs to "draw" a table; marked would
-// otherwise render those as plain paragraphs.
+// tables (local models sometimes emit raw tabs to "draw" a table) and turning
+// bare image URLs on their own line into markdown images — the Discord
+// convention (bare URL auto-embeds there), so DM turns viewed here render the
+// same picture instead of a raw link.
 function renderMarkdown(text) {
-  return marked.parse(convertTabsToTables(text));
+  return marked.parse(convertTabsToTables(embedBareImageUrls(text)));
+}
+
+const BARE_IMG_URL_RE = /^https?:\/\/\S+\.(png|jpe?g|gif|webp|avif|bmp)(\?\S*)?$/i;
+function embedBareImageUrls(text) {
+  const out = [];
+  let inCode = false;
+  for (const line of text.split("\n")) {
+    if (/^\s*```/.test(line)) inCode = !inCode;
+    const t = line.trim();
+    out.push(!inCode && BARE_IMG_URL_RE.test(t) ? `![](${t})` : line);
+  }
+  return out.join("\n");
 }
 
 function convertTabsToTables(text) {
@@ -941,6 +955,12 @@ $("#scroll-jump").addEventListener("click", () => {
   m.scrollTo({ top: toBottom ? m.scrollHeight : 0, behavior: "smooth" });
 });
 $("#messages").addEventListener("scroll", updateScrollJump);
+// Markdown images in responses (image_search results) open full-size in a new
+// tab. Attachment thumbnails (.msg-images) already have their own handler.
+$("#messages").addEventListener("click", (e) => {
+  const img = e.target.closest(".bubble img");
+  if (img && img.src && !img.closest(".msg-images")) window.open(img.src, "_blank");
+});
 window.addEventListener("resize", updateScrollJump);
 
 // Toggle the centered "landing" layout (greeting + composer in the middle)

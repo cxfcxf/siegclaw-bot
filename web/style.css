@@ -342,6 +342,12 @@ select:focus { outline: none; border-color: var(--patina-dim); }
   max-width: 240px; max-height: 240px; border-radius: var(--r-sm);
   border: 1px solid var(--you-line); cursor: zoom-in; display: block;
 }
+/* Markdown images in responses (e.g. image_search results): keep them bounded
+   and clickable through to the full-size original. */
+.bubble > img, .bubble p img {
+  max-width: min(420px, 100%); max-height: 360px; border-radius: var(--r-sm);
+  border: 1px solid var(--line); display: block; margin: 8px 0; cursor: zoom-in;
+}
 
 /* ---- Hover actions: copy + retry ------------------------------------------- */
 .msg .actions {

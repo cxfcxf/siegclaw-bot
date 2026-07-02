@@ -3,6 +3,10 @@
 Exposes the full Firecrawl surface: web search, single-page scrape, site map,
 full crawl (blocking), and LLM-backed structured extract. All hit
 FIRECRAWL_API_URL.
+
+`image_search` hits the search middleware directly (IMAGE_SEARCH_URL — the
+searchmw service that also backs Firecrawl's web search), which pools Brave's
+image API and Tavily's include_images behind 429-driven failover.
 """
 from __future__ import annotations
 
@@ -10,7 +14,7 @@ import time
 
 import httpx
 
-from ..config import FIRECRAWL_API_URL
+from ..config import FIRECRAWL_API_URL, IMAGE_SEARCH_URL
 from .registry import Tool
 
 MAX_OUTPUT = 30_000  # cap chars returned to the model per tool call
@@ -44,6 +48,31 @@ def web_search(query: str, limit: int = 5) -> str:
     lines = []
     for i, r in enumerate(data, 1):
         lines.append(f"{i}. {r.get('title', '(no title)')}\n   {r.get('url', '')}\n   {r.get('description', '')}")
+    return "\n".join(lines)
+
+
+def image_search(query: str, count: int = 4) -> str:
+    if not IMAGE_SEARCH_URL:
+        return "Error: IMAGE_SEARCH_URL is not configured."
+    try:
+        resp = httpx.get(
+            f"{IMAGE_SEARCH_URL}/images",
+            params={"q": query, "count": max(1, min(count, 10))},
+            timeout=30.0,
+        )
+        resp.raise_for_status()
+        results = resp.json().get("results", [])
+    except Exception as exc:
+        return _err("image_search", exc)
+    if not results:
+        return f"No images found for: {query}"
+    lines = []
+    for i, r in enumerate(results, 1):
+        title = r.get("title") or "(no title)"
+        line = f"{i}. {title}\n   image: {r.get('image_url', '')}"
+        if r.get("source_url"):
+            line += f"\n   from: {r['source_url']}"
+        lines.append(line)
     return "\n".join(lines)
 
 
@@ -159,6 +188,22 @@ def web_tools() -> list[Tool]:
                 "required": ["query"],
             },
             web_search,
+        ),
+        Tool(
+            "image_search",
+            "Search the web for IMAGES and get direct image URLs (with source pages). "
+            "Use when the user asks what something looks like or wants a photo/picture. "
+            "Include 1-2 of the returned image URLs in your reply, each pasted bare on "
+            "its own line — every surface auto-embeds a lone image URL.",
+            {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "What to find images of, e.g. 'fisher cat animal'."},
+                    "count": {"type": "integer", "description": "Number of images (1-10, default 4)."},
+                },
+                "required": ["query"],
+            },
+            image_search,
         ),
         Tool(
             "web_scrape",
