@@ -28,15 +28,14 @@ def _path(env: str, default: str) -> Path:
 
 WORKSPACE_DIR = _path("WORKSPACE_DIR", "./workspace")
 DATA_DIR = _path("DATA_DIR", "./data")
-SKILLS_DIR = _path("SKILLS_DIR", "./skills")
-SOUL_PATH = _path("SOUL_PATH", "./soul.md")
+WIKI_DIR = _path("WIKI_DIR", "./wiki")
 MCP_CONFIG_PATH = _path("MCP_CONFIG_PATH", "./mcp.json")
 
 UPLOADS_DIR = DATA_DIR / "uploads"
 
 WORKSPACE_DIR.mkdir(parents=True, exist_ok=True)
 DATA_DIR.mkdir(parents=True, exist_ok=True)
-SKILLS_DIR.mkdir(parents=True, exist_ok=True)
+WIKI_DIR.mkdir(parents=True, exist_ok=True)
 UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
 
 # --- Research stack --------------------------------------------------------
@@ -54,11 +53,6 @@ MAX_AGENT_ITERATIONS = int(os.getenv("MAX_AGENT_ITERATIONS", "25"))
 # Chat-template kwarg that toggles model reasoning per request (model-dependent;
 # e.g. "enable_thinking" for this gemma/Qwen-style template).
 THINK_KWARG = os.getenv("THINK_KWARG", "enable_thinking")
-
-# --- Memory service --------------------------------------------------------
-# mem0 runs as its own container (REST server). When set, the bot talks to it
-# over HTTP instead of importing the mem0 library (keeps this image lean).
-MEM0_API_URL = os.getenv("MEM0_API_URL", "").rstrip("/")
 
 # --- Discord ---------------------------------------------------------------
 # When a valid token is set, the app connects to Discord on startup (in the same

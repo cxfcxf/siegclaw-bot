@@ -445,27 +445,40 @@ async function renderSearchResults() {
   renderSearchRows(merged, merged.length ? "Results" : "No chats match");
 }
 
-// Search is a full page in the main column (not a popup): it swaps in for the
-// chat view; opening a chat, starting a new one, or Escape swaps back.
-function setSearchOpen(open) {
-  $("#search-page").hidden = !open;
-  $("#chat").hidden = open;
+// --- Page router --------------------------------------------------------------
+// Search/wiki/cron are full pages in the main column (not popups):
+// each swaps in for the chat view; opening a chat, starting a new one, or Escape
+// swaps back. The sidebar nav button of the open page gets an active marker.
+const PAGES = {
+  search: "#search-page",
+  wiki: "#wiki-page",
+  jobs: "#jobs-page",
+};
+let currentPage = null;  // null = chat view
+
+function showPage(name) {
+  currentPage = name || null;
+  Object.entries(PAGES).forEach(([k, sel]) => { $(sel).hidden = k !== currentPage; });
+  $("#chat").hidden = !!currentPage;
+  document.querySelectorAll("#sidebar .nav-btn[data-page]").forEach((b) => {
+    b.classList.toggle("active", b.dataset.page === currentPage);
+  });
   updateScrollJump();
-  if (open) $("#chat-search-input").focus();
+  if (currentPage === "search") $("#chat-search-input").focus();
 }
 
 async function openChatSearch() {
   $("#chat-search-input").value = "";
   await loadConversations();  // fresh list (also refreshes the sidebar)
   renderSearchResults();
-  setSearchOpen(true);
+  showPage("search");
 }
 $("#search-chats").onclick = openChatSearch;
 $("#search-chats-collapsed").onclick = openChatSearch;
 $("#new-chat-collapsed").onclick = newChat;
-$("#search-close").onclick = () => setSearchOpen(false);
+$("#search-close").onclick = () => showPage(null);
 document.addEventListener("keydown", (e) => {
-  if (e.key === "Escape" && !$("#search-page").hidden) setSearchOpen(false);
+  if (e.key === "Escape" && currentPage) showPage(null);
 });
 
 $("#chat-search-input").addEventListener("input", renderSearchResults);
@@ -493,7 +506,7 @@ $("#expand-sidebar").onclick = () => setSidebarCollapsed(false);
 try { if (localStorage.getItem("harness.sidebar") === "1") setSidebarCollapsed(true); } catch (_) {}
 
 async function openConversation(id) {
-  setSearchOpen(false);
+  showPage(null);
   state.conversationId = id;
   const data = await fetch(`/api/conversations/${id}`).then((r) => r.json());
   state.promptTokens = (data.conversation && data.conversation.prompt_tokens) || null;
@@ -525,7 +538,7 @@ const EMPTY_STATE = `
   </div>`;
 
 function newChat() {
-  setSearchOpen(false);
+  showPage(null);
   state.conversationId = null;
   state.promptTokens = null;
   state.stick = true;
@@ -1316,101 +1329,102 @@ function setStreaming(on) {
 // empty. Routine working/ready state is no longer shown.
 function setStatus(s) { $("#status").textContent = s; }
 
-// --- soul.md & skills dialogs ----------------------------------------------
-$("#edit-soul").onclick = async () => {
-  const data = await fetch("/api/soul").then((r) => r.json());
-  $("#soul-text").value = data.content;
-  $("#soul-dialog").showModal();
-};
-$("#soul-save").onclick = async (e) => {
-  e.preventDefault();
-  await fetch("/api/soul", {
-    method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ content: $("#soul-text").value }),
-  });
-  $("#soul-dialog").close();
-  setStatus("soul.md saved — applies to the next turn.");
-};
-// --- Memory -----------------------------------------------------------------
-// Facts are cached client-side so the filter box works instantly; renderMemories
-// re-fetches, renderMemoryList re-renders the cached set through the filter.
-let memCache = [];
+// --- LLM-Wiki -----------------------------------------------------------------
+// One page, two views: the page list (cards) and the editor (name + summary +
+// body). `home` is the system prompt — it's editable but not deletable.
+let wikiEditing = null;  // page name being edited, or null for a new page
 
-async function renderMemories() {
-  const data = await fetch("/api/memories").then((r) => r.json());
-  memCache = data.memories || [];
-  renderMemoryList();
+function fmtWikiDate(ts) {
+  if (!ts) return "";
+  return new Date(ts * 1000).toLocaleDateString([], { month: "short", day: "numeric" });
 }
 
-function renderMemoryList() {
-  const list = $("#memory-list");
-  const q = $("#memory-filter").value.trim().toLowerCase();
-  const items = q ? memCache.filter((m) => (m.content || "").toLowerCase().includes(q)) : memCache;
-  $("#memory-count").textContent = !memCache.length ? ""
-    : q ? `${items.length} / ${memCache.length}`
-    : `${memCache.length} fact${memCache.length === 1 ? "" : "s"}`;
-  if (!memCache.length) { list.innerHTML = '<div class="empty">No memories yet.</div>'; return; }
-  if (!items.length) { list.innerHTML = '<div class="empty">No facts match the filter.</div>'; return; }
+function setWikiView(editor) {
+  $("#wiki-list-view").hidden = editor;
+  $("#wiki-editor-view").hidden = !editor;
+}
+
+async function renderWikiList() {
+  const data = await fetch("/api/wiki").then((r) => r.json());
+  const list = $("#wiki-list");
   list.innerHTML = "";
-  items.forEach((m) => {
-    const card = el("div", "mem-card");
-    const text = el("div", "text"); text.textContent = m.content;
-    const forget = el("button", "forget"); forget.type = "button"; forget.textContent = "✕"; forget.title = "Forget";
-    forget.onclick = async () => {
-      await fetch(`/api/memories/${m.id}`, { method: "DELETE" });
-      renderMemories();
-    };
-    card.append(text, forget);
+  (data.pages || []).forEach((p) => {
+    const card = el("div", "wiki-card" + (p.name === "home" ? " home" : ""));
+    const head = el("div", "wiki-card-head");
+    const name = el("span", "name"); name.textContent = p.name;
+    const meta = el("span", "meta");
+    meta.textContent = `${p.chars} chars · ${fmtWikiDate(p.updated_at)}`;
+    head.append(name, meta);
+    if (p.name !== "home") {
+      const del = el("button", "del"); del.type = "button"; del.textContent = "✕"; del.title = "Delete page";
+      del.onclick = async (e) => {
+        e.stopPropagation();
+        if (!confirm(`Delete wiki page “${p.name}”?`)) return;
+        await fetch(`/api/wiki/${encodeURIComponent(p.name)}`, { method: "DELETE" });
+        renderWikiList();
+      };
+      head.appendChild(del);
+    }
+    const desc = el("div", "desc");
+    desc.textContent = p.summary || "(no summary)";
+    card.append(head, desc);
+    card.onclick = () => openWikiEditor(p.name);
     list.appendChild(card);
   });
+  if (!list.children.length) list.innerHTML = '<div class="empty">No wiki pages yet.</div>';
 }
 
-$("#memory-filter").addEventListener("input", renderMemoryList);
-// The filter lives inside the dialog's <form method="dialog"> — Enter must not
-// close the dialog.
-$("#memory-filter").addEventListener("keydown", (e) => { if (e.key === "Enter") e.preventDefault(); });
-
-$("#show-memory").onclick = async () => {
-  $("#memory-filter").value = "";
-  await renderMemories();
-  $("#memory-dialog").showModal();
-};
-
-async function addMemoryFromInput() {
-  const input = $("#memory-input");
-  const content = input.value.trim();
-  if (!content) return;
-  await fetch("/api/memories", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ content }),
-  });
-  input.value = "";
-  renderMemories();
-}
-$("#memory-add").onclick = (e) => { e.preventDefault(); addMemoryFromInput(); };
-// Enter in the add box saves the fact instead of closing the dialog.
-$("#memory-input").addEventListener("keydown", (e) => {
-  if (e.key === "Enter") { e.preventDefault(); addMemoryFromInput(); }
-});
-
-$("#show-skills").onclick = async () => {
-  const data = await fetch("/api/skills").then((r) => r.json());
-  const list = $("#skills-list");
-  list.innerHTML = "";
-  if (!data.skills.length) {
-    list.innerHTML = '<div class="empty">No skills in ./skills</div>';
+async function openWikiEditor(name) {
+  wikiEditing = name;
+  $("#wiki-status").textContent = "";
+  if (name) {
+    const data = await fetch(`/api/wiki/${encodeURIComponent(name)}`).then((r) => r.json());
+    $("#wiki-editor-title").textContent = name === "home" ? "home — the system prompt" : name;
+    $("#wiki-name").value = name;
+    $("#wiki-name").disabled = true;
+    $("#wiki-summary").value = data.summary || "";
+    $("#wiki-content").value = data.content || "";
   } else {
-    data.skills.forEach((s) => {
-      const card = el("div", "skill-card");
-      const name = el("div", "name"); name.textContent = s.name;
-      const desc = el("div", "desc"); desc.textContent = s.description || "";
-      card.append(name, desc);
-      list.appendChild(card);
-    });
+    $("#wiki-editor-title").textContent = "New page";
+    $("#wiki-name").value = "";
+    $("#wiki-name").disabled = false;
+    $("#wiki-summary").value = "";
+    $("#wiki-content").value = "";
   }
-  $("#skills-dialog").showModal();
+  setWikiView(true);
+  (name ? $("#wiki-content") : $("#wiki-name")).focus();
+}
+
+$("#show-wiki").onclick = async () => {
+  showPage("wiki");
+  setWikiView(false);
+  await renderWikiList();
+};
+$("#wiki-new").onclick = () => openWikiEditor(null);
+$("#wiki-back").onclick = async () => { setWikiView(false); await renderWikiList(); };
+
+let wikiStatusTimer = null;
+$("#wiki-save").onclick = async () => {
+  const name = ($("#wiki-name").value || "").trim();
+  if (!name) { $("#wiki-status").textContent = "page name required"; return; }
+  const res = await fetch(`/api/wiki/${encodeURIComponent(name)}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ summary: $("#wiki-summary").value, content: $("#wiki-content").value }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    $("#wiki-status").textContent = err.detail || "save failed";
+    return;
+  }
+  const saved = await res.json();
+  wikiEditing = saved.name;
+  $("#wiki-name").value = saved.name;
+  $("#wiki-name").disabled = true;
+  $("#wiki-editor-title").textContent = saved.name === "home" ? "home — the system prompt" : saved.name;
+  $("#wiki-status").textContent = "saved — applies to the next turn";
+  clearTimeout(wikiStatusTimer);
+  wikiStatusTimer = setTimeout(() => { $("#wiki-status").textContent = ""; }, 4000);
 };
 
 // --- Scheduled jobs ---------------------------------------------------------
@@ -1584,10 +1598,10 @@ $("#job-save").onclick = async () => {
 };
 
 $("#show-jobs").onclick = async () => {
-  await loadJobChannels();
+  showPage("jobs");
   resetJobForm();
+  await loadJobChannels();
   await renderJobs();
-  $("#jobs-dialog").showModal();
 };
 
 // --- Boot -------------------------------------------------------------------

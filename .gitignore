@@ -3,6 +3,9 @@ __pycache__/
 *.pyc
 data/
 workspace/
+# The LLM-Wiki is personal runtime data — only the stock system prompt ships.
+wiki/*
+!wiki/home.md
 .venv/
 venv/
 *.egg-info/

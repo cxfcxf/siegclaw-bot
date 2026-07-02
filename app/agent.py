@@ -15,13 +15,12 @@ from datetime import datetime
 from typing import Any, AsyncGenerator
 from zoneinfo import ZoneInfo
 
-from . import memory, storage
+from . import storage, wiki
 from .config import (
     HARNESS_TZ,
     MAX_AGENT_ITERATIONS,
     SEND_FALLBACK_RETRIES,
     SEND_FALLBACK_RETRY_DELAY,
-    SOUL_PATH,
     THINK_KWARG,
     UPLOADS_DIR,
     model_valid_for,
@@ -29,7 +28,6 @@ from .config import (
     resolve_default_model,
 )
 from .providers import client_for
-from .skills import discover_skills, load_skill_tool, skills_index
 from .tools.browser import browser_tools
 from .tools.builtin import builtin_tools
 from .tools.clock import clock_tools
@@ -48,27 +46,20 @@ def needs_reasoning_replay(provider: str) -> bool:
     return provider in _REASONING_REPLAY_PROVIDERS
 
 
-def read_soul() -> str:
-    if SOUL_PATH.exists():
-        return SOUL_PATH.read_text(errors="replace").strip()
-    return "You are a helpful assistant."
-
-
-def build_registry(mcp_tools: list | None = None) -> tuple[Registry, dict]:
-    """Assemble all tools. Returns (registry, skills) — skills feed the prompt."""
+def build_registry(mcp_tools: list | None = None) -> Registry:
+    """Assemble all tools for owner surfaces (web UI + Discord DMs). The wiki
+    tools are WRITABLE here — the wiki feeds every future system prompt, so
+    only the owner's surfaces may write it."""
     registry = Registry()
     registry.extend(clock_tools())
     registry.extend(builtin_tools())
     registry.extend(web_tools())
     registry.extend(browser_tools())
-    registry.extend(memory.memory_tools())
+    registry.extend(wiki.wiki_tools(writable=True))
     registry.extend(job_tools())
-    skills = discover_skills()
-    if skills:
-        registry.add(load_skill_tool(skills))
     if mcp_tools:
         registry.extend(mcp_tools)
-    return registry, skills
+    return registry
 
 
 def conversation_time_block(started_at: float | None = None) -> str:
@@ -95,40 +86,13 @@ def conversation_time_block(started_at: float | None = None) -> str:
     )
 
 
-def assemble_system_prompt(skills: dict, *parts: str) -> str:
-    """Join the given prompt sections plus the skills index (when non-empty),
-    dropping any blanks. Shared by the web, Discord, and cron system prompts."""
-    sections = [*parts, skills_index(skills)]
+def static_system_prompt(*extra: str) -> str:
+    """The system prompt: the wiki's home page (the model's own root page) +
+    any caller-supplied sections (surface preamble, day-level time) + the wiki
+    index. Stable within a conversation unless a wiki page changes — a page
+    write busts the prompt cache once, which is the price of learning."""
+    sections = [wiki.home_text(), *extra, wiki.wiki_index()]
     return "\n\n".join(p for p in sections if p)
-
-
-def static_system_prompt(skills: dict, *extra: str) -> str:
-    """The cacheable prefix of the system prompt: soul + any caller-supplied
-    sections (preamble, day-level time, FROZEN memory) + skills index. Every one
-    of these is stable for the life of a conversation, so the prefix — and all
-    prior turns — stay in the prompt cache and never get re-evaluated. There is
-    deliberately NO per-turn-volatile content here; nothing rides in the tail."""
-    return assemble_system_prompt(skills, read_soul(), *extra)
-
-
-def conversation_memory_block(conversation: dict | None, query: str, scope: str | None = None) -> str:
-    """The memory section of the (cacheable) system prefix, FROZEN for the life
-    of the conversation. On the first turn (no stored frozen block yet) we
-    retrieve the memories relevant to the opening user message and persist the
-    resulting block; every later turn reuses that exact string so the prefix —
-    and thus the prompt cache — never changes. The model can pull fresher or
-    differently-relevant memories on demand via the `search_memory` tool.
-
-    For stateless surfaces (no `conversation` row) the block is just computed
-    from the query each time — those turns are single-shot, so the prefix is
-    still stable across the turn's own tool-loop iterations."""
-    if conversation is None:
-        return memory.relevant_block(query, scope)
-    frozen = conversation.get("frozen_memory")
-    if frozen is None:
-        frozen = memory.relevant_block(query, scope)
-        storage.set_frozen_memory(conversation["id"], frozen)
-    return frozen
 
 
 async def resolve_for_turn(
@@ -248,7 +212,6 @@ async def run_turn(
     model: str,
     user_message: str,
     registry: Registry,
-    skills: dict,
     images: list[str] | None = None,
     think: bool = True,
     effort: str | None = None,
@@ -264,17 +227,15 @@ async def run_turn(
     # retry-from-here (which needs to rewind by id on the server).
     yield {"type": "user_message", "id": user_msg_id}
 
-    # Fully static system prefix (soul + conversation-fixed day-level time +
-    # FROZEN memory + skills) — identical every turn, so it (and all prior turns)
-    # stay in the prompt cache. Memory is snapshotted on the first turn and
-    # reused verbatim thereafter; the model fetches fresher facts via
-    # `search_memory`, and the precise time via `current_time` (both are tool
-    # calls that happen after the cached prefix, so they never bust it).
+    # Static system prefix (wiki home + conversation-fixed day-level time +
+    # wiki index) — stable across turns so it (and all prior turns) stay in
+    # the prompt cache. The model pulls specifics via tool calls that happen
+    # after the cached prefix (`read_wiki_page`, `search_wiki`, `current_time`),
+    # so routine turns never bust it; only an actual wiki edit does.
     convo = storage.get_conversation(conversation_id)
     started_at = convo.get("created_at") if convo else None
     time_block = conversation_time_block(started_at)
-    memory_block = await asyncio.to_thread(conversation_memory_block, convo, user_message)
-    sys_content = await asyncio.to_thread(static_system_prompt, skills, time_block, memory_block)
+    sys_content = await asyncio.to_thread(static_system_prompt, time_block)
     messages: list[dict[str, Any]] = [{"role": "system", "content": sys_content}]
     messages.extend(_to_api_messages(storage.get_messages(conversation_id), provider))
 
@@ -406,11 +367,7 @@ async def run_turn(
                 )
             continue  # loop back for the model's next step
 
-        # No tool calls => the turn is complete. Schedule debounced background
-        # memory extraction (fires MEMORY_DEBOUNCE_SECONDS after the last turn)
-        # and unblock the composer immediately — extraction no longer holds the
-        # stream open.
-        memory.schedule_extraction(user_message, final_answer)
+        # No tool calls => the turn is complete.
         if last_prompt_tokens:
             storage.set_prompt_tokens(conversation_id, last_prompt_tokens)
         yield {"type": "done", "tokens": total_tokens or None, "prompt_tokens": last_prompt_tokens or None}

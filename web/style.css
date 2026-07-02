@@ -125,15 +125,19 @@ body {
 .icon-btn:hover { color: var(--brass); background: var(--surface-2); border-color: var(--line); }
 #collapse-sidebar { position: absolute; top: 15px; right: 12px; }
 #app.sidebar-collapsed #sidebar { width: 0; border-right: none; opacity: 0; pointer-events: none; }
-/* New conversation + Search chats: one visual group of sidebar action rows. */
-#new-chat, #search-chats {
+/* Sidebar nav: New conversation, Search chats, and the four tool pages
+   (wiki/cron) as one visual group of action rows. */
+.sidebar-head .nav-btn {
   display: flex; align-items: center; gap: 9px; width: 100%;
   padding: 9px 12px; background: transparent; border: 1px solid transparent;
   border-radius: var(--r-sm); color: var(--text-dim); font-family: var(--font-body);
   font-size: 13.5px; cursor: pointer; transition: all 0.14s;
 }
-#new-chat:hover, #search-chats:hover { color: var(--text); background: var(--surface-2); border-color: var(--line); }
-#search-chats { margin-top: 2px; }
+.sidebar-head .nav-btn:hover { color: var(--text); background: var(--surface-2); border-color: var(--line); }
+.sidebar-head .nav-btn + .nav-btn { margin-top: 2px; }
+/* The open page's nav row: same treatment as the active conversation. */
+.sidebar-head .nav-btn.active { color: var(--text); background: var(--surface-2); }
+.sidebar-head .nav-btn.active svg { color: var(--brass); }
 /* Collapsed state: expand + search live in ONE grouped floating pill. */
 #collapsed-tools {
   display: none; flex-direction: column; gap: 2px; padding: 3px;
@@ -141,17 +145,6 @@ body {
 }
 #app.sidebar-collapsed #collapsed-tools { display: flex; }
 #collapsed-tools .icon-btn:hover { border-color: transparent; }
-
-.sidebar-foot {
-  margin-top: auto; padding: 12px; display: flex; gap: 6px;
-  border-top: 1px solid var(--line-soft);
-}
-.sidebar-foot button {
-  flex: 1; font-family: var(--font-mono); font-size: 12px; letter-spacing: 0.03em;
-  color: var(--text-dim); background: transparent; border: 1px solid transparent;
-  border-radius: var(--r-sm); padding: 7px 6px; cursor: pointer; transition: all 0.14s;
-}
-.sidebar-foot button:hover { color: var(--brass); background: var(--surface-2); border-color: var(--line); }
 
 /* Buttons (base) */
 button { font-family: var(--font-body); }
@@ -638,82 +631,72 @@ select:focus { outline: none; border-color: var(--patina-dim); }
 .search-result .snippet mark { background: none; color: var(--brass); }
 
 /* ===========================================================================
-   Dialogs
+   Tool pages (wiki / cron) — swap in for the chat view in
+   the main column, like the search page.
    ========================================================================= */
-dialog {
-  background: var(--surface); color: var(--text); border: 1px solid var(--line);
-  border-radius: var(--r); padding: 24px; width: min(680px, 92vw); box-shadow: var(--shadow);
-}
-dialog::backdrop { background: rgba(8, 11, 11, 0.62); backdrop-filter: blur(3px); }
-dialog h3 { font-family: var(--font-display); font-weight: 600; font-size: 18px; margin: 0 0 4px; }
-dialog .hint { color: var(--text-dim); font-size: 13px; margin: 0 0 16px; }
-dialog .hint code { font-family: var(--font-mono); font-size: 12px; background: var(--surface-2); padding: 1px 5px; border-radius: 4px; color: var(--brass); }
-dialog textarea, .add-memory input {
+.page { flex: 1; overflow-y: auto; padding: 7vh 22px 48px; }
+.page-inner { max-width: 720px; margin: 0 auto; }
+.page h2 { font-family: var(--font-display); font-weight: 600; font-size: 21px; margin: 0 0 6px; }
+.page .hint { color: var(--text-dim); font-size: 13px; margin: 0 0 18px; }
+.page .hint code { font-family: var(--font-mono); font-size: 12px; background: var(--surface-2); padding: 1px 5px; border-radius: 4px; color: var(--brass); }
+.page textarea {
   width: 100%; background: var(--surface-2); color: var(--text); border: 1px solid var(--line);
   border-radius: var(--r-sm); padding: 11px 13px; font-family: var(--font-mono); font-size: 13px; line-height: 1.5;
 }
-dialog textarea:focus, .add-memory input:focus { outline: none; border-color: var(--patina-dim); }
-dialog menu { display: flex; justify-content: flex-end; gap: 8px; padding: 0; margin: 16px 0 0; }
-dialog menu button, .add-memory button {
+.page textarea:focus { outline: none; border-color: var(--patina-dim); }
+.page-actions { display: flex; align-items: center; justify-content: flex-end; gap: 12px; margin-top: 12px; }
+.page-actions .hint { margin: 0; font-size: 12.5px; }
+.page-actions button {
   font-family: var(--font-body); font-size: 13.5px; color: var(--text-dim);
   background: var(--surface-2); border: 1px solid var(--line); border-radius: var(--r-sm);
   padding: 8px 16px; cursor: pointer; transition: all 0.14s;
 }
-dialog menu button:hover, .add-memory button:hover { color: var(--text); border-color: var(--surface-3); }
-dialog menu button.primary, .add-memory button.primary {
+.page-actions button:hover { color: var(--text); border-color: var(--surface-3); }
+.page-actions button.primary {
   color: #2a1d0a; background: linear-gradient(180deg, var(--brass), var(--brass-deep)); border: none; font-weight: 600;
 }
-dialog menu button.primary:hover { box-shadow: 0 0 16px -5px rgba(214,163,92,0.7); }
+.page-actions button.primary:hover { box-shadow: 0 0 16px -5px rgba(214,163,92,0.7); }
 
-.add-memory { display: flex; gap: 8px; margin-bottom: 16px; }
-.add-memory input { flex: 1; font-family: var(--font-body); }
-
-/* Memory: a board of fact cards (not a chat-log list) with a client-side filter. */
-.mem-toolbar { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }
-.mem-toolbar input {
-  flex: 1; background: var(--surface-2); color: var(--text); border: 1px solid var(--line);
-  border-radius: var(--r-sm); padding: 7px 12px; font-family: var(--font-body); font-size: 13px;
-}
-.mem-toolbar input:focus { outline: none; border-color: var(--patina-dim); }
-.mem-toolbar input::placeholder { color: var(--text-faint); }
-#memory-count {
-  font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.06em;
-  color: var(--text-faint); white-space: nowrap;
-}
-
-#memory-list, #skills-list { max-height: 52vh; overflow-y: auto; }
-#memory-list {
-  display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
-  gap: 8px; align-items: start;
-}
-.mem-card {
-  position: relative; background: var(--surface-2); border: 1px solid var(--line);
-  border-left: 2px solid var(--patina-dim); border-radius: var(--r-sm);
-  padding: 10px 30px 10px 13px; min-height: 100%;
-}
-.mem-card .text { font-size: 13px; line-height: 1.5; color: var(--text); word-break: break-word; }
-.mem-card .forget {
-  position: absolute; top: 6px; right: 6px; background: transparent; border: none;
-  color: var(--text-faint); cursor: pointer; padding: 2px 5px; font-size: 12px;
-  opacity: 0; transition: opacity 0.12s, color 0.12s;
-}
-.mem-card:hover .forget { opacity: 1; }
-.mem-card .forget:hover { color: var(--clay); }
-#memory-list .empty { grid-column: 1 / -1; }
-
-/* Skills: capability cards. */
-#skills-list { display: flex; flex-direction: column; gap: 8px; }
-.skill-card {
+/* --- LLM-Wiki: page cards + editor --- */
+.wiki-list-actions { justify-content: flex-end; margin: 0 0 12px; }
+#wiki-list { display: flex; flex-direction: column; gap: 8px; }
+#wiki-list .empty { padding: 28px; text-align: center; }
+.wiki-card {
   background: var(--surface-2); border: 1px solid var(--line);
-  border-left: 2px solid var(--brass-deep); border-radius: var(--r-sm); padding: 10px 13px;
+  border-left: 2px solid var(--brass-deep); border-radius: var(--r-sm);
+  padding: 10px 13px; cursor: pointer; transition: border-color 0.14s, background 0.14s;
 }
-.skill-card .name { font-family: var(--font-display); font-weight: 600; color: var(--brass); font-size: 14px; }
-.skill-card .desc { color: var(--text-dim); font-size: 13px; line-height: 1.5; margin-top: 2px; }
-#memory-list .empty, #skills-list .empty { padding: 28px; text-align: center; }
+.wiki-card:hover { background: var(--surface-3); }
+.wiki-card.home { border-left-color: var(--patina); }
+.wiki-card-head { display: flex; align-items: baseline; gap: 10px; }
+.wiki-card .name { font-family: var(--font-display); font-weight: 600; color: var(--brass); font-size: 14px; flex: 1; }
+.wiki-card.home .name::after {
+  content: "system prompt"; font-family: var(--font-mono); font-weight: 400;
+  font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase;
+  color: var(--patina); margin-left: 9px;
+}
+.wiki-card .meta { font-family: var(--font-mono); font-size: 11px; color: var(--text-faint); white-space: nowrap; }
+.wiki-card .del {
+  background: transparent; border: none; color: var(--text-faint); cursor: pointer;
+  padding: 0 3px; font-size: 12px; opacity: 0; transition: opacity 0.12s, color 0.12s;
+}
+.wiki-card:hover .del { opacity: 1; }
+.wiki-card .del:hover { color: var(--clay); }
+.wiki-card .desc { color: var(--text-dim); font-size: 13px; line-height: 1.5; margin-top: 2px; }
+
+.wiki-fields { display: flex; flex-direction: column; gap: 8px; margin-bottom: 8px; }
+.wiki-fields input {
+  width: 100%; background: var(--surface-2); color: var(--text); border: 1px solid var(--line);
+  border-radius: var(--r-sm); padding: 9px 12px; font-family: var(--font-body); font-size: 13px;
+}
+.wiki-fields #wiki-name { font-family: var(--font-mono); }
+.wiki-fields input:focus { outline: none; border-color: var(--patina-dim); }
+.wiki-fields input:disabled { color: var(--text-dim); }
+#wiki-content { min-height: 56vh; resize: vertical; }
 
 /* --- Scheduled jobs: one card per job --- */
 #jobs-list {
-  max-height: 42vh; overflow-y: auto; margin-bottom: 16px;
+  margin-bottom: 16px;
   display: flex; flex-direction: column; gap: 8px;
 }
 #jobs-list .empty { padding: 24px; text-align: center; }
@@ -775,7 +758,6 @@ dialog menu button.primary:hover { box-shadow: 0 0 16px -5px rgba(214,163,92,0.7
 @media (max-width: 720px) {
   #sidebar { width: 64px; }
   .brand-name { display: none; }
-  .sidebar-foot { flex-direction: column; }
   #messages, .composer-box, #attachments { padding-left: 14px; padding-right: 14px; }
   #model-chip { max-width: 46vw; }
   #model-chip #chip-provider { display: none; }

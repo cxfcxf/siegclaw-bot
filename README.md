@@ -5,28 +5,25 @@ single-user **web UI** (vanilla HTML/CSS/JS over FastAPI + SSE) and a
 multi-user **Discord bot** (DMs, @mentions, replies) — the Discord client
 connects on startup iff `DISCORD_BOT_TOKEN` is set. Both surfaces share the
 same agent core: a streaming tool-call loop against any OpenAI-compatible
-provider (cloud or local), with a `soul.md` system prompt, web/browser/file
-tools, MCP servers, skills, and durable mem0 memory.
+provider (cloud or local), with web/browser/file tools, MCP servers, and an
+**LLM-Wiki** — the model's entire durable knowledge (system prompt, memory,
+lessons) as markdown pages it reads and rewrites itself.
 
 ## Quick start
 
-Docker — full stack (bot + memory side containers), web UI on <http://localhost:8800>:
+Docker — single container, web UI on <http://localhost:8800>:
 
 ```bash
 docker compose up --build -d
 ```
 
-Four services: `siegclaw-bot` (web UI + Discord), `mem0` (tiny mem0 REST
-service, `mem0svc/`), `pgvector` (vector storage), `embed` (fastembed/ONNX
-embeddings — no torch, no GPU). Point `MEM0_LLM_BASE_URL` in
-`docker-compose.yml` at your llama.cpp; it does the memory extraction.
 *OrbStack note: if a build fails on DNS, add `--build-arg HTTP_PROXY=""`.*
 
 Local — web UI only (plus the bot if the token is set), on <http://localhost:8080>:
 
 ```bash
 pip install -e .
-cp .env.example .env      # provider keys, MEM0_API_URL, DISCORD_BOT_TOKEN, …
+cp .env.example .env      # provider keys, DISCORD_BOT_TOKEN, …
 python -m uvicorn app.main:app --port 8080
 ```
 
@@ -40,24 +37,22 @@ doesn't list models, type a model id — the model field is a free-text combobox
 ```
 app/
   main.py            FastAPI: /api/* + SSE chat + static UI; starts the Discord bot
-  agent.py           streaming tool-call loop (web + Discord DM); frozen system prompt
+  agent.py           streaming tool-call loop (web + Discord DM); wiki-based system prompt
   config.py          provider registry + env detection, liveness probe, default→fallback model resolution
   providers.py       OpenAI-compatible (async) client factory
   discord_bot.py     Discord client + on_message; DM slash commands; channel/cron use the non-streaming loop
   discord_context.py Discord history window + image/YouTube helpers
   scheduler.py       cron job runner (headless agent turn → Discord delivery)
   cronutil.py        cron-expression parsing / next-run (in HARNESS_TZ)
-  memory.py          pluggable memory: mem0 REST service / in-process mem0 / simple SQLite
+  wiki.py            the LLM-Wiki: page storage, prompt index, read/search/write tools
   storage.py         SQLite conversations (web UI + Discord DMs share one pool)
-  skills.py          SKILL.md discovery + load_skill tool
   mcp_client.py      connects mcp.json servers (stdio or HTTP)
   tools/             registry, builtin (fs/bash), web (Firecrawl), browser (CamoFox), clock
 web/                 vanilla HTML/CSS/JS frontend
-mem0svc/             tiny custom mem0 REST service container
-embed/               fastembed (ONNX) embeddings service container
-soul.md              system prompt (editable from the UI)
+wiki/                the LLM-Wiki. Only home.md (the stock system prompt) is committed;
+                     every other page is personal runtime data the model writes for its
+                     owner (gitignored)
 mcp.json             MCP server definitions
-skills/              your skills (skills/<name>/SKILL.md)
 data/                SQLite DBs + uploads (created at runtime)
 ```
 
@@ -69,11 +64,11 @@ data/                SQLite DBs + uploads (created at runtime)
   DMs — prompt construction, storage, and reasoning capture are identical.
   Channel @mentions and cron jobs use the non-streaming
   `discord_bot.py:run_discord_turn`.
-- **Cache-friendly system prompt**: the prefix is byte-identical across turns
-  so the provider's prompt cache never invalidates. The date is frozen at day
-  precision at conversation start (`HARNESS_TZ`), and relevant memory is
-  snapshotted once per conversation. Anything fresher comes from tools
-  (`current_time`, `search_memory`).
+- **Cache-friendly system prompt**: the prefix (wiki home page + day-frozen
+  date + wiki index) is byte-identical across turns so the provider's prompt
+  cache never invalidates. Anything fresher comes from tools (`current_time`,
+  `read_wiki_page`, `search_wiki`); only an actual wiki edit busts the cache —
+  the price of learning, paid once per edit.
 - **Thinking is provider-aware**: llama.cpp via `chat_template_kwargs`
   (`THINK_KWARG`), DeepSeek/MiMo via `thinking.type` (+ `reasoning_effort`),
   OpenRouter via `reasoning.enabled`. Reasoning is read back from whichever
@@ -117,21 +112,31 @@ data/                SQLite DBs + uploads (created at runtime)
 - The shell/file tools are **withheld from Discord** (multi-user) unless
   `DISCORD_ENABLE_SHELL=true`.
 
-### Memory ([mem0](https://github.com/mem0ai/mem0))
+### LLM-Wiki (memory + system prompt + skills, unified)
 
-- Facts are **auto-extracted** in the background, debounced
-  (`MEMORY_DEBOUNCE_SECONDS`, default 300s of quiet), including facts stated
-  in passing ("for people like me around 42…" → "User is around 42").
-  Contradictions are reconciled (add/update/delete); a heuristic filter drops
-  conversation-log junk.
-- **Scoping**: the web UI and Discord DMs share one default scope (both are
-  the owner's). Channel memory is scoped **per server**
-  (`discord-guild:<id>`), with facts attributed by display name ("John lives
-  in NYC") so anyone's mention can recall them. Tune extraction with
-  `MEM0_CUSTOM_INSTRUCTIONS` on the mem0 service.
-- View / filter / add / delete facts via the **memory** button in the sidebar.
-  If `MEM0_API_URL` is unset, memory falls back to a simple all-facts SQLite
-  store.
+Everything the assistant durably knows is a directory of markdown pages
+(`wiki/`, one file per page with a one-line `summary` in frontmatter) that
+**the model curates itself** — no extraction pipeline, no vector store, no
+side containers. The model is the memory system:
+
+- **`home.md` is the system prompt** (the old soul.md): identity, principles,
+  and the standing instruction to read the wiki before answering and write
+  back what it learns.
+- **Every other page** appears in every system prompt as an index line
+  (name + summary). The model calls `read_wiki_page` when a summary is
+  relevant, `search_wiki` (keyword search) when unsure which page, and
+  `write_wiki_page` to save durable facts, corrections, and procedures that
+  worked. A write replaces the whole page, so it's told to read-then-fold-in.
+- **Write access is owner-only**: web UI and Discord DM turns can write;
+  channel mentions and cron jobs get read/search only (the wiki feeds every
+  future system prompt — channel users must not inject into it).
+- Pages are plain files: browse/edit/delete them in the **wiki** tab in the
+  sidebar, or with any editor (`wiki/` is a directory mount — edits apply on
+  the next turn, no restart).
+- **Only `home.md` is committed** — it's the stock system prompt a fresh
+  install starts from (created automatically if missing). Everything else in
+  `wiki/` is personal: pages the model accumulates about *its* owner. Those
+  are gitignored, like `data/`.
 
 ### Scheduled jobs
 
@@ -145,15 +150,15 @@ headless agent turn (default model, research tools, no shell) posted to the
 target — a DM to the bot owner by default. Enable/disable/edit/delete/Run-now
 in the dialog; jobs persist in SQLite and share the bot's process.
 
-### Tools, skills, MCP
+### Tools & MCP
 
 - **Builtin**: `read_file`, `write_file`, `edit_file`, `list_dir`, `bash`
-  (workspace = `WORKSPACE_DIR`), `current_time`, `search_memory`.
+  (workspace = `WORKSPACE_DIR`), `current_time`.
+- **Wiki**: `read_wiki_page`, `search_wiki`, `write_wiki_page` (write is
+  owner-surfaces-only — see the LLM-Wiki section).
 - **Web**: Firecrawl (`web_search`, `web_scrape`, `web_map`, `web_crawl`) via
   `FIRECRAWL_API_URL`; `browser_use` drives a stealth CamoFox browser
   (`CAMOFOX_URL`) for JS-rendered or bot-blocked pages.
-- **Skills**: Claude-style `skills/<name>/SKILL.md`; the index is always shown
-  to the model, full instructions load on demand via `load_skill`.
 - **MCP**: declare servers in `mcp.json`; tools are exposed as
   `mcp__<server>__<tool>`.
 
@@ -169,8 +174,9 @@ nested tool calls, live activity light and timer); **per-response metrics**
 mid-turn; message **copy / retry / edit-and-resend**; conversation history
 grouped Today / Yesterday / Previous 7 days then exact dates; full-page
 **chat search** (instant title matches + **full-text search over message
-bodies** via SQLite FTS5, with highlighted snippets); dialogs for **soul.md**,
-**memory**, **skills**, and **cron**.
+bodies** via SQLite FTS5, with highlighted snippets); and sidebar tabs for the
+**wiki** (browse/edit/delete the LLM-Wiki pages, including `home` = the system
+prompt) and **cron** (scheduled jobs).
 
 ## Configuration reference
 
@@ -187,9 +193,7 @@ All via `.env` (see `.env.example`) unless noted.
 | `DISCORD_STREAM_DMS` | Edit-in-place streaming for DM replies (default off) |
 | `HARNESS_TZ` | IANA timezone for the frozen prompt date and cron |
 | `WORKSPACE_DIR` | Working directory for the bash/file tools |
-| `MEM0_API_URL` | mem0 service URL (unset → simple SQLite memory) |
-| `MEMORY_DEBOUNCE_SECONDS` | Quiet time before background fact extraction (default 300) |
-| `MEM0_CUSTOM_INSTRUCTIONS` / `MEM0_LLM_BASE_URL` | Extraction prompt / LLM for the mem0 service (docker-compose env) |
+| `WIKI_DIR` | LLM-Wiki pages directory (default `./wiki`) |
 | `FIRECRAWL_API_URL` | Firecrawl backend for web tools |
 | `CAMOFOX_URL` | Stealth-browser backend for `browser_use` |
 | `THINK_KWARG` | llama.cpp chat-template kwarg for the thinking toggle |

@@ -8,8 +8,8 @@ For DMs, the stored conversation IS the source of truth and is shared with the
 web UI: a DM appends to the same conversation the web UI reads, so either side
 can resume the other. DM sessions are managed with text commands:
 /new /resume /model (clickable pickers; args optional). Either way, the handler
-assembles a per-message tool registry (reusing the web/browser/skills/MCP tools
-plus per-user-scoped memory and Discord-history tools), runs a non-streaming
+assembles a per-message tool registry (reusing the web/browser/wiki/MCP tools
+plus Discord-history tools), runs a non-streaming
 tool-calling loop, and posts a chunked reply.
 
 The Discord client shares uvicorn's asyncio loop, so the web UI and the bot run
@@ -26,7 +26,7 @@ import uuid
 import discord
 from discord import app_commands
 
-from . import memory, storage
+from . import storage, wiki
 from .agent import (
     build_registry,
     conversation_time_block,
@@ -57,7 +57,6 @@ from .discord_context import (
     message_text,
 )
 from .providers import client_for
-from .skills import discover_skills, load_skill_tool
 from .tools.browser import browser_tools
 from .tools.builtin import builtin_tools
 from .tools.clock import clock_tools
@@ -73,7 +72,7 @@ DISCORD_PREAMBLE = """You are SiegClaw, operating in a Discord server with multi
 ## Reading the conversation
 - Each message gives you a timestamped transcript of recent channel messages (oldest first), then the current question.
 - Timestamps are `[MM-DD HH:MM]`. "Latest", "just now", or "the rant" means the most recent matching messages — read from the bottom up.
-- Always refer to people by name (e.g. "siegfried said...", "ED asked...") — never "you" or "we", since there are multiple participants. In a DM there's only one person, so addressing them as "you" is fine there.
+- Always refer to people by name (e.g. "Alice said...", "Bob asked...") — never "you" or "we", since there are multiple participants. In a DM there's only one person, so addressing them as "you" is fine there.
 
 ## Questions about the conversation itself
 When someone asks about things said in the channel ("what do you think of X's rant", "his response to Y", "the argument about Z"):
@@ -84,7 +83,7 @@ When someone asks about things said in the channel ("what do you think of X's ra
 
 ## Questions about the world
 - For current events, prices, news, or anything you're not certain about: call `web_search`, then `web_scrape` or `browser_use` instead of saying you don't know.
-- Use `search_memory` for facts, preferences, and decisions from past conversations.
+- Use `search_wiki` / `read_wiki_page` for facts, preferences, and decisions from past conversations.
 - Only say you lack information if a search also fails to find it.
 
 ## Replying
@@ -99,7 +98,7 @@ When someone asks about things said in the channel ("what do you think of X's ra
 # repeating them just burns iterations.
 _IDEMPOTENT_TOOLS = {
     "web_search", "web_scrape", "web_map", "web_crawl",
-    "search_memory", "fetch_user_messages", "fetch_channel_history",
+    "search_wiki", "read_wiki_page", "fetch_user_messages", "fetch_channel_history",
 }
 
 # Short human-readable status lines shown live in Discord while a tool runs.
@@ -108,12 +107,12 @@ _TOOL_STATUS = {
     "web_scrape": lambda a: f"🌐 reading: `{a.get('url', '')}`",
     "web_map": lambda a: f"🗺️ mapping: `{a.get('url', '')}`",
     "web_crawl": lambda a: f"🕷️ crawling: `{a.get('url', '')}`",
-    "search_memory": lambda a: f"🧠 searching memories: *{a.get('query', '')}*",
-    "remember": lambda a: "🧠 saving to memory",
+    "search_wiki": lambda a: f"🧠 searching wiki: *{a.get('query', '')}*",
+    "read_wiki_page": lambda a: f"📖 reading wiki: {a.get('name', '')}",
+    "write_wiki_page": lambda a: f"✍️ updating wiki: {a.get('name', '')}",
     "fetch_user_messages": lambda a: f"📜 fetching messages from *{a.get('user_name', '')}*",
     "fetch_channel_history": lambda a: "📜 reading older channel history",
     "browser_use": lambda a: f"🌐 browser: {a.get('action', '')} {a.get('url', '') or a.get('query', '')}".strip(),
-    "load_skill": lambda a: f"📚 loading skill: {a.get('name', '')}",
     "schedule_job": lambda a: f"⏰ scheduling: {a.get('name', 'job')}",
     "list_scheduled_jobs": lambda a: "⏰ listing scheduled jobs",
     "cancel_scheduled_job": lambda a: "🗑️ cancelling scheduled job",
@@ -217,11 +216,13 @@ def discord_history_tools(channel: discord.abc.Messageable, bot_user_id: int) ->
 def build_discord_registry(
     channel: discord.abc.Messageable | None,
     bot_user_id: int | None,
-    scope: str,
     mcp_tools: list | None,
-) -> tuple[Registry, dict]:
-    """Per-message registry: harness web/browser/skills/MCP tools + per-user-scoped
-    memory + Discord-history tools. Shell/file tools are withheld unless enabled.
+) -> Registry:
+    """Per-message registry for NON-owner surfaces (channel mentions, cron):
+    harness web/browser/MCP tools + read-only wiki + Discord-history tools.
+    The wiki is read/search only here — it feeds every future system prompt,
+    so only the owner's surfaces (web UI, DMs via build_registry) may write it.
+    Shell/file tools are withheld unless enabled.
 
     When `channel` is None (e.g. a scheduled job with no channel context) the
     Discord-history tools are omitted."""
@@ -231,29 +232,22 @@ def build_discord_registry(
         registry.extend(builtin_tools())
     registry.extend(web_tools())
     registry.extend(browser_tools())
-    registry.extend(memory.scoped_tools(scope))
+    registry.extend(wiki.wiki_tools(writable=False))
     registry.extend(job_tools())
-    skills = discover_skills()
-    if skills:
-        registry.add(load_skill_tool(skills))
     if mcp_tools:
         registry.extend(mcp_tools)
     if channel is not None and bot_user_id is not None:
         registry.extend(discord_history_tools(channel, bot_user_id))
-    return registry, skills
+    return registry
 
 
-def discord_system_prompt(skills: dict, query: str, scope: str | None) -> str:
-    """Stable Discord system prefix for channel mentions: soul + multi-user
-    preamble + day-level time + query-relevant memory + skills. Channel turns
-    are single-shot (one user message, not stored), so time and memory are
-    captured at request time and stay byte-identical across the turn's own
-    tool-loop iterations — keeping the prefix cacheable. For the precise time
-    the model calls `current_time`; for other memories, `search_memory`."""
-    return static_system_prompt(
-        skills, DISCORD_PREAMBLE,
-        conversation_time_block(), memory.relevant_block(query, scope),
-    )
+def discord_system_prompt() -> str:
+    """Stable Discord system prefix for channel mentions: wiki home + multi-user
+    preamble + day-level time + wiki index. Channel turns are single-shot, so
+    the prefix stays byte-identical across the turn's own tool-loop iterations
+    — keeping it cacheable. For the precise time the model calls `current_time`;
+    for remembered facts, `search_wiki` / `read_wiki_page`."""
+    return static_system_prompt(DISCORD_PREAMBLE, conversation_time_block())
 
 
 # --------------------------------------------------------------------------- #
@@ -551,7 +545,6 @@ def create_client(mcp_manager) -> discord.Client:
 
     @client.event
     async def on_ready():
-        memory.init_memory()  # idempotent; ensures the backend is ready
         # Sync once per process (on_ready also fires on reconnect). Overwriting
         # stale global commands left by older bot versions.
         if not on_ready._synced:
@@ -659,7 +652,7 @@ def create_client(mcp_manager) -> discord.Client:
                         if convo and convo.get("title") == "New chat":
                             storage.rename_conversation(dm_cid, user_text[:60])
 
-                    registry, skills = build_registry(mcp_manager.tools)
+                    registry = build_registry(mcp_manager.tools)
                     # Send-time fallback: if the conversation's provider isn't
                     # serving (e.g. llama.cpp was stopped), retry a few times
                     # then switch this DM to the fallback model for the session.
@@ -668,7 +661,7 @@ def create_client(mcp_manager) -> discord.Client:
 
                     reply_text = ""
                     async for event in run_turn(
-                        dm_cid, provider, model, user_text, registry, skills,
+                        dm_cid, provider, model, user_text, registry,
                         images=image_paths or None, think=True, effort=effort,
                     ):
                         et = event.get("type")
@@ -703,15 +696,10 @@ def create_client(mcp_manager) -> discord.Client:
                     # Channel mention: live Discord history is the source of truth
                     # (not persisted). Build the timestamped transcript + question,
                     # then drive the non-streaming tool loop to a single reply.
-                    # Memory is scoped per SERVER, not per triggering user: channel
-                    # transcripts carry many speakers, extraction attributes facts
-                    # by display name ("John lives in NYC"), and a shared guild pool
-                    # makes them retrievable no matter who pings the bot next.
-                    scope = f"discord-guild:{message.guild.id}"
-                    registry, skills = build_discord_registry(
-                        message.channel, client.user.id, scope, mcp_manager.tools
+                    registry = build_discord_registry(
+                        message.channel, client.user.id, mcp_manager.tools
                     )
-                    system = await asyncio.to_thread(discord_system_prompt, skills, user_text, scope)
+                    system = await asyncio.to_thread(discord_system_prompt)
 
                     reply_note = ""
                     if ref_msg is not None:
@@ -770,20 +758,7 @@ def create_client(mcp_manager) -> discord.Client:
                 storage.delete_conversation(dm_cid)
                 storage.dm_clear_active(user_id)
 
-        # Memory extraction. DM turns run through run_turn, which already
-        # schedules the debounced global extraction — so only the ephemeral
-        # channel-mention path needs explicit (per-user-scoped) extraction here.
-        if not is_dm:
-            asyncio.create_task(_extract_memory(scope, prompt[-2000:], reply_text))
-
     return client
-
-
-async def _extract_memory(scope: str, conversation: str, reply: str) -> None:
-    try:
-        await asyncio.to_thread(memory.record_turn, conversation, reply, scope)
-    except Exception as e:
-        log.warning("Memory extraction failed: %s", e)
 
 
 def _save_discord_images(images: list[dict]) -> list[str]:

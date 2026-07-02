@@ -14,16 +14,13 @@ from typing import Any, Callable
 
 import discord
 
-from . import memory, storage
-from .agent import assemble_system_prompt, conversation_time_block, read_soul
+from . import storage
+from .agent import conversation_time_block, static_system_prompt
 from .config import resolve_default_model
 from .cronutil import next_run_after
 from .discord_bot import build_discord_registry, run_discord_turn, send_chunked
 
 log = logging.getLogger("siegclaw.scheduler")
-
-# Memory scope shared by all scheduled jobs (kept apart from web/Discord users).
-CRON_SCOPE = "cron"
 
 CRON_PREAMBLE = (
     "You are running as a scheduled (cron) job — there is no human in the loop to "
@@ -33,11 +30,8 @@ CRON_PREAMBLE = (
 )
 
 
-def _cron_system_prompt(skills: dict, prompt: str) -> str:
-    return assemble_system_prompt(
-        skills, read_soul(), CRON_PREAMBLE,
-        conversation_time_block(), memory.relevant_block(prompt, CRON_SCOPE),
-    )
+def _cron_system_prompt() -> str:
+    return static_system_prompt(CRON_PREAMBLE, conversation_time_block())
 
 
 class Scheduler:
@@ -115,8 +109,8 @@ class Scheduler:
             return "error", "No model available — check provider config."
         provider, model, effort = pm
 
-        registry, skills = build_discord_registry(None, None, CRON_SCOPE, self._mcp.tools)
-        system = await asyncio.to_thread(_cron_system_prompt, skills, job["prompt"])
+        registry = build_discord_registry(None, None, self._mcp.tools)
+        system = await asyncio.to_thread(_cron_system_prompt)
         messages = [
             {"role": "system", "content": system},
             {"role": "user", "content": job["prompt"]},

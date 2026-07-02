@@ -1,4 +1,4 @@
-"""Uniform tool abstraction shared by builtin, web, skill, and MCP tools."""
+"""Uniform tool abstraction shared by builtin, web, wiki, and MCP tools."""
 from __future__ import annotations
 
 import asyncio

@@ -16,8 +16,8 @@ RUN groupadd -g ${GID} app && useradd -m -u ${UID} -g ${GID} app
 
 WORKDIR /app
 
-# Install Python deps first for layer caching. Memory runs as a separate mem0
-# service (talked to over HTTP), so this image needs no torch/chromadb.
+# Install Python deps first for layer caching. Memory is the LLM-Wiki (plain
+# markdown files), so this image needs no torch/chromadb/vector store.
 COPY pyproject.toml ./
 RUN pip install --no-cache-dir \
         "fastapi>=0.110" "uvicorn[standard]>=0.27" "openai>=1.30" \
@@ -26,7 +26,7 @@ RUN pip install --no-cache-dir \
 
 USER app
 
-# App code. Runtime data (.env, soul.md, skills, data, workspace) is bind-mounted.
+# App code. Runtime data (.env, wiki, data, workspace) is bind-mounted.
 COPY --chown=app:app app ./app
 COPY --chown=app:app web ./web
 

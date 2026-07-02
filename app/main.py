@@ -26,11 +26,10 @@ from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import memory, storage
-from .agent import build_registry, read_soul, resolve_for_turn, run_turn
+from . import storage, wiki
+from .agent import build_registry, resolve_for_turn, run_turn
 from .config import (
     DISCORD_BOT_TOKEN,
-    SOUL_PATH,
     UPLOADS_DIR,
     detect_providers,
     resolve_default_model,
@@ -54,7 +53,7 @@ _runtime: dict = {"discord_client": None, "scheduler": None}
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     storage.init_db()
-    memory.init_memory()
+    wiki.ensure_wiki()
     status = await mcp_manager.start()
     if status:
         print("[mcp] " + " | ".join(status))
@@ -118,7 +117,8 @@ class NewConversation(BaseModel):
     title: str | None = None
 
 
-class SoulUpdate(BaseModel):
+class WikiPageUpdate(BaseModel):
+    summary: str = ""
     content: str
 
 
@@ -188,43 +188,35 @@ def api_rewind(cid: str, message_id: str):
     return {"ok": True}
 
 
-# --- Soul ------------------------------------------------------------------
-@app.get("/api/soul")
-def api_get_soul():
-    return {"content": read_soul()}
+# --- LLM-Wiki ----------------------------------------------------------------
+@app.get("/api/wiki")
+def api_wiki_list():
+    return {"pages": wiki.list_pages()}
 
 
-@app.put("/api/soul")
-def api_put_soul(body: SoulUpdate):
-    SOUL_PATH.write_text(body.content)
-    return {"ok": True}
+@app.get("/api/wiki/{name}")
+def api_wiki_get(name: str):
+    page = wiki.read_page(name)
+    if page is None:
+        raise HTTPException(404, "no such wiki page")
+    summary, body = page
+    return {"name": name, "summary": summary, "content": body}
 
 
-# --- Skills ----------------------------------------------------------------
-@app.get("/api/skills")
-def api_skills():
-    _, skills = build_registry(mcp_manager.tools)
-    return {"skills": [{"name": s.name, "description": s.description} for s in skills.values()]}
+@app.put("/api/wiki/{name}")
+def api_wiki_put(name: str, body: WikiPageUpdate):
+    try:
+        slug = wiki.write_page(name, body.summary, body.content)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    return {"ok": True, "name": slug}
 
 
-# --- Memory ----------------------------------------------------------------
-class MemoryCreate(BaseModel):
-    content: str
-
-
-@app.get("/api/memories")
-def api_list_memories():
-    return {"memories": memory.list_memories()}
-
-
-@app.post("/api/memories")
-def api_add_memory(body: MemoryCreate):
-    return {"id": memory.add_memory(body.content)}
-
-
-@app.delete("/api/memories/{mem_id}")
-def api_delete_memory(mem_id: str):
-    return {"ok": memory.delete_memory(mem_id)}
+@app.delete("/api/wiki/{name}")
+def api_wiki_delete(name: str):
+    if name == wiki.HOME:
+        raise HTTPException(400, "the home page cannot be deleted")
+    return {"ok": wiki.delete_page(name)}
 
 
 # --- Scheduled jobs --------------------------------------------------------
@@ -370,7 +362,7 @@ async def api_chat(body: ChatRequest):
         title = (body.message[:60] or ("📷 Image" if body.images else "New chat"))
         cid = storage.create_conversation(body.provider, body.model, title)
 
-    registry, skills = build_registry(mcp_manager.tools)
+    registry = build_registry(mcp_manager.tools)
 
     async def event_stream():
         # First event carries the (possibly new) conversation id.
@@ -382,7 +374,7 @@ async def api_chat(body: ChatRequest):
         if provider != body.provider or model != body.model:
             yield _sse({"type": "model", "provider": provider, "model": model, "effort": effort})
         async for event in run_turn(
-            cid, provider, model, body.message, registry, skills,
+            cid, provider, model, body.message, registry,
             images=body.images, think=body.think, effort=effort,
         ):
             yield _sse(event)
