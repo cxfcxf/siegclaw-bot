@@ -115,14 +115,11 @@ class Scheduler:
         provider, model, effort = pm
 
         registry = build_discord_registry(None, None, self._mcp.tools)
-        # The "Cron:" marker lives on the group; runs inside it just carry the
-        # date — with the time added only when today already has a run, so a
-        # daily job stays clean but frequent runs remain distinguishable.
+        # The "Cron:" marker lives on the group; runs inside it carry the
+        # date + time so every run is distinguishable regardless of cadence.
         grp = f"Cron: {job['name']}"
         now = datetime.now(ZoneInfo(HARNESS_TZ))
-        title = f"{now.strftime('%b %-d')} — {job['name']}"
-        if storage.group_has_title(grp, title):
-            title = f"{now.strftime('%b %-d %H:%M')} — {job['name']}"
+        title = f"{now.strftime('%b %-d %H:%M')} — {job['name']}"
         cid = storage.create_conversation(provider, model, title=title)
         storage.set_conversation_group(cid, grp)
         # Cap retained runs so a minutely job can't grow the DB forever.

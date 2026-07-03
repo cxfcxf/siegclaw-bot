@@ -244,13 +244,6 @@ def delete_conversation(cid: str) -> None:
         conn.execute("DELETE FROM conversations WHERE id=?", (cid,))
 
 
-def group_has_title(grp: str, title: str) -> bool:
-    with _conn() as conn:
-        return conn.execute(
-            "SELECT 1 FROM conversations WHERE grp=? AND title=? LIMIT 1", (grp, title)
-        ).fetchone() is not None
-
-
 def prune_group(grp: str, keep: int) -> int:
     """Delete the oldest conversations in a group beyond the newest `keep`.
     Used by the scheduler so frequent cron jobs don't accumulate runs forever;

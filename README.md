@@ -153,7 +153,7 @@ target — a DM to the bot owner by default. Enable/disable/edit/delete/Run-now
 in the dialog; jobs persist in SQLite and share the bot's process.
 
 Every run is also **saved as a resumable conversation** — titled
-`<date> — <job>` (time added if the day already has a run), grouped under a
+`<date time> — <job>`, grouped under a
 collapsible `Cron: <job>` sidebar folder, full tool trail included — so you
 can open it and ask follow-up questions about the result. DM-targeted jobs
 additionally switch the recipient's **active DM session** to the new run:
