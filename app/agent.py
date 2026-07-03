@@ -215,6 +215,7 @@ async def run_turn(
     images: list[str] | None = None,
     think: bool = True,
     effort: str | None = None,
+    preamble: str | None = None,
 ) -> AsyncGenerator[dict[str, Any], None]:
     client = client_for(provider)
     replay_reasoning = needs_reasoning_replay(provider)
@@ -235,7 +236,10 @@ async def run_turn(
     convo = storage.get_conversation(conversation_id)
     started_at = convo.get("created_at") if convo else None
     time_block = conversation_time_block(started_at)
-    sys_content = await asyncio.to_thread(static_system_prompt, time_block)
+    # Optional surface preamble (e.g. the cron job context) slots in before the
+    # time block, mirroring discord_system_prompt's ordering.
+    extra = ([preamble] if preamble else []) + [time_block]
+    sys_content = await asyncio.to_thread(static_system_prompt, *extra)
     messages: list[dict[str, Any]] = [{"role": "system", "content": sys_content}]
     messages.extend(_to_api_messages(storage.get_messages(conversation_id), provider))
 

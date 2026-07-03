@@ -10,28 +10,28 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from datetime import datetime
 from typing import Any, Callable
+from zoneinfo import ZoneInfo
 
 import discord
 
 from . import storage
-from .agent import conversation_time_block, static_system_prompt
-from .config import resolve_default_model
+from .agent import run_turn
+from .config import HARNESS_TZ, resolve_default_model
 from .cronutil import next_run_after
-from .discord_bot import build_discord_registry, run_discord_turn, send_chunked
+from .discord_bot import build_discord_registry, send_chunked
 
 log = logging.getLogger("siegclaw.scheduler")
 
 CRON_PREAMBLE = (
     "You are running as a scheduled (cron) job — there is no human in the loop to "
-    "answer follow-up questions. Carry out the task fully using your tools, then "
-    "produce a single, self-contained result suitable for posting to Discord: lead "
-    "with the answer, keep it concise, and use Markdown. Do not ask questions."
+    "answer follow-up questions during the run, but the transcript is saved as a "
+    "conversation the owner may resume later to ask follow-ups. Carry out the task "
+    "fully using your tools, then produce a single, self-contained result suitable "
+    "for posting to Discord: lead with the answer, keep it concise, and use "
+    "Markdown. Do not ask questions."
 )
-
-
-def _cron_system_prompt() -> str:
-    return static_system_prompt(CRON_PREAMBLE, conversation_time_block())
 
 
 class Scheduler:
@@ -103,31 +103,52 @@ class Scheduler:
         storage.update_job(jid, last_run=time.time(), last_status=status, last_result=text[:2000])
 
     async def _execute(self, job: dict[str, Any]) -> tuple[str, str]:
-        """Run the prompt, deliver to Discord. Returns (status, stored_text)."""
+        """Run the prompt, deliver to Discord. Returns (status, stored_text).
+
+        Each run is persisted as a real conversation (titled "Cron: <job> — <date>",
+        grouped under the job name) so the owner can resume it — from the web
+        sidebar or Discord /resume — and ask follow-up questions with the full
+        tool trail as context."""
         pm = resolve_default_model()
         if pm is None:
             return "error", "No model available — check provider config."
         provider, model, effort = pm
 
         registry = build_discord_registry(None, None, self._mcp.tools)
-        system = await asyncio.to_thread(_cron_system_prompt)
-        messages = [
-            {"role": "system", "content": system},
-            {"role": "user", "content": job["prompt"]},
-        ]
+        stamp = datetime.now(ZoneInfo(HARNESS_TZ)).strftime("%b %-d")
+        cid = storage.create_conversation(provider, model, title=f"Cron: {job['name']} — {stamp}")
+        storage.set_conversation_group(cid, job["name"])
+
+        result = ""
+        turn_error: str | None = None
         try:
-            result = await run_discord_turn(provider, model, messages, registry, think=True, effort=effort)
+            async for ev in run_turn(
+                cid, provider, model, job["prompt"], registry,
+                think=True, effort=effort, preamble=CRON_PREAMBLE,
+            ):
+                et = ev.get("type")
+                if et == "token":
+                    result += ev.get("text", "")
+                elif et == "tool_call":
+                    # Text streamed before a tool call is working narration, not
+                    # the answer — deliver only the final post-tools message
+                    # (same semantics run_discord_turn had).
+                    result = ""
+                elif et == "error":
+                    turn_error = ev.get("message")
         except Exception as e:
             log.warning("job %s failed: %s", job["id"], e)
             return "error", f"Job failed: {type(e).__name__}: {e}"
+        if turn_error:
+            return "error", f"Job failed: {turn_error}"
 
-        result = (result or "").strip() or "(no output)"
-        ok, err = await self._deliver(job, result)
+        result = result.strip() or "(no output)"
+        ok, err = await self._deliver(job, result, cid)
         if not ok:
             return "error", f"Ran, but delivery failed: {err}\n\n{result}"
         return "ok", result
 
-    async def _deliver(self, job: dict[str, Any], text: str) -> tuple[bool, str | None]:
+    async def _deliver(self, job: dict[str, Any], text: str, cid: str) -> tuple[bool, str | None]:
         client = self._client_provider()
         if client is None or not client.is_ready():
             return False, "Discord client not connected"
@@ -138,10 +159,15 @@ class Scheduler:
                 if user is None:
                     return False, "could not resolve DM recipient (bot owner)"
                 dest: discord.abc.Messageable = user.dm_channel or await user.create_dm()
+                await send_chunked(dest, body)
+                # Make this run the recipient's active DM conversation, so just
+                # typing a question in the DM continues the briefing (no /resume
+                # ceremony). /resume switches back to anything else.
+                storage.dm_set_active_cid(str(user.id), cid)
             else:
                 tid = int(job["target_id"])
                 dest = client.get_channel(tid) or await client.fetch_channel(tid)
-            await send_chunked(dest, body)
+                await send_chunked(dest, body)
             return True, None
         except Exception as e:
             log.warning("job %s delivery failed: %s", job["id"], e)

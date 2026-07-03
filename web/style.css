@@ -897,6 +897,8 @@ select:focus { outline: none; border-color: var(--patina-dim); }
   border-radius: var(--r-sm); padding: 9px 12px; font-family: var(--font-body); font-size: 13px;
 }
 .job-form #job-cron { font-family: var(--font-mono); }
+/* Prompts are usually multi-paragraph: start tall, grow only downward. */
+.job-form textarea { min-height: 180px; resize: vertical; }
 .job-form input:focus, .job-form select:focus, .job-form textarea:focus { outline: none; border-color: var(--patina-dim); }
 .job-form-row { display: flex; gap: 9px; }
 .job-form-row > * { flex: 1; }
