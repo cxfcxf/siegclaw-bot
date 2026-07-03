@@ -5,7 +5,9 @@
    ========================================================================== */
 
 :root {
+  color-scheme: dark;
   --ink: #0e1413;
+  --ink-deep: #111817;
   --surface: #141b1a;
   --surface-2: #1a2322;
   --surface-3: #212c2a;
@@ -26,6 +28,12 @@
   --you-line: #2c4256;
   --you-label: #8fb0cf;
 
+  /* Surface-bound tints that can't be derived from the tokens above. */
+  --glass: rgba(20, 27, 26, 0.8);        /* floating chips over content */
+  --glass-soft: rgba(20, 27, 26, 0.66);
+  --stripe: rgba(255, 255, 255, 0.015);  /* table zebra rows */
+  --tool-text: #9fc8bd;                  /* tool-output monospace body */
+
   /* CJK system fallbacks so Chinese/Japanese render with a real font (the Latin
      web fonts above don't include CJK glyphs). */
   --cjk: "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans CJK SC", "Noto Sans SC";
@@ -36,6 +44,66 @@
   --r: 12px;
   --r-sm: 8px;
   --shadow: 0 14px 40px -22px rgba(0, 0, 0, 0.7);
+}
+
+/* Light theme: the same instrument on a daylight bench — warm paper surfaces,
+   accents darkened to keep contrast. Applied two ways: an explicit user pick
+   (html[data-theme=light]) or system preference when no pick was made (the
+   media query; the :not guard keeps an explicit dark pick from being
+   overridden). KEEP THE TWO BLOCKS IDENTICAL. */
+:root[data-theme="light"] {
+  color-scheme: light;
+  --ink: #ede9dd;
+  --ink-deep: #e7e3d5;
+  --surface: #f5f2e8;
+  --surface-2: #fbf9f1;
+  --surface-3: #e7e2d2;
+  --line: #d5cfba;
+  --line-soft: #e2ddcb;
+  --text: #262f2b;
+  --text-dim: #5a655f;
+  --text-faint: #8f988f;
+  --brass: #9a6b26;
+  --brass-deep: #7d561d;
+  --patina: #2c7f6c;
+  --patina-dim: #6aa899;
+  --clay: #b5503e;
+  --you: #dfe7ee;
+  --you-line: #b7cbd9;
+  --you-label: #3f6a90;
+  --glass: rgba(245, 242, 232, 0.85);
+  --glass-soft: rgba(245, 242, 232, 0.7);
+  --stripe: rgba(0, 0, 0, 0.02);
+  --tool-text: #2c6a5b;
+  --shadow: 0 14px 40px -22px rgba(70, 60, 30, 0.45);
+}
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme="dark"]) {
+    color-scheme: light;
+    --ink: #ede9dd;
+    --ink-deep: #e7e3d5;
+    --surface: #f5f2e8;
+    --surface-2: #fbf9f1;
+    --surface-3: #e7e2d2;
+    --line: #d5cfba;
+    --line-soft: #e2ddcb;
+    --text: #262f2b;
+    --text-dim: #5a655f;
+    --text-faint: #8f988f;
+    --brass: #9a6b26;
+    --brass-deep: #7d561d;
+    --patina: #2c7f6c;
+    --patina-dim: #6aa899;
+    --clay: #b5503e;
+    --you: #dfe7ee;
+    --you-line: #b7cbd9;
+    --you-label: #3f6a90;
+    --glass: rgba(245, 242, 232, 0.85);
+    --glass-soft: rgba(245, 242, 232, 0.7);
+    --stripe: rgba(0, 0, 0, 0.02);
+    --tool-text: #2c6a5b;
+    --shadow: 0 14px 40px -22px rgba(70, 60, 30, 0.45);
+  }
 }
 
 * { box-sizing: border-box; }
@@ -60,7 +128,7 @@ body {
 * { scrollbar-width: thin; scrollbar-color: var(--surface-3) transparent; }
 *::-webkit-scrollbar { width: 9px; height: 9px; }
 *::-webkit-scrollbar-thumb { background: var(--surface-3); border-radius: 99px; border: 2px solid transparent; background-clip: padding-box; }
-*::-webkit-scrollbar-thumb:hover { background: #2d3a37; background-clip: padding-box; }
+*::-webkit-scrollbar-thumb:hover { background: var(--line); background-clip: padding-box; }
 
 /* ===========================================================================
    Sidebar
@@ -68,7 +136,7 @@ body {
 #sidebar {
   width: 274px;
   flex-shrink: 0;
-  background: linear-gradient(180deg, var(--surface), #111817);
+  background: linear-gradient(180deg, var(--surface), var(--ink-deep));
   border-right: 1px solid var(--line);
   display: flex;
   flex-direction: column;
@@ -252,7 +320,7 @@ button { font-family: var(--font-body); }
   position: absolute; right: max(20px, calc((100% - 824px) / 4 - 19px)); bottom: 96px; z-index: 15;
   width: 38px; height: 38px; display: grid; place-items: center;
   border-radius: 50%; cursor: pointer;
-  background: rgba(20, 27, 26, 0.8); backdrop-filter: blur(8px);
+  background: var(--glass); backdrop-filter: blur(8px);
   border: 1px solid var(--line); color: var(--text-dim);
   opacity: 0; pointer-events: none; transform: translateY(6px);
   transition: opacity 0.15s, transform 0.15s, color 0.12s, background 0.12s, border-color 0.12s;
@@ -266,11 +334,19 @@ button { font-family: var(--font-body); }
    absolutely in the corners over the chat area. */
 .floating {
   position: absolute; top: 14px; z-index: 20;
-  background: rgba(20, 27, 26, 0.66); backdrop-filter: blur(8px);
+  background: var(--glass-soft); backdrop-filter: blur(8px);
   border: 1px solid var(--line); border-radius: 99px;
 }
+/* Theme cycler: pinned in the window's top-right corner. */
+#theme-btn.floating {
+  right: 18px; width: 34px; height: 34px;
+  display: grid; place-items: center;
+  color: var(--text-dim); cursor: pointer; transition: color 0.15s, background 0.15s;
+}
+#theme-btn.floating:hover { color: var(--brass); background: var(--glass); }
+/* Status pill slides left of the theme button when it has something to say. */
 #status.floating {
-  right: 18px; padding: 5px 12px 5px 10px;
+  right: 60px; padding: 5px 12px 5px 10px;
   font-family: var(--font-mono); font-size: 11.5px; letter-spacing: 0.04em;
   color: var(--text-dim); display: flex; align-items: center; gap: 7px;
 }
@@ -394,7 +470,7 @@ select:focus { outline: none; border-color: var(--patina-dim); }
   background: var(--surface-2);
 }
 .bubble td { color: var(--text-dim); }
-.bubble tr:nth-child(even) td { background: rgba(255, 255, 255, 0.015); }
+.bubble tr:nth-child(even) td { background: var(--stripe); }
 
 .bubble .msg-images { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
 .bubble .msg-images img {
@@ -472,7 +548,7 @@ select:focus { outline: none; border-color: var(--patina-dim); }
   background: rgba(95, 182, 160, 0.05); border-left: 1px solid var(--patina-dim);
   border-radius: 0 var(--r-sm) var(--r-sm) 0;
   font-family: var(--font-mono); font-size: 12.5px; line-height: 1.65;
-  color: #9fc8bd; white-space: pre-wrap; word-break: break-word; max-height: 380px; overflow: auto;
+  color: var(--tool-text); white-space: pre-wrap; word-break: break-word; max-height: 380px; overflow: auto;
 }
 .step .body { margin: 2px 8px 8px 17px; }
 .step .body pre {
