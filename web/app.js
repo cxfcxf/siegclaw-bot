@@ -949,7 +949,18 @@ function toMarkdownTable(rows) {
   ].join("\n");
 }
 
-function addMessageBubble(role, markdown, images, msgId, model) {
+// A small playback control for a message's voice clip (the user's recording,
+// or the TTS reading of a reply). preload=none: clips load on first play.
+function attachAudio(bubble, url) {
+  const player = el("audio", "msg-audio");
+  player.controls = true;
+  player.preload = "none";
+  player.src = url;
+  bubble.appendChild(player);
+  return player;
+}
+
+function addMessageBubble(role, markdown, images, msgId, model, audio) {
   const empty = $("#messages .empty");
   if (empty) empty.remove();
   const wrap = el("div", `msg ${role}`);
@@ -976,6 +987,12 @@ function addMessageBubble(role, markdown, images, msgId, model) {
       box.appendChild(im);
     });
     bubble.appendChild(box);
+  }
+  // Voice clips: the user's recording sits above their transcript, the TTS
+  // reading of a reply sits below the text (text stays skimmable either way).
+  if (audio) {
+    const player = attachAudio(bubble, audio);
+    if (role === "user") bubble.prepend(player);
   }
 
   // Hover-revealed action toolbar. Edit/retry only on user messages; edit is
@@ -1229,11 +1246,11 @@ function renderHistory(messages) {
   for (const m of messages) {
     if (m.role === "user") {
       resetTrace();
-      addMessageBubble("user", m.content || "", m.images, m.id);
+      addMessageBubble("user", m.content || "", m.images, m.id, null, m.audio);
     }
     else if (m.role === "assistant") {
       if (m.reasoning) addThinkingBlock(m.reasoning, false);
-      if (m.content) lastAssistant = addMessageBubble("assistant", m.content, null, m.id, m.model);
+      if (m.content) lastAssistant = addMessageBubble("assistant", m.content, null, m.id, m.model, m.audio);
       (m.tool_calls || []).forEach((tc) => {
         const block = addToolBlock(tc.function.name, tc.function.arguments || "");
         toolBlocks[tc.id] = block;
@@ -1747,6 +1764,10 @@ async function send(providedText, providedImages) {
         setTraceTool(false);
         break;
       }
+      case "audio":
+        // Voice turn: the server attached a TTS reading of the finished reply.
+        if (assistantBubble) attachAudio(assistantBubble, ev.url);
+        break;
       case "error":
         endThinking();
         setTraceTool(false);

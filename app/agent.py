@@ -15,7 +15,7 @@ from datetime import datetime
 from typing import Any, AsyncGenerator
 from zoneinfo import ZoneInfo
 
-from . import storage, wiki
+from . import storage, tts, wiki
 from .config import (
     HARNESS_TZ,
     MAX_AGENT_ITERATIONS,
@@ -184,7 +184,7 @@ def _to_api_messages(history: list[dict[str, Any]], provider: str | None = None)
     For providers that require the chain-of-thought to be replayed on tool-call
     turns (DeepSeek, Xiaomi MiMo), the stored `reasoning` is emitted back as
     `reasoning_content`; for everyone else it's dropped."""
-    drop = ("images", "reasoning", "model")  # non-API display fields
+    drop = ("images", "reasoning", "model", "audio")  # non-API display fields
     keep_reasoning = needs_reasoning_replay(provider)
     out: list[dict[str, Any]] = []
     for msg in history:
@@ -216,12 +216,16 @@ async def run_turn(
     think: bool = True,
     effort: str | None = None,
     preamble: str | None = None,
+    audio: str | None = None,
 ) -> AsyncGenerator[dict[str, Any], None]:
     client = client_for(provider)
     replay_reasoning = needs_reasoning_replay(provider)
 
+    # `audio` is the user's voice clip ('/uploads/...'): stored on the user row
+    # for playback, and it marks the turn as spoken — the final reply gets a
+    # TTS reading attached. The model itself only ever sees the transcript.
     user_msg_id = storage.add_message(
-        conversation_id, "user", content=user_message, images=images
+        conversation_id, "user", content=user_message, images=images, audio=audio
     )
     storage.touch_conversation(conversation_id, provider, model)
     # Tell the client the stored id of this user message so the UI can offer
@@ -246,6 +250,7 @@ async def run_turn(
     tool_schemas = registry.schemas()
     extra_body = reasoning_extra_body(provider, think, effort)
     final_answer = ""
+    final_answer_id: str | None = None  # stored id of the message holding it
     total_tokens = 0  # completion tokens across all model calls this turn (for tok/s)
     last_prompt_tokens = 0  # prompt tokens of the final model call (context usage)
 
@@ -350,7 +355,7 @@ async def run_turn(
             )
         elif content_buf or reasoning_buf:
             messages.append({"role": "assistant", "content": content_buf})
-            storage.add_message(
+            final_answer_id = storage.add_message(
                 conversation_id, "assistant", content=content_buf, reasoning=reasoning_buf,
                 model=f"{provider}/{model}",
             )
@@ -376,6 +381,13 @@ async def run_turn(
             continue  # loop back for the model's next step
 
         # No tool calls => the turn is complete.
+        if audio and final_answer and final_answer_id:
+            # Voice in, voice out: attach a TTS reading of the reply. Best-effort
+            # — synthesize() returns None on failure and the text stands alone.
+            tts_url = await tts.synthesize(final_answer)
+            if tts_url:
+                storage.set_message_audio(final_answer_id, tts_url)
+                yield {"type": "audio", "url": tts_url}
         if last_prompt_tokens:
             storage.set_prompt_tokens(conversation_id, last_prompt_tokens)
         yield {"type": "done", "tokens": total_tokens or None, "prompt_tokens": last_prompt_tokens or None}

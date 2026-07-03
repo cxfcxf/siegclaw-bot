@@ -74,6 +74,10 @@ def init_db() -> None:
         # message (the conversations.model column only keeps the last one).
         if "model" not in cols:
             conn.execute("ALTER TABLE messages ADD COLUMN model TEXT")
+        # audio: '/uploads/...' URL of an audio clip tied to the message — the
+        # user's voice recording on user rows, the TTS reading on assistant rows.
+        if "audio" not in cols:
+            conn.execute("ALTER TABLE messages ADD COLUMN audio TEXT")
         ccols = [r["name"] for r in conn.execute("PRAGMA table_info(conversations)").fetchall()]
         if "prompt_tokens" not in ccols:
             conn.execute("ALTER TABLE conversations ADD COLUMN prompt_tokens INTEGER")
@@ -335,12 +339,13 @@ def add_message(
     images: list[str] | None = None,
     reasoning: str | None = None,
     model: str | None = None,
+    audio: str | None = None,
 ) -> str:
     msg_id = uuid.uuid4().hex
     with _conn() as conn:
         conn.execute(
-            "INSERT INTO messages (id, conversation_id, role, content, tool_calls, tool_call_id, name, images, reasoning, model, created_at)"
-            " VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            "INSERT INTO messages (id, conversation_id, role, content, tool_calls, tool_call_id, name, images, reasoning, model, audio, created_at)"
+            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
             (
                 msg_id,
                 cid,
@@ -352,10 +357,18 @@ def add_message(
                 json.dumps(images) if images else None,
                 reasoning or None,
                 model,
+                audio,
                 time.time(),
             ),
         )
     return msg_id
+
+
+def set_message_audio(msg_id: str, url: str) -> None:
+    """Attach an audio URL to an existing message (the TTS reading of an
+    assistant reply is generated after the message row is written)."""
+    with _conn() as conn:
+        conn.execute("UPDATE messages SET audio=? WHERE id=?", (url, msg_id))
 
 
 def rewind_from(cid: str, message_id: str) -> None:
@@ -396,7 +409,7 @@ def get_messages(cid: str) -> list[dict[str, Any]]:
     """Return messages in OpenAI chat format, oldest first."""
     with _conn() as conn:
         rows = conn.execute(
-            "SELECT id, role, content, tool_calls, tool_call_id, name, images, reasoning, model FROM messages"
+            "SELECT id, role, content, tool_calls, tool_call_id, name, images, reasoning, model, audio FROM messages"
             " WHERE conversation_id=? ORDER BY created_at ASC",
             (cid,),
         ).fetchall()
@@ -420,6 +433,9 @@ def get_messages(cid: str) -> list[dict[str, Any]]:
         if r["model"]:
             # Non-API field; which provider/model produced this reply.
             msg["model"] = r["model"]
+        if r["audio"]:
+            # Non-API field; voice clip (user) or TTS reading (assistant).
+            msg["audio"] = r["audio"]
         messages.append(msg)
     return messages
 

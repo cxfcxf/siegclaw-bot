@@ -100,6 +100,13 @@ data/                SQLite DBs + uploads (created at runtime)
   Optional **DM streaming** (`DISCORD_STREAM_DMS=true`, off by default): the
   reply is sent early and edited in place as tokens arrive (~1 edit/s — the
   most Discord's API allows); off, the reply lands as one complete message.
+- **Voice messages in DMs**: send a Discord voice message (or any audio file)
+  and it's transcribed locally by the same in-process faster-whisper the web
+  mic uses, then answered normally — text reply first, followed by a **spoken
+  version** (edge-tts, `TTS_VOICE`, multilingual by default) as a playable
+  audio attachment. Both clips are stored on the conversation, so opening the
+  chat in the web UI shows your recording above its transcript and a playback
+  control under the reply.
 - **DM slash commands** (hidden from channel autocomplete): `/new`, `/resume`,
   `/model`, and `/rename` — all argument-free. `/resume` opens a dropdown of
   conversations (with a group filter first when groups exist), `/model` a
@@ -220,7 +227,8 @@ All via `.env` (see `.env.example`) unless noted.
 | `DISCORD_BOT_TOKEN` | Run the Discord bot (omit for web UI only) |
 | `DISCORD_ENABLE_SHELL` | Allow shell/file tools from Discord (default off) |
 | `DISCORD_STREAM_DMS` | Edit-in-place streaming for DM replies (default off) |
-| `STT_MODEL` | faster-whisper model for the mic button (tiny/base/small/medium, default base) |
+| `STT_MODEL` | faster-whisper model for the mic button + DM voice messages (tiny/base/small/medium, default base) |
+| `TTS_VOICE` / `TTS_MAX_CHARS` | edge-tts voice for spoken replies to voice messages (default en-US-AvaMultilingualNeural) and clip length cap |
 | `HARNESS_TZ` | IANA timezone for the frozen prompt date and cron |
 | `CRON_KEEP_RUNS` | Newest cron-run conversations kept per job (default 30) |
 | `WORKSPACE_DIR` | Working directory for the bash/file tools |

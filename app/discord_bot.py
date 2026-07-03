@@ -24,10 +24,12 @@ import logging
 import mimetypes
 import time
 import uuid
+from pathlib import Path
+
 import discord
 from discord import app_commands
 
-from . import storage, wiki
+from . import storage, stt, wiki
 from .agent import (
     build_registry,
     conversation_time_block,
@@ -682,6 +684,11 @@ def create_client(mcp_manager) -> discord.Client:
             stream_msg: discord.Message | None = None
             stream_edit_at = 0.0
 
+            # Voice turns (DM only): the user's clip URL and, once the turn
+            # finishes, the TTS reading of the reply to send back as a file.
+            voice_url: str | None = None
+            tts_url: str | None = None
+
             async def update_status(tool_name: str, args: dict):
                 nonlocal _status_msg
                 try:
@@ -712,6 +719,24 @@ def create_client(mcp_manager) -> discord.Client:
                     # shows thinking). run_turn still saves reasoning to the DB, so the
                     # web UI shows the thinking block when this DM session is opened
                     # there — exactly like a web-asked turn.
+                    # Voice message (or any audio attachment): save the clip,
+                    # transcribe it locally (same faster-whisper the web mic
+                    # uses), and run the turn on the transcript. The clip URL
+                    # rides along so the web UI can replay it, and it flags the
+                    # turn for a spoken (TTS) reply.
+                    audio_att = _audio_attachment(message)
+                    if audio_att is not None:
+                        voice_url = await _save_dm_audio(audio_att)
+                        transcript = await asyncio.to_thread(
+                            stt.transcribe, str(UPLOADS_DIR / Path(voice_url).name)
+                        )
+                        if not transcript:
+                            await message.channel.send(
+                                "🎤 I couldn't make out any speech in that clip — try again?"
+                            )
+                            return
+                        user_text = f"{user_text}\n{transcript}".strip() if user_text else transcript
+
                     if dm_cid is None:
                         dm_cid = storage.create_conversation(provider, model, user_text[:60] or "New chat")
                         storage.dm_set_active_cid(user_id, dm_cid)
@@ -731,6 +756,7 @@ def create_client(mcp_manager) -> discord.Client:
                     async for event in run_turn(
                         dm_cid, provider, model, user_text, registry,
                         images=image_paths or None, think=True, effort=effort,
+                        audio=voice_url,
                     ):
                         et = event.get("type")
                         if et == "token":
@@ -755,6 +781,8 @@ def create_client(mcp_manager) -> discord.Client:
                                 await update_status(event.get("name", ""), json.loads(event.get("arguments") or "{}"))
                             except Exception:
                                 pass
+                        elif et == "audio":
+                            tts_url = event.get("url")
                         elif et == "error":
                             raise RuntimeError(event.get("message", "turn error"))
                     if not reply_text:
@@ -816,6 +844,16 @@ def create_client(mcp_manager) -> discord.Client:
         else:
             await _send_long_message(message, reply_text)
 
+        # Voice turn: follow the text with the spoken version as a playable
+        # audio attachment (text first, so the reply is skimmable either way).
+        if tts_url and not turn_failed:
+            try:
+                await message.channel.send(
+                    file=discord.File(str(UPLOADS_DIR / Path(tts_url).name), filename="reply.mp3")
+                )
+            except Exception as e:
+                log.warning("Sending TTS clip failed: %s", e)
+
         # If the turn failed after the user message was already stored, drop it
         # (and any partially-persisted tool messages). If that leaves the
         # conversation empty, remove it entirely + clear the pointer so we don't
@@ -827,6 +865,30 @@ def create_client(mcp_manager) -> discord.Client:
                 storage.dm_clear_active(user_id)
 
     return client
+
+
+_AUDIO_EXT = {".ogg", ".oga", ".opus", ".mp3", ".m4a", ".wav", ".webm", ".flac", ".aac"}
+
+
+def _audio_attachment(message: discord.Message) -> discord.Attachment | None:
+    """First audio attachment on the message: a Discord voice message (ogg) or
+    any uploaded audio file."""
+    for att in message.attachments:
+        if (att.content_type or "").startswith("audio/"):
+            return att
+        if Path(att.filename).suffix.lower() in _AUDIO_EXT:
+            return att
+    return None
+
+
+async def _save_dm_audio(att: discord.Attachment) -> str:
+    """Save a DM voice clip to UPLOADS_DIR and return its '/uploads/<name>' URL
+    (same shape as images), so the web UI can replay it when the conversation
+    is opened there."""
+    ext = Path(att.filename).suffix.lower() or mimetypes.guess_extension(att.content_type or "") or ".ogg"
+    name = f"voice-{uuid.uuid4().hex}{ext}"
+    (UPLOADS_DIR / name).write_bytes(await att.read())
+    return f"/uploads/{name}"
 
 
 def _save_discord_images(images: list[dict]) -> list[str]:
