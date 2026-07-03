@@ -105,8 +105,8 @@ class Scheduler:
     async def _execute(self, job: dict[str, Any]) -> tuple[str, str]:
         """Run the prompt, deliver to Discord. Returns (status, stored_text).
 
-        Each run is persisted as a real conversation (titled "Cron: <job> — <date>",
-        grouped under the job name) so the owner can resume it — from the web
+        Each run is persisted as a real conversation (titled "<date> — <job>",
+        grouped under "Cron: <job>") so the owner can resume it — from the web
         sidebar or Discord /resume — and ask follow-up questions with the full
         tool trail as context."""
         pm = resolve_default_model()
@@ -115,9 +115,10 @@ class Scheduler:
         provider, model, effort = pm
 
         registry = build_discord_registry(None, None, self._mcp.tools)
+        # The "Cron:" marker lives on the group; runs inside it just carry the date.
         stamp = datetime.now(ZoneInfo(HARNESS_TZ)).strftime("%b %-d")
-        cid = storage.create_conversation(provider, model, title=f"Cron: {job['name']} — {stamp}")
-        storage.set_conversation_group(cid, job["name"])
+        cid = storage.create_conversation(provider, model, title=f"{stamp} — {job['name']}")
+        storage.set_conversation_group(cid, f"Cron: {job['name']}")
 
         result = ""
         turn_error: str | None = None
