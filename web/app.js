@@ -373,6 +373,52 @@ let groupCache = [];  // group names (empties included) for the assign dropdown
 
 const FOLDER_ICON = '<svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>';
 const PENCIL_ICON = '<svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>';
+const KEBAB_ICON = '<svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor" stroke="none"><circle cx="12" cy="5" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="12" cy="19" r="1.6"/></svg>';
+const TRASH_ICON = '<svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>';
+
+// Row action menu: everything a chat/group row can do lives behind one ⋮
+// button. The menu is appended to <body> and fixed-positioned at the button
+// (sidebar rows clip overflow, so an in-row dropdown would be cut off).
+let _actionMenu = null;
+function closeActionMenu() {
+  if (!_actionMenu) return;
+  _actionMenu.remove();
+  _actionMenu = null;
+  document.removeEventListener("mousedown", _menuOutside, true);
+  document.removeEventListener("keydown", _menuKey, true);
+}
+function _menuOutside(e) { if (_actionMenu && !_actionMenu.contains(e.target)) closeActionMenu(); }
+function _menuKey(e) { if (e.key === "Escape") { e.stopPropagation(); closeActionMenu(); } }
+function showActionMenu(anchor, items) {
+  const wasOpen = _actionMenu && _actionMenu._anchor === anchor;
+  closeActionMenu();
+  if (wasOpen) return;  // clicking the same ⋮ again toggles the menu shut
+  const menu = el("div", "action-menu");
+  menu._anchor = anchor;
+  items.forEach((it) => {
+    const b = el("button", "action-menu-item" + (it.danger ? " danger" : ""));
+    b.type = "button";
+    b.innerHTML = it.icon || "";
+    const label = el("span");
+    label.textContent = it.label;
+    b.appendChild(label);
+    b.onclick = (e) => { e.stopPropagation(); closeActionMenu(); it.onClick(e); };
+    menu.appendChild(b);
+  });
+  document.body.appendChild(menu);
+  const r = anchor.getBoundingClientRect();
+  const mr = menu.getBoundingClientRect();
+  menu.style.left = Math.min(r.left, window.innerWidth - mr.width - 8) + "px";
+  const below = r.bottom + 4;
+  menu.style.top = (below + mr.height > window.innerHeight - 8 ? r.top - mr.height - 4 : below) + "px";
+  _actionMenu = menu;
+  document.addEventListener("mousedown", _menuOutside, true);
+  document.addEventListener("keydown", _menuKey, true);
+}
+// The menu is fixed-positioned: any scroll under it would leave it floating
+// over the wrong row, so just dismiss.
+document.addEventListener("scroll", closeActionMenu, true);
+window.addEventListener("resize", closeActionMenu);
 
 async function patchConversation(id, body) {
   await fetch(`/api/conversations/${id}`, {
@@ -493,30 +539,24 @@ function convRow(c) {
   const title = el("span", "title");
   title.textContent = c.title || "Untitled";
 
-  const rename = el("button", "cact");
-  rename.type = "button";
-  rename.innerHTML = PENCIL_ICON;
-  rename.title = "Rename";
-  rename.onclick = (e) => { e.stopPropagation(); editConvInline(item, c, "title"); };
-
-  const grp = el("button", "cact");
-  grp.type = "button";
-  grp.innerHTML = FOLDER_ICON;
-  grp.title = c.grp ? `Group: ${c.grp}` : "Add to a group";
-  grp.onclick = (e) => { e.stopPropagation(); editConvInline(item, c, "grp"); };
-
-  const del = el("button", "del");
-  del.type = "button";
-  del.textContent = "✕";
-  del.title = "Delete conversation";
-  del.onclick = async (e) => {
+  const kebab = el("button", "cact kebab");
+  kebab.type = "button";
+  kebab.innerHTML = KEBAB_ICON;
+  kebab.title = "Options";
+  kebab.onclick = (e) => {
     e.stopPropagation();
-    if (!(await confirmDialog(`Delete “${c.title || "Untitled"}”? The conversation and its history are removed permanently.`))) return;
-    await fetch(`/api/conversations/${c.id}`, { method: "DELETE" });
-    if (state.conversationId === c.id) newChat();
-    loadConversations();
+    showActionMenu(kebab, [
+      { icon: PENCIL_ICON, label: "Rename", onClick: () => editConvInline(item, c, "title") },
+      { icon: FOLDER_ICON, label: c.grp ? `Group: ${c.grp}` : "Add to group", onClick: () => editConvInline(item, c, "grp") },
+      { icon: TRASH_ICON, label: "Delete", danger: true, onClick: async () => {
+        if (!(await confirmDialog(`Delete “${c.title || "Untitled"}”? The conversation and its history are removed permanently.`))) return;
+        await fetch(`/api/conversations/${c.id}`, { method: "DELETE" });
+        if (state.conversationId === c.id) newChat();
+        loadConversations();
+      } },
+    ]);
   };
-  item.append(title, rename, grp, del);
+  item.append(title, kebab);
   item.onclick = () => openConversation(c.id);
   return item;
 }
@@ -550,7 +590,7 @@ async function loadConversations() {
     const items = byGroup.get(g.name) || [];
     const isCollapsed = !!collapsed[g.name];
     const h = el("div", "conv-group grp" + (isCollapsed ? " closed" : ""));
-    h.innerHTML = `<span class="tri">▾</span>${FOLDER_ICON}<span class="gname"></span><span class="gcount"></span><button class="gact" type="button" title="Rename group">${PENCIL_ICON}</button><button class="gdel" type="button" title="Delete group">✕</button>`;
+    h.innerHTML = `<span class="tri">▾</span>${FOLDER_ICON}<span class="gname"></span><span class="gcount"></span><button class="gact kebab" type="button" title="Options">${KEBAB_ICON}</button>`;
     h.querySelector(".gname").textContent = g.name;
     h.querySelector(".gcount").textContent = items.length || "empty";
     h.onclick = () => {
@@ -558,8 +598,7 @@ async function loadConversations() {
       saveGrpCollapsed(collapsed);
       loadConversations();
     };
-    h.querySelector(".gact").onclick = (e) => {
-      e.stopPropagation();
+    const renameGroup = () => {
       const input = el("input", "conv-edit");
       input.value = g.name;
       h.replaceChildren(input);
@@ -589,14 +628,20 @@ async function loadConversations() {
       };
       input.onblur = () => finish(false);
     };
-    h.querySelector(".gdel").onclick = async (e) => {
-      e.stopPropagation();
+    const deleteGroup = async () => {
       const warn = items.length
         ? `Delete group “${g.name}”? Its ${items.length} chat${items.length === 1 ? "" : "s"} move back to the main list (nothing is deleted).`
         : `Delete empty group “${g.name}”?`;
       if (!(await confirmDialog(warn))) return;
       await fetch(`/api/groups/${encodeURIComponent(g.name)}`, { method: "DELETE" });
       loadConversations();
+    };
+    h.querySelector(".gact").onclick = (e) => {
+      e.stopPropagation();
+      showActionMenu(e.currentTarget, [
+        { icon: PENCIL_ICON, label: "Rename group", onClick: renameGroup },
+        { icon: TRASH_ICON, label: "Delete group", danger: true, onClick: deleteGroup },
+      ]);
     };
     box.appendChild(h);
     if (!isCollapsed) items.forEach((c) => box.appendChild(convRow(c)));

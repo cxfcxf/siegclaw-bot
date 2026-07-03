@@ -152,6 +152,15 @@ headless agent turn (default model, research tools, no shell) posted to the
 target — a DM to the bot owner by default. Enable/disable/edit/delete/Run-now
 in the dialog; jobs persist in SQLite and share the bot's process.
 
+Every run is also **saved as a resumable conversation** — titled
+`<date> — <job>` (time added if the day already has a run), grouped under a
+collapsible `Cron: <job>` sidebar folder, full tool trail included — so you
+can open it and ask follow-up questions about the result. DM-targeted jobs
+additionally switch the recipient's **active DM session** to the new run:
+just replying in the DM asks follow-ups against the briefing (`/resume`
+switches back). Each job keeps its newest `CRON_KEEP_RUNS` runs (default 30;
+older ones are auto-deleted — move a run out of its group to keep it).
+
 ### Tools & MCP
 
 - **Builtin**: `read_file`, `write_file`, `edit_file`, `list_dir`, `bash`
@@ -180,18 +189,23 @@ nested tool calls, live activity light and timer); **per-response metrics**
 (used vs. the model's max context, from the provider's `/models`); **stop**
 mid-turn; message **copy / retry / edit-and-resend**; conversation history
 grouped Today / Yesterday / Previous 7 days then exact dates, with **rename**
-and **user-defined groups** (hover a chat for the pencil/folder actions;
-groups render as collapsible sections and sync with Discord's `/rename` and
-`/resume` filter). Groups are first-class: create one empty ("+ new group"),
-it persists with no chats in it; assigning opens a dropdown of all groups
-with the input as filter (pick, create, or remove in one click); rename a
-group from its header pencil (renaming onto an existing name **merges** the
-two); deleting a group (✕ on its header) only removes the folder — its chats
-move back to the date-sectioned root list, nothing is deleted; full-page
-**chat search** (instant title matches + **full-text search over message
-bodies** via SQLite FTS5, with highlighted snippets); and sidebar tabs for the
-**wiki** (browse/edit/delete the LLM-Wiki pages, including `home` = the system
-prompt) and **cron** (scheduled jobs).
+and **user-defined groups** (hover a chat or group header for its **⋮ menu**:
+rename / move to group / delete, all destructive actions behind an in-app
+confirm dialog; groups render as collapsible sections and sync with Discord's
+`/rename` and `/resume` filter). Groups are first-class: create one empty
+("+ new group"), it persists with no chats in it; assigning opens a dropdown
+of all groups with the input as filter (pick, create, or remove in one
+click); renaming a group onto an existing name **merges** the two; deleting a
+group only removes the folder — its chats move back to the date-sectioned
+root list, nothing is deleted; full-page **chat search** (instant title
+matches + **full-text search over message bodies** via SQLite FTS5, with
+highlighted snippets); sidebar tabs for the **wiki** (browse/edit/delete the
+LLM-Wiki pages, including `home` = the system prompt) and **cron** (scheduled
+jobs); a **theme switch** (system / light / dark, top-right corner); and a
+**per-reply model tag** on every assistant message (`▸ MODEL ·
+provider/model` — chats always *start* on the freshly resolved default model;
+resuming never drags you back to whatever the chat used last, on web or
+Discord, so the tag is how you compare models across a conversation).
 
 ## Configuration reference
 
@@ -208,6 +222,7 @@ All via `.env` (see `.env.example`) unless noted.
 | `DISCORD_STREAM_DMS` | Edit-in-place streaming for DM replies (default off) |
 | `STT_MODEL` | faster-whisper model for the mic button (tiny/base/small/medium, default base) |
 | `HARNESS_TZ` | IANA timezone for the frozen prompt date and cron |
+| `CRON_KEEP_RUNS` | Newest cron-run conversations kept per job (default 30) |
 | `WORKSPACE_DIR` | Working directory for the bash/file tools |
 | `WIKI_DIR` | LLM-Wiki pages directory (default `./wiki`) |
 | `FIRECRAWL_API_URL` | Firecrawl backend for web tools |
