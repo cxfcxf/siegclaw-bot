@@ -651,8 +651,12 @@ def create_client(mcp_manager) -> discord.Client:
         is_dm = message.guild is None
         user_id = str(message.author.id)
 
-        # Resolve provider + model. DMs use the active conversation's stored
-        # choice (or the default on first contact); channel mentions use default.
+        # Resolve provider + model. Everything uses the freshly resolved default
+        # (local engine if it's up, else the fallback) — a conversation's stored
+        # model is provenance, not a preference, so resumed DMs don't drag you
+        # back to whatever ran last time (matches the web UI). The one exception:
+        # an explicit /model pick, which pins the DM conversation until the bot
+        # restarts or /model is run again.
         dm_cid: str | None = None
         pm = resolve_default_model()
         if pm is None:
@@ -661,11 +665,9 @@ def create_client(mcp_manager) -> discord.Client:
         provider, model, effort = pm
         if is_dm:
             dm_cid = storage.dm_active_cid(user_id)
-            if dm_cid is not None:
-                convo = storage.get_conversation(dm_cid)
-                if convo and convo["provider"] and convo["model"]:
-                    provider, model = convo["provider"], convo["model"]
-                    effort = effort_for(provider, model)
+            if dm_cid is not None and dm_cid in _MODEL_OVERRIDES:
+                provider, model = _MODEL_OVERRIDES[dm_cid]
+                effort = effort_for(provider, model)
 
         async with message.channel.typing():
             user_text = message_text(message, strip_bot_id=client.user.id)
@@ -961,14 +963,24 @@ def cmd_resume(user_id: str, ref: int) -> str:
     )
 
 
+# Explicit /model picks, keyed by conversation id. In-memory on purpose: an
+# override lasts for the bot's uptime, then everything snaps back to the
+# default model (DM turns otherwise always use the freshly resolved default).
+_MODEL_OVERRIDES: dict[str, tuple[str, str]] = {}
+
+
 def cmd_model(user_id: str, provider: str, model: str) -> str:
     """Set the active (or pending — right after /new) conversation's model.
     Only reached from the /model picker, so provider/model are known-good."""
     convo = _active_or_pending_conversation(user_id)
     if get_provider(provider) is None:
         return f"Unknown provider `{provider}` — it may have gone away; run `/model` again."
+    _MODEL_OVERRIDES[convo["id"]] = (provider, model)
     storage.update_conversation_model(convo["id"], provider, model)
-    return f"Conversation **#{convo['ref']}** model set to `{provider}/{model}`."
+    return (
+        f"Conversation **#{convo['ref']}** pinned to `{provider}/{model}`"
+        " (until the bot restarts or you run /model again)."
+    )
 
 
 async def _respond(interaction: discord.Interaction, text: str, *, ephemeral: bool = True) -> None:
