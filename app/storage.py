@@ -70,6 +70,10 @@ def init_db() -> None:
             conn.execute("ALTER TABLE messages ADD COLUMN images TEXT")
         if "reasoning" not in cols:
             conn.execute("ALTER TABLE messages ADD COLUMN reasoning TEXT")
+        # Per-reply provenance: which "provider/model" produced an assistant
+        # message (the conversations.model column only keeps the last one).
+        if "model" not in cols:
+            conn.execute("ALTER TABLE messages ADD COLUMN model TEXT")
         ccols = [r["name"] for r in conn.execute("PRAGMA table_info(conversations)").fetchall()]
         if "prompt_tokens" not in ccols:
             conn.execute("ALTER TABLE conversations ADD COLUMN prompt_tokens INTEGER")
@@ -315,12 +319,13 @@ def add_message(
     name: str | None = None,
     images: list[str] | None = None,
     reasoning: str | None = None,
+    model: str | None = None,
 ) -> str:
     msg_id = uuid.uuid4().hex
     with _conn() as conn:
         conn.execute(
-            "INSERT INTO messages (id, conversation_id, role, content, tool_calls, tool_call_id, name, images, reasoning, created_at)"
-            " VALUES (?,?,?,?,?,?,?,?,?,?)",
+            "INSERT INTO messages (id, conversation_id, role, content, tool_calls, tool_call_id, name, images, reasoning, model, created_at)"
+            " VALUES (?,?,?,?,?,?,?,?,?,?,?)",
             (
                 msg_id,
                 cid,
@@ -331,6 +336,7 @@ def add_message(
                 name,
                 json.dumps(images) if images else None,
                 reasoning or None,
+                model,
                 time.time(),
             ),
         )
@@ -375,7 +381,7 @@ def get_messages(cid: str) -> list[dict[str, Any]]:
     """Return messages in OpenAI chat format, oldest first."""
     with _conn() as conn:
         rows = conn.execute(
-            "SELECT id, role, content, tool_calls, tool_call_id, name, images, reasoning FROM messages"
+            "SELECT id, role, content, tool_calls, tool_call_id, name, images, reasoning, model FROM messages"
             " WHERE conversation_id=? ORDER BY created_at ASC",
             (cid,),
         ).fetchall()
@@ -396,6 +402,9 @@ def get_messages(cid: str) -> list[dict[str, Any]]:
         if r["reasoning"]:
             # Non-API field; shown in the UI, stripped before sending to the model.
             msg["reasoning"] = r["reasoning"]
+        if r["model"]:
+            # Non-API field; which provider/model produced this reply.
+            msg["model"] = r["model"]
         messages.append(msg)
     return messages
 

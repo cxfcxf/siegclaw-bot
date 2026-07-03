@@ -430,6 +430,32 @@ function editConvInline(item, c, kind) {
   input.onblur = () => finish(false);
 }
 
+// In-app replacement for window.confirm(): a small centered dialog.
+// Resolves true on confirm; Escape, Cancel, or clicking the backdrop resolve false.
+function confirmDialog(message, okLabel = "Delete") {
+  return new Promise((resolve) => {
+    const overlay = $("#confirm-overlay");
+    $("#confirm-msg").textContent = message;
+    $("#confirm-ok").textContent = okLabel;
+    const prevFocus = document.activeElement;
+    const done = (v) => {
+      overlay.hidden = true;
+      document.removeEventListener("keydown", onKey, true);
+      if (prevFocus && prevFocus.focus) prevFocus.focus();
+      resolve(v);
+    };
+    const onKey = (e) => {
+      if (e.key === "Escape") { e.stopPropagation(); done(false); }
+    };
+    document.addEventListener("keydown", onKey, true);
+    $("#confirm-ok").onclick = () => done(true);
+    $("#confirm-cancel").onclick = () => done(false);
+    overlay.onclick = (e) => { if (e.target === overlay) done(false); };
+    overlay.hidden = false;
+    $("#confirm-cancel").focus();
+  });
+}
+
 function convRow(c) {
   const item = el("div", "conv");
   if (c.id === state.conversationId) item.classList.add("active");
@@ -455,6 +481,7 @@ function convRow(c) {
   del.title = "Delete conversation";
   del.onclick = async (e) => {
     e.stopPropagation();
+    if (!(await confirmDialog(`Delete “${c.title || "Untitled"}”? The conversation and its history are removed permanently.`))) return;
     await fetch(`/api/conversations/${c.id}`, { method: "DELETE" });
     if (state.conversationId === c.id) newChat();
     loadConversations();
@@ -537,7 +564,7 @@ async function loadConversations() {
       const warn = items.length
         ? `Delete group “${g.name}”? Its ${items.length} chat${items.length === 1 ? "" : "s"} move back to the main list (nothing is deleted).`
         : `Delete empty group “${g.name}”?`;
-      if (!confirm(warn)) return;
+      if (!(await confirmDialog(warn))) return;
       await fetch(`/api/groups/${encodeURIComponent(g.name)}`, { method: "DELETE" });
       loadConversations();
     };
@@ -723,20 +750,18 @@ try { if (localStorage.getItem("harness.sidebar") === "1") setSidebarCollapsed(t
 async function openConversation(id) {
   showPage(null);
   state.conversationId = id;
-  const data = await fetch(`/api/conversations/${id}`).then((r) => r.json());
+  // Resumed chats always start on the current default model, not the model the
+  // chat last used (that stays logged server-side, it's just not restored) —
+  // e.g. when the local engine comes up, old chats should pick it up too.
+  // loadProviders() re-detects availability, so the default is fresh: local
+  // engine if it's up, the fallback otherwise.
+  const [data] = await Promise.all([
+    fetch(`/api/conversations/${id}`).then((r) => r.json()),
+    loadProviders(),
+  ]);
   state.promptTokens = (data.conversation && data.conversation.prompt_tokens) || null;
-  // Snap the picker to this conversation's stored model — model is per-conversation.
-  if (data.conversation) {
-    const cp = data.conversation.provider;
-    if (cp && state.providers.some((p) => p.id === cp)) {
-      applyModelSelection(cp, data.conversation.model, null);
-    } else if (state.defaultModel) {
-      // Conversation's provider isn't available right now (e.g. the local engine
-      // is down). Snap to the default model so the picker stays consistent
-      // (provider + model from the same source) — the backend persists the
-      // fallback on the next turn.
-      applyModelSelection(state.defaultModel.provider, state.defaultModel.model, state.defaultModel.effort);
-    }
+  if (state.defaultModel) {
+    applyModelSelection(state.defaultModel.provider, state.defaultModel.model, state.defaultModel.effort);
   }
   $("#messages").innerHTML = "";
   state.stick = true;  // opening a chat lands at the latest message
@@ -757,10 +782,13 @@ function newChat() {
   state.conversationId = null;
   state.promptTokens = null;
   state.stick = true;
-  // A new conversation starts on the server-resolved default model.
-  if (state.defaultModel) {
-    applyModelSelection(state.defaultModel.provider, state.defaultModel.model, state.defaultModel.effort);
-  }
+  // A new conversation starts on the server-resolved default model. Re-detect
+  // providers first so a local engine that (dis)appeared since page load counts.
+  loadProviders().then(() => {
+    if (state.defaultModel) {
+      applyModelSelection(state.defaultModel.provider, state.defaultModel.model, state.defaultModel.effort);
+    }
+  });
   $("#messages").innerHTML = EMPTY_STATE;
   setMainEmpty(true);
   updateScrollJump();
@@ -846,7 +874,7 @@ function toMarkdownTable(rows) {
   ].join("\n");
 }
 
-function addMessageBubble(role, markdown, images, msgId) {
+function addMessageBubble(role, markdown, images, msgId, model) {
   const empty = $("#messages .empty");
   if (empty) empty.remove();
   const wrap = el("div", `msg ${role}`);
@@ -855,6 +883,13 @@ function addMessageBubble(role, markdown, images, msgId) {
   if (images && images.length) wrap.dataset.images = JSON.stringify(images);
   const r = el("div", "role");
   r.textContent = role === "user" ? "you" : "model";
+  // Per-reply provenance: which provider/model produced this answer, shown
+  // right after the channel label ("▸ MODEL · deepseek/deepseek-v4-flash").
+  if (role !== "user" && model) {
+    const tag = el("span", "role-model");
+    tag.textContent = " · " + model;
+    r.appendChild(tag);
+  }
   const bubble = el("div", "bubble");
   bubble.innerHTML = markdown ? renderMarkdown(markdown) : "";
   if (images && images.length) {
@@ -1123,7 +1158,7 @@ function renderHistory(messages) {
     }
     else if (m.role === "assistant") {
       if (m.reasoning) addThinkingBlock(m.reasoning, false);
-      if (m.content) lastAssistant = addMessageBubble("assistant", m.content, null, m.id);
+      if (m.content) lastAssistant = addMessageBubble("assistant", m.content, null, m.id, m.model);
       (m.tool_calls || []).forEach((tc) => {
         const block = addToolBlock(tc.function.name, tc.function.arguments || "");
         toolBlocks[tc.id] = block;
@@ -1415,6 +1450,8 @@ async function send(providedText, providedImages) {
   const images = isRetry ? (providedImages || []) : state.attachments.map((a) => a.url).filter(Boolean);
   if (!text && !images.length) return;
   if (!provider || !model) { setStatus("Pick a provider and model first."); setModelMenu(true); return; }
+  // What actually answers this turn — updated if the server falls back.
+  let turnModel = `${provider}/${model}`;
 
   state.stick = true;  // a turn you just started should follow the new output
   addMessageBubble("user", text, images);
@@ -1594,7 +1631,8 @@ async function send(providedText, providedImages) {
         // Server switched the conversation to a fallback model (the chosen
         // provider wasn't serving). Sync the picker so it reflects reality.
         applyModelSelection(ev.provider, ev.model, ev.effort);
-        setStatus(`↳ fell back to ${ev.provider}/${ev.model}`);
+        turnModel = `${ev.provider}/${ev.model}`;
+        setStatus(`↳ fell back to ${turnModel}`);
         break;
       case "reasoning":
         thinkTick(true);
@@ -1611,7 +1649,7 @@ async function send(providedText, providedImages) {
         thinkTick(false);
         if (firstTokenAt === null) firstTokenAt = performance.now();
         endThinking();  // reasoning for this step is done once the answer starts
-        if (!assistantBubble) assistantBubble = addMessageBubble("assistant", "");
+        if (!assistantBubble) assistantBubble = addMessageBubble("assistant", "", null, null, turnModel);
         ensureMetricsEl(assistantBubble);
         assistantText += ev.text;
         assistantBubble.innerHTML = renderMarkdown(assistantText);
@@ -1700,7 +1738,7 @@ async function renderWikiList() {
       const del = el("button", "del"); del.type = "button"; del.textContent = "✕"; del.title = "Delete page";
       del.onclick = async (e) => {
         e.stopPropagation();
-        if (!confirm(`Delete wiki page “${p.name}”?`)) return;
+        if (!(await confirmDialog(`Delete wiki page “${p.name}”? The model loses this knowledge.`))) return;
         await fetch(`/api/wiki/${encodeURIComponent(p.name)}`, { method: "DELETE" });
         renderWikiList();
       };
@@ -1893,7 +1931,7 @@ async function renderJobs() {
     editBtn.onclick = () => fillJobForm(j);
     const delBtn = el("button", "job-del"); delBtn.type = "button"; delBtn.textContent = "Delete";
     delBtn.onclick = async () => {
-      if (!confirm(`Delete job “${j.name}”?`)) return;
+      if (!(await confirmDialog(`Delete job “${j.name}”? It stops running on its schedule.`))) return;
       await fetch(`/api/jobs/${j.id}`, { method: "DELETE" });
       if (editingJobId === j.id) resetJobForm();
       renderJobs();

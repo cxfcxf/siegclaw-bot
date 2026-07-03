@@ -184,7 +184,7 @@ def _to_api_messages(history: list[dict[str, Any]], provider: str | None = None)
     For providers that require the chain-of-thought to be replayed on tool-call
     turns (DeepSeek, Xiaomi MiMo), the stored `reasoning` is emitted back as
     `reasoning_content`; for everyone else it's dropped."""
-    drop = ("images", "reasoning")  # non-API display fields
+    drop = ("images", "reasoning", "model")  # non-API display fields
     keep_reasoning = needs_reasoning_replay(provider)
     out: list[dict[str, Any]] = []
     for msg in history:
@@ -342,10 +342,14 @@ async def run_turn(
             storage.add_message(
                 conversation_id, "assistant", content=content_buf or None,
                 tool_calls=tool_calls, reasoning=reasoning_buf,
+                model=f"{provider}/{model}",
             )
         elif content_buf or reasoning_buf:
             messages.append({"role": "assistant", "content": content_buf})
-            storage.add_message(conversation_id, "assistant", content=content_buf, reasoning=reasoning_buf)
+            storage.add_message(
+                conversation_id, "assistant", content=content_buf, reasoning=reasoning_buf,
+                model=f"{provider}/{model}",
+            )
         if content_buf:
             final_answer = content_buf
 
