@@ -103,8 +103,10 @@ data/                SQLite DBs + uploads (created at runtime)
 - **Voice messages in DMs**: send a Discord voice message (or any audio file)
   and it's transcribed locally by the same in-process faster-whisper the web
   mic uses, then answered normally — text reply first, followed by a **spoken
-  version** (edge-tts, `TTS_VOICE`, multilingual by default) as a playable
-  audio attachment. Both clips are stored on the conversation, so opening the
+  version** (edge-tts) as a playable audio attachment. The voice is picked
+  **per reply from its language**: predominantly-中文 answers get a native
+  Chinese voice (`TTS_VOICE_ZH`), everything else the multilingual default
+  (`TTS_VOICE`), so a bilingual conversation switches voices turn by turn. Both clips are stored on the conversation, so opening the
   chat in the web UI shows your recording above its transcript and a playback
   control under the reply.
 - **DM slash commands** (hidden from channel autocomplete): `/new`, `/resume`,
@@ -228,7 +230,7 @@ All via `.env` (see `.env.example`) unless noted.
 | `DISCORD_ENABLE_SHELL` | Allow shell/file tools from Discord (default off) |
 | `DISCORD_STREAM_DMS` | Edit-in-place streaming for DM replies (default off) |
 | `STT_MODEL` | faster-whisper model for the mic button + DM voice messages (tiny/base/small/medium, default base) |
-| `TTS_VOICE` / `TTS_MAX_CHARS` | edge-tts voice for spoken replies to voice messages (default en-US-AvaMultilingualNeural) and clip length cap |
+| `TTS_VOICE` / `TTS_VOICE_ZH` / `TTS_MAX_CHARS` | edge-tts voices for spoken replies — default and Chinese, picked per reply by language — and clip length cap |
 | `HARNESS_TZ` | IANA timezone for the frozen prompt date and cron |
 | `CRON_KEEP_RUNS` | Newest cron-run conversations kept per job (default 30) |
 | `WORKSPACE_DIR` | Working directory for the bash/file tools |
