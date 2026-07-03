@@ -978,8 +978,7 @@ async function editFromMessage(userWrap) {
   // Restore the message into the composer for editing.
   const input = $("#input");
   input.value = text;
-  input.style.height = "auto";
-  input.style.height = Math.min(input.scrollHeight, 200) + "px";
+  autosizeInput();
   state.attachments = (imagesJson ? JSON.parse(imagesJson) : []).map((url) => ({ url }));
   renderAttachments();
   updateSendVisibility();
@@ -1316,8 +1315,7 @@ let micRec = null;   // active MediaRecorder while recording
         if (data.text) {
           const input = $("#input");
           input.value = (input.value.trim() ? input.value.replace(/\s*$/, " ") : "") + data.text;
-          input.style.height = "auto";
-          input.style.height = Math.min(input.scrollHeight, 200) + "px";
+          autosizeInput();
           updateSendVisibility();
           input.focus();
         } else {
@@ -1360,9 +1358,39 @@ $("#input").addEventListener("keydown", (e) => {
 function stopStream() {
   if (state.abort) { state.abort.abort(); state.abort = null; }
 }
-$("#input").addEventListener("input", (e) => {
-  e.target.style.height = "auto";
-  e.target.style.height = Math.min(e.target.scrollHeight, 200) + "px";
+// Grow the composer with its content, up to ~10 lines (matches the CSS
+// max-height); past that it scrolls internally. Once the text overflows the
+// cap, an expand toggle appears in the composer's corner — expanded mode
+// raises the cap to most of the viewport.
+const COMPOSER_CAP = 240;
+let composerExpanded = false;
+const EXPAND_SVG = '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M15 3h6v6"/><path d="M9 21H3v-6"/><path d="M21 3l-7 7"/><path d="M3 21l7-7"/></svg>';
+const COLLAPSE_SVG = '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 14h6v6"/><path d="M20 10h-6V4"/><path d="M14 10l7-7"/><path d="M3 21l7-7"/></svg>';
+function autosizeInput() {
+  const input = $("#input");
+  const cap = composerExpanded ? Math.round(window.innerHeight * 0.7) : COMPOSER_CAP;
+  input.style.height = "auto";
+  const overflows = input.scrollHeight > COMPOSER_CAP;
+  input.style.height = Math.min(input.scrollHeight, cap) + "px";
+  // Content shrank back under the cap → nothing to expand; drop the mode too
+  // so the next overflow starts collapsed.
+  if (!overflows) composerExpanded = false;
+  const btn = $("#expand-input");
+  btn.hidden = !overflows;
+  btn.innerHTML = composerExpanded ? COLLAPSE_SVG : EXPAND_SVG;
+  btn.title = btn.ariaLabel = composerExpanded ? "Collapse input" : "Expand input";
+  const box = input.closest(".composer-box");
+  box.classList.toggle("expandable", overflows);
+  box.classList.toggle("expanded", composerExpanded);
+}
+$("#expand-input").addEventListener("click", () => {
+  composerExpanded = !composerExpanded;
+  autosizeInput();
+  $("#input").focus();
+});
+window.addEventListener("resize", () => { if (composerExpanded) autosizeInput(); });
+$("#input").addEventListener("input", () => {
+  autosizeInput();
   updateSendVisibility();
 });
 
@@ -1392,7 +1420,7 @@ async function send(providedText, providedImages) {
   addMessageBubble("user", text, images);
   if (!isRetry) {
     $("#input").value = "";
-    $("#input").style.height = "auto";
+    autosizeInput();
     state.attachments = [];
     renderAttachments();  // also refreshes send-button visibility
   }

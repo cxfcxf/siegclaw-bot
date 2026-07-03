@@ -541,10 +541,23 @@ select:focus { outline: none; border-color: var(--patina-dim); }
 /* Two-row composer (Claude-style): textarea on top, a controls bar below with
    attach/think on the left and the model chip + send on the right. */
 .composer-box {
+  position: relative;
   display: flex; flex-direction: column; gap: 2px; max-width: 824px; margin: 0 auto;
   background: var(--surface-2); border: 1px solid var(--line); border-radius: var(--r);
   padding: 10px 8px 7px 12px; transition: border-color 0.15s, box-shadow 0.15s;
 }
+/* Expand toggle: floats over the textarea's top-right corner. Only rendered
+   once the text overflows the composer's max-height (see autosizeInput). */
+#expand-input {
+  position: absolute; top: 8px; right: 8px; z-index: 2;
+  display: grid; place-items: center; width: 26px; height: 26px;
+  background: var(--surface-2); border: 1px solid transparent; border-radius: var(--r-sm);
+  color: var(--text-faint); cursor: pointer; transition: all 0.15s;
+}
+#expand-input:hover { color: var(--text); background: var(--surface-3); border-color: var(--line); }
+#expand-input[hidden] { display: none; }
+.composer-box.expandable #input { padding-right: 36px; }
+.composer-box.expanded #input { max-height: 70vh; }
 .composer-box:focus-within { border-color: var(--patina-dim); box-shadow: 0 0 0 3px rgba(95, 182, 160, 0.08); }
 .composer-bar { display: flex; align-items: center; gap: 8px; }
 .composer-bar .bar-left { display: flex; align-items: center; gap: 4px; }
@@ -601,10 +614,12 @@ select:focus { outline: none; border-color: var(--patina-dim); }
 }
 .ctx-meter.high { color: var(--clay); }
 .ctx-meter:empty { min-height: 0; }
+/* flex:none is load-bearing: in this column flexbox, `flex: 1` would set the
+   height from flex-basis and silently override the JS autosize. */
 #input {
-  flex: 1; resize: none; background: transparent; color: var(--text); border: none;
+  flex: none; width: 100%; resize: none; background: transparent; color: var(--text); border: none;
   font-family: var(--font-body); font-size: 15px; line-height: 1.55; padding: 7px 4px;
-  max-height: 200px;
+  max-height: 240px; overflow-y: auto;
 }
 #input:focus { outline: none; }
 #input::placeholder { color: var(--text-faint); }
