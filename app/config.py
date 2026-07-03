@@ -50,6 +50,10 @@ HARNESS_TZ = os.getenv("HARNESS_TZ", "America/Los_Angeles")
 
 # --- Limits ----------------------------------------------------------------
 BASH_TIMEOUT = int(os.getenv("BASH_TIMEOUT", "120"))
+# Newest cron-run conversations kept per job (older ones are auto-deleted, so a
+# frequent job can't grow the DB forever). Moving a run out of its "Cron: <job>"
+# group exempts it from pruning.
+CRON_KEEP_RUNS = int(os.getenv("CRON_KEEP_RUNS", "30"))
 MAX_AGENT_ITERATIONS = int(os.getenv("MAX_AGENT_ITERATIONS", "25"))
 
 # Chat-template kwarg that toggles model reasoning per request (model-dependent;

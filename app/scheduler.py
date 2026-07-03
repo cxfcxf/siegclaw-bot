@@ -18,7 +18,7 @@ import discord
 
 from . import storage
 from .agent import run_turn
-from .config import HARNESS_TZ, resolve_default_model
+from .config import CRON_KEEP_RUNS, HARNESS_TZ, resolve_default_model
 from .cronutil import next_run_after
 from .discord_bot import build_discord_registry, send_chunked
 
@@ -115,10 +115,18 @@ class Scheduler:
         provider, model, effort = pm
 
         registry = build_discord_registry(None, None, self._mcp.tools)
-        # The "Cron:" marker lives on the group; runs inside it just carry the date.
-        stamp = datetime.now(ZoneInfo(HARNESS_TZ)).strftime("%b %-d")
-        cid = storage.create_conversation(provider, model, title=f"{stamp} — {job['name']}")
-        storage.set_conversation_group(cid, f"Cron: {job['name']}")
+        # The "Cron:" marker lives on the group; runs inside it just carry the
+        # date — with the time added only when today already has a run, so a
+        # daily job stays clean but frequent runs remain distinguishable.
+        grp = f"Cron: {job['name']}"
+        now = datetime.now(ZoneInfo(HARNESS_TZ))
+        title = f"{now.strftime('%b %-d')} — {job['name']}"
+        if storage.group_has_title(grp, title):
+            title = f"{now.strftime('%b %-d %H:%M')} — {job['name']}"
+        cid = storage.create_conversation(provider, model, title=title)
+        storage.set_conversation_group(cid, grp)
+        # Cap retained runs so a minutely job can't grow the DB forever.
+        storage.prune_group(grp, CRON_KEEP_RUNS)
 
         result = ""
         turn_error: str | None = None

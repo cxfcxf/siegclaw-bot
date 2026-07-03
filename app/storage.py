@@ -244,6 +244,28 @@ def delete_conversation(cid: str) -> None:
         conn.execute("DELETE FROM conversations WHERE id=?", (cid,))
 
 
+def group_has_title(grp: str, title: str) -> bool:
+    with _conn() as conn:
+        return conn.execute(
+            "SELECT 1 FROM conversations WHERE grp=? AND title=? LIMIT 1", (grp, title)
+        ).fetchone() is not None
+
+
+def prune_group(grp: str, keep: int) -> int:
+    """Delete the oldest conversations in a group beyond the newest `keep`.
+    Used by the scheduler so frequent cron jobs don't accumulate runs forever;
+    moving a conversation out of the group exempts it. Returns deleted count."""
+    with _conn() as conn:
+        rows = conn.execute(
+            "SELECT id FROM conversations WHERE grp=? ORDER BY created_at DESC",
+            (grp,),
+        ).fetchall()
+    stale = [r["id"] for r in rows[keep:]]
+    for cid in stale:
+        delete_conversation(cid)
+    return len(stale)
+
+
 def rename_conversation(cid: str, title: str) -> None:
     with _conn() as conn:
         conn.execute("UPDATE conversations SET title=? WHERE id=?", (title, cid))
