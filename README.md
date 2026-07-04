@@ -53,9 +53,8 @@ wiki/                the LLM-Wiki. Only home.md (the stock system prompt) is com
                      every other page is personal runtime data the model writes for its
                      owner (gitignored)
 mcp.json             MCP server definitions
-data/                SQLite DBs + uploads (created at runtime; media lives in
-                     uploads/<conversation-id>/ — a chat owns its files, so
-                     deleting the chat deletes them)
+data/                SQLite DBs + uploads (runtime, gitignored; media lives in
+                     uploads/<conversation-id>/ — see Voice & audio)
 ```
 
 ## How it works
@@ -82,8 +81,11 @@ data/                SQLite DBs + uploads (created at runtime; media lives in
 - Every **new** conversation (web, DM, channel) starts on
   `DEFAULT_PROVIDER`/`DEFAULT_MODEL`; if that provider isn't reachable it
   starts on `FALLBACK_PROVIDER`/`FALLBACK_MODEL` (+ `FALLBACK_EFFORT`).
-- Model is **per conversation**: switch it (web picker or `/model`) and it
-  sticks; new conversations return to the default.
+- A conversation's stored model is **provenance, not preference**: every turn
+  — new or resumed, web or DM — starts on the freshly resolved default, and
+  each reply is tagged with the model that produced it (the web UI's
+  `▸ MODEL · provider/model` label). An explicit pick (web picker or
+  `/model`) overrides for that session.
 - **Send-time fallback** (`agent.py:resolve_for_turn`): if a conversation's
   provider stops serving mid-life, the turn retries then permanently switches
   that conversation to the fallback (persisted — no flapping); new
@@ -102,11 +104,8 @@ data/                SQLite DBs + uploads (created at runtime; media lives in
   Optional **DM streaming** (`DISCORD_STREAM_DMS=true`, off by default): the
   reply is sent early and edited in place as tokens arrive (~1 edit/s — the
   most Discord's API allows); off, the reply lands as one complete message.
-- **Voice messages in DMs**: send a Discord voice message (or any audio file)
-  and it's transcribed locally by the same in-process faster-whisper the web
-  mic uses, then answered as a normal text reply. The recording is stored on
-  the conversation, so opening the chat in the web UI shows your clip above
-  its transcript (and the reply can be read aloud from there on demand).
+- **Voice messages in DMs** are transcribed locally and answered as normal
+  text replies — see *Voice & audio*.
 - **DM slash commands** (hidden from channel autocomplete): `/new`, `/resume`,
   `/model`, and `/rename` — all argument-free. `/resume` opens a dropdown of
   conversations (with a group filter first when groups exist), `/model` a
@@ -185,38 +184,43 @@ older ones are auto-deleted — move a run out of its group to keep it).
 
 ### Web UI
 
-Streaming SSE chat with: a provider/model **chip in the composer** that opens
-a popover (provider select + searchable model combobox, last choice
-remembered); a **thinking toggle** + effort select; **image upload** (attach
-or paste — needs a vision model); **voice input** (mic button — records in
-the browser, transcribed by in-process faster-whisper, fully local, no cloud;
-`STT_MODEL` picks the size; mic access needs HTTPS or localhost); a
-**read-aloud button** on every reply (hover toolbar — TTS is strictly on
-demand: the first click synthesizes via edge-tts, picking an English or
-Chinese voice from the reply's language, and persists the clip on the
-message; after that it's play/pause); a collapsible **process trace** (reasoning +
-nested tool calls, live activity light and timer); **per-response metrics**
-(wall time, thinking time, tok/s); a **context meter** under the composer
-(used vs. the model's max context, from the provider's `/models`); **stop**
-mid-turn; message **copy / retry / edit-and-resend**; conversation history
-grouped Today / Yesterday / Previous 7 days then exact dates, with **rename**
-and **user-defined groups** (hover a chat or group header for its **⋮ menu**:
-rename / move to group / delete, all destructive actions behind an in-app
-confirm dialog; groups render as collapsible sections and sync with Discord's
-`/rename` and `/resume` filter). Groups are first-class: create one empty
-("+ new group"), it persists with no chats in it; assigning opens a dropdown
-of all groups with the input as filter (pick, create, or remove in one
-click); renaming a group onto an existing name **merges** the two; deleting a
-group only removes the folder — its chats move back to the date-sectioned
-root list, nothing is deleted; full-page **chat search** (instant title
-matches + **full-text search over message bodies** via SQLite FTS5, with
-highlighted snippets); sidebar tabs for the **wiki** (browse/edit/delete the
-LLM-Wiki pages, including `home` = the system prompt) and **cron** (scheduled
-jobs); a **theme switch** (system / light / dark, top-right corner); and a
-**per-reply model tag** on every assistant message (`▸ MODEL ·
-provider/model` — chats always *start* on the freshly resolved default model;
-resuming never drags you back to whatever the chat used last, on web or
-Discord, so the tag is how you compare models across a conversation).
+Streaming SSE chat, vanilla JS. **Theme switch** (system / light / dark,
+top-right corner).
+
+- **Composer**: provider/model **chip** opening a popover (provider select +
+  searchable model combobox, last choice remembered); **thinking toggle** +
+  effort select; **image upload** (attach or paste — needs a vision model);
+  **mic** voice input (see *Voice & audio*); auto-expanding input with a
+  fullscreen toggle; a **context meter** (used vs. the model's max context).
+- **Responses**: collapsible **process trace** (reasoning + nested tool
+  calls, live activity light, timers); **per-response metrics** (wall time,
+  thinking time, tok/s); **stop** mid-turn; the per-reply model tag; a hover
+  toolbar with **copy / retry / edit-and-resend / read-aloud**.
+- **Sidebar**: history grouped Today / Yesterday / Previous 7 days / dates;
+  a **⋮ menu** on each chat and group header (rename / move to group /
+  delete — destructive actions behind an in-app confirm dialog). **Groups**
+  are first-class and sync with Discord's `/rename` and `/resume` filter:
+  they can exist empty, renaming onto an existing name merges, deleting a
+  group returns its chats to the root list (nothing else deleted). Full-page
+  **search** (title matches + FTS5 full-text over message bodies, highlighted
+  snippets). Tabs for the **wiki** (browse/edit pages, `home` = the system
+  prompt) and **cron** (scheduled jobs).
+
+### Voice & audio
+
+- **In — local**: speech is transcribed by in-process **faster-whisper**
+  (`STT_MODEL`, multilingual, no cloud). Two entry points: the web mic button
+  (needs HTTPS or localhost) and Discord DM voice messages / audio
+  attachments. A DM recording is kept and replays as a player above its
+  transcript when the chat is opened in the web UI.
+- **Out — on demand only**: nothing is synthesized automatically. The
+  read-aloud button on a reply calls **edge-tts** (online, keyless) once —
+  picking `TTS_VOICE` or `TTS_VOICE_ZH` by the reply's language, capped at
+  `TTS_MAX_CHARS` — persists the mp3 on the message, and is play/pause from
+  then on.
+- **Storage**: all media (images, recordings, TTS clips) lives in
+  `data/uploads/<conversation-id>/` — a chat owns its files, so deleting the
+  chat deletes them.
 
 ## Configuration reference
 
