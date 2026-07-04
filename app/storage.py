@@ -2,13 +2,17 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
+import shutil
 import sqlite3
 import time
 import uuid
 from typing import Any
 
-from .config import DATA_DIR
+from .config import DATA_DIR, UPLOADS_DIR
+
+log = logging.getLogger("siegclaw.storage")
 
 DB_PATH = DATA_DIR / "conversations.db"
 
@@ -135,6 +139,52 @@ def init_db() -> None:
         )
         if not had_fts:
             conn.execute("INSERT INTO messages_fts(messages_fts) VALUES('rebuild')")
+        _migrate_upload_layout(conn)
+
+
+def _migrate_upload_layout(conn: sqlite3.Connection) -> None:
+    """One-time move of media files from the original flat uploads/ into
+    per-conversation directories (uploads/<cid>/<file>), rewriting the stored
+    '/uploads/<file>' URLs to match. No-ops instantly once everything is
+    nested. Flat files no row references (already-orphaned) are left in place
+    — they're candidates for manual cleanup, not silent deletion."""
+    rows = conn.execute(
+        "SELECT id, conversation_id, images, audio FROM messages"
+        " WHERE images LIKE '%\"/uploads/%' OR audio LIKE '/uploads/%'"
+    ).fetchall()
+    moved = 0
+
+    def fix(url: str, cid: str) -> str:
+        nonlocal moved
+        m = re.fullmatch(r"/uploads/([^/]+)", url)
+        if not m:
+            return url
+        src = UPLOADS_DIR / m.group(1)
+        dest_dir = UPLOADS_DIR / cid
+        if src.is_file():
+            dest_dir.mkdir(exist_ok=True)
+            src.rename(dest_dir / m.group(1))
+            moved += 1
+        elif not (dest_dir / m.group(1)).is_file():
+            return url  # file lost before the migration; keep the row honest
+        return f"/uploads/{cid}/{m.group(1)}"
+
+    for r in rows:
+        cid = r["conversation_id"]
+        updates: dict[str, str] = {}
+        if r["audio"]:
+            fixed = fix(r["audio"], cid)
+            if fixed != r["audio"]:
+                updates["audio"] = fixed
+        if r["images"]:
+            imgs = json.loads(r["images"])
+            fixed_imgs = [fix(u, cid) for u in imgs]
+            if fixed_imgs != imgs:
+                updates["images"] = json.dumps(fixed_imgs)
+        for col, val in updates.items():
+            conn.execute(f"UPDATE messages SET {col}=? WHERE id=?", (val, r["id"]))
+    if moved:
+        log.info("uploads migration: moved %d file(s) into per-conversation dirs", moved)
 
 
 def create_conversation(provider: str, model: str, title: str = "New chat") -> str:
@@ -246,6 +296,9 @@ def delete_conversation(cid: str) -> None:
     with _conn() as conn:
         conn.execute("DELETE FROM messages WHERE conversation_id=?", (cid,))
         conn.execute("DELETE FROM conversations WHERE id=?", (cid,))
+    # Media (images, voice clips, TTS readings) lives under uploads/<cid>/ —
+    # the conversation owns its files, so they go with it.
+    shutil.rmtree(UPLOADS_DIR / cid, ignore_errors=True)
 
 
 def prune_group(grp: str, keep: int) -> int:

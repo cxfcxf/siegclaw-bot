@@ -11,7 +11,9 @@ import asyncio
 import base64
 import json
 import mimetypes
+import re
 from datetime import datetime
+from pathlib import Path
 from typing import Any, AsyncGenerator
 from zoneinfo import ZoneInfo
 
@@ -163,18 +165,48 @@ def _new_tool_call() -> dict[str, Any]:
     return {"id": "", "type": "function", "function": {"name": "", "arguments": ""}}
 
 
+def _upload_path(url: str) -> Path | None:
+    """Resolve a stored '/uploads/...' URL (flat or '<cid>/<file>') to its file
+    on disk, refusing anything that escapes UPLOADS_DIR."""
+    rel = url.removeprefix("/uploads/")
+    path = (UPLOADS_DIR / rel).resolve()
+    if not path.is_relative_to(UPLOADS_DIR.resolve()):
+        return None
+    return path
+
+
 def _image_data_url(url: str) -> str | None:
-    """Turn a stored '/uploads/<file>' reference into a base64 data URL the model
+    """Turn a stored '/uploads/...' reference into a base64 data URL the model
     can read, regardless of network topology. Pass through real data/http URLs."""
     if url.startswith(("data:", "http://", "https://")):
         return url
-    name = url.rsplit("/", 1)[-1]
-    path = UPLOADS_DIR / name
-    if not path.exists():
+    path = _upload_path(url)
+    if path is None or not path.exists():
         return None
-    mime = mimetypes.guess_type(name)[0] or "image/png"
+    mime = mimetypes.guess_type(path.name)[0] or "image/png"
     b64 = base64.b64encode(path.read_bytes()).decode()
     return f"data:{mime};base64,{b64}"
+
+
+def _adopt_upload(conversation_id: str, url: str) -> str:
+    """Move a freshly uploaded flat '/uploads/<file>' into this conversation's
+    directory ('/uploads/<cid>/<file>') and return the rewritten URL. Uploads
+    land flat because the uploader often doesn't know the conversation yet
+    (web images are uploaded before the first message creates the chat; a DM
+    voice clip is transcribed before its conversation is resolved); adopting
+    at attach time makes uploads/ self-describing — every file lives under the
+    conversation that owns it, and deleting the conversation deletes its dir.
+    Already-adopted ('/uploads/<cid>/…') and external URLs pass through."""
+    m = re.fullmatch(r"/uploads/([^/]+)", url)
+    if not m:
+        return url
+    src = UPLOADS_DIR / m.group(1)
+    if not src.is_file():
+        return url
+    dest_dir = UPLOADS_DIR / conversation_id
+    dest_dir.mkdir(exist_ok=True)
+    src.rename(dest_dir / m.group(1))
+    return f"/uploads/{conversation_id}/{m.group(1)}"
 
 
 def _to_api_messages(history: list[dict[str, Any]], provider: str | None = None) -> list[dict[str, Any]]:
@@ -223,6 +255,10 @@ async def run_turn(
 
     # `audio` is the user's voice clip ('/uploads/...'), stored on the user row
     # for playback. The model itself only ever sees the transcript.
+    if images:
+        images = [_adopt_upload(conversation_id, u) for u in images]
+    if audio:
+        audio = _adopt_upload(conversation_id, audio)
     user_msg_id = storage.add_message(
         conversation_id, "user", content=user_message, images=images, audio=audio
     )

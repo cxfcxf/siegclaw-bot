@@ -434,7 +434,7 @@ async def api_tts(message_id: str):
         raise HTTPException(404, "message not found")
     if msg.get("audio"):
         return {"url": msg["audio"]}
-    url = await tts.synthesize(msg["content"])
+    url = await tts.synthesize(msg["content"], msg["conversation_id"])
     if not url:
         raise HTTPException(502, "TTS synthesis failed")
     storage.set_message_audio(message_id, url)

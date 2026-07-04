@@ -62,19 +62,22 @@ def _voice_for(text: str) -> str:
     return TTS_VOICE_ZH if cjk * 5 >= latin else TTS_VOICE
 
 
-async def synthesize(markdown: str) -> str | None:
-    """Render text to an mp3 under UPLOADS_DIR; returns its '/uploads/<name>'
-    URL, or None if there was nothing speakable or synthesis failed (a missing
-    voice clip should never fail the turn — the text reply already exists)."""
+async def synthesize(markdown: str, conversation_id: str) -> str | None:
+    """Render text to an mp3 in the conversation's uploads directory; returns
+    its '/uploads/<cid>/<name>' URL, or None if there was nothing speakable or
+    synthesis failed (the caller's text already exists — a missing clip should
+    never become an error)."""
     text = _speakable(markdown)
     if not text:
         return None
     try:
-        import edge_tts  # deferred: only voice turns pay the import
+        import edge_tts  # deferred: only read-aloud requests pay the import
 
+        dest_dir = UPLOADS_DIR / conversation_id
+        dest_dir.mkdir(exist_ok=True)
         name = f"tts-{uuid.uuid4().hex}.mp3"
-        await edge_tts.Communicate(text, _voice_for(text)).save(str(UPLOADS_DIR / name))
-        return f"/uploads/{name}"
+        await edge_tts.Communicate(text, _voice_for(text)).save(str(dest_dir / name))
+        return f"/uploads/{conversation_id}/{name}"
     except Exception as e:
         log.warning("TTS synthesis failed: %s", e)
         return None

@@ -53,7 +53,9 @@ wiki/                the LLM-Wiki. Only home.md (the stock system prompt) is com
                      every other page is personal runtime data the model writes for its
                      owner (gitignored)
 mcp.json             MCP server definitions
-data/                SQLite DBs + uploads (created at runtime)
+data/                SQLite DBs + uploads (created at runtime; media lives in
+                     uploads/<conversation-id>/ — a chat owns its files, so
+                     deleting the chat deletes them)
 ```
 
 ## How it works
