@@ -686,8 +686,11 @@ def create_client(mcp_manager) -> discord.Client:
 
             # Voice turns (DM only): the user's clip URL and, once the turn
             # finishes, the TTS reading of the reply to send back as a file.
+            # text_delivered: the reply text went out at "done", before TTS
+            # synthesis, so the post-loop delivery must not send it again.
             voice_url: str | None = None
             tts_url: str | None = None
+            text_delivered = False
 
             async def update_status(tool_name: str, args: dict):
                 nonlocal _status_msg
@@ -781,6 +784,13 @@ def create_client(mcp_manager) -> discord.Client:
                                 await update_status(event.get("name", ""), json.loads(event.get("arguments") or "{}"))
                             except Exception:
                                 pass
+                        elif et == "done" and voice_url and reply_text.strip():
+                            # Voice turn: run_turn still has TTS synthesis ahead
+                            # of it after "done" — send the text right away so
+                            # the reply isn't held back by it; the spoken clip
+                            # follows as a file when the "audio" event lands.
+                            await _deliver_dm_text(message, stream_msg, reply_text)
+                            text_delivered = True
                         elif et == "audio":
                             tts_url = event.get("url")
                         elif et == "error":
@@ -824,25 +834,21 @@ def create_client(mcp_manager) -> discord.Client:
                 reply_text = f"Sorry, I couldn't generate a response ({type(e).__name__}). Please try again."
                 turn_failed = True
 
-        # Deliver. If a DM was streaming into a live message, finish it in place:
-        # the first chunk replaces the preview (dropping the ▌ cursor), overflow
-        # continues as plain messages. On failure the partial preview is deleted
-        # to match the DB rollback below.
-        if stream_msg is not None:
-            try:
-                if turn_failed:
+        # Deliver, unless a voice turn already sent the text at "done". If a DM
+        # was streaming into a live message, finish it in place: the first chunk
+        # replaces the preview (dropping the ▌ cursor), overflow continues as
+        # plain messages. On failure the partial preview is deleted to match the
+        # DB rollback below.
+        if not text_delivered:
+            if stream_msg is not None and turn_failed:
+                try:
                     await stream_msg.delete()
                     await message.channel.send(reply_text)
-                else:
-                    chunks = _chunk_message(reply_text)
-                    await stream_msg.edit(content=chunks[0])
-                    for c in chunks[1:]:
-                        await message.channel.send(c)
-            except Exception as e:
-                log.warning("Finalizing streamed DM failed (%s); resending", e)
-                await _send_long_message(message, reply_text)
-        else:
-            await _send_long_message(message, reply_text)
+                except Exception as e:
+                    log.warning("Finalizing streamed DM failed (%s); resending", e)
+                    await _send_long_message(message, reply_text)
+            else:
+                await _deliver_dm_text(message, stream_msg, reply_text)
 
         # Voice turn: follow the text with the spoken version as a playable
         # audio attachment (text first, so the reply is skimmable either way).
@@ -865,6 +871,24 @@ def create_client(mcp_manager) -> discord.Client:
                 storage.dm_clear_active(user_id)
 
     return client
+
+
+async def _deliver_dm_text(
+    message: discord.Message, stream_msg: discord.Message | None, reply_text: str
+) -> None:
+    """Send a finished reply: finalize the live streaming preview in place if
+    there is one (falling back to plain sends if the edit fails), else send
+    the text chunked."""
+    if stream_msg is not None:
+        try:
+            chunks = _chunk_message(reply_text)
+            await stream_msg.edit(content=chunks[0])
+            for c in chunks[1:]:
+                await message.channel.send(c)
+            return
+        except Exception as e:
+            log.warning("Finalizing streamed DM failed (%s); resending", e)
+    await _send_long_message(message, reply_text)
 
 
 _AUDIO_EXT = {".ogg", ".oga", ".opus", ".mp3", ".m4a", ".wav", ".webm", ".flac", ".aac"}

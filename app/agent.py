@@ -381,16 +381,19 @@ async def run_turn(
             continue  # loop back for the model's next step
 
         # No tool calls => the turn is complete.
+        if last_prompt_tokens:
+            storage.set_prompt_tokens(conversation_id, last_prompt_tokens)
+        # "done" goes out before TTS: the text is final now, and consumers must
+        # be able to deliver it without waiting the seconds synthesis takes.
+        yield {"type": "done", "tokens": total_tokens or None, "prompt_tokens": last_prompt_tokens or None}
         if audio and final_answer and final_answer_id:
-            # Voice in, voice out: attach a TTS reading of the reply. Best-effort
-            # — synthesize() returns None on failure and the text stands alone.
+            # Voice in, voice out: a TTS reading of the reply trails the stream.
+            # Best-effort — synthesize() returns None on failure and the text
+            # stands alone.
             tts_url = await tts.synthesize(final_answer)
             if tts_url:
                 storage.set_message_audio(final_answer_id, tts_url)
                 yield {"type": "audio", "url": tts_url}
-        if last_prompt_tokens:
-            storage.set_prompt_tokens(conversation_id, last_prompt_tokens)
-        yield {"type": "done", "tokens": total_tokens or None, "prompt_tokens": last_prompt_tokens or None}
         return
 
     yield {"type": "error", "message": f"Stopped after {MAX_AGENT_ITERATIONS} tool iterations."}
