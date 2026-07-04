@@ -875,6 +875,7 @@ $("#new-chat").onclick = newChat;
 // --- Rendering --------------------------------------------------------------
 const COPY_ICON = '<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>';
 const RETRY_ICON = '<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/></svg>';
+const SPEAKER_ICON = '<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M11 5 6 9H2v6h4l5 4V5z"/><path d="M15.5 8.5a5 5 0 0 1 0 7"/><path d="M18.8 5.8a9 9 0 0 1 0 12.4"/></svg>';
 const EDIT_ICON = '<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>';
 const METRICS_ICON = '<svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>';
 const SEND_ICON = '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h13M12 5l7 7-7 7"/></svg>';
@@ -960,6 +961,37 @@ function attachAudio(bubble, url) {
   return player;
 }
 
+// Read-aloud button: first click asks the server to synthesize the reply
+// (persisted on the message, so it's once per message ever), attaches the
+// player, and plays; with a player already there it just toggles play/pause.
+async function speakMessage(wrap, btn) {
+  const bubble = wrap.querySelector(".bubble");
+  let player = bubble.querySelector(".msg-audio");
+  if (player) {
+    if (player.paused) player.play(); else player.pause();
+    return;
+  }
+  const mid = wrap.dataset.msgId;
+  if (!mid) { setStatus("Reply not saved yet — try again in a moment."); return; }
+  btn.disabled = true;
+  setStatus("Synthesizing speech…");
+  try {
+    const res = await fetch(`/api/tts/${mid}`, { method: "POST" });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || res.statusText);
+    }
+    const { url } = await res.json();
+    player = attachAudio(bubble, url);
+    player.play();
+    setStatus("");
+  } catch (e) {
+    setStatus("⚠ TTS failed: " + e.message);
+  } finally {
+    btn.disabled = false;
+  }
+}
+
 function addMessageBubble(role, markdown, images, msgId, model, audio) {
   const empty = $("#messages .empty");
   if (empty) empty.remove();
@@ -1012,6 +1044,15 @@ function addMessageBubble(role, markdown, images, msgId, model, audio) {
     retry.innerHTML = RETRY_ICON;
     retry.onclick = (e) => { e.stopPropagation(); retryFromMessage(wrap); };
     actions.appendChild(retry);
+  } else {
+    // Read aloud: TTS is on demand only — nothing is synthesized until this
+    // is clicked (first click synthesizes + plays; after that it's play/pause).
+    const speak = el("button", "action speak");
+    speak.type = "button";
+    speak.title = "Read aloud";
+    speak.innerHTML = SPEAKER_ICON;
+    speak.onclick = (e) => { e.stopPropagation(); speakMessage(wrap, speak); };
+    actions.appendChild(speak);
   }
   const copy = el("button", "action copy");
   copy.type = "button";
@@ -1764,10 +1805,6 @@ async function send(providedText, providedImages) {
         setTraceTool(false);
         break;
       }
-      case "audio":
-        // Voice turn: the server attached a TTS reading of the finished reply.
-        if (assistantBubble) attachAudio(assistantBubble, ev.url);
-        break;
       case "error":
         endThinking();
         setTraceTool(false);
@@ -1776,6 +1813,12 @@ async function send(providedText, providedImages) {
         addMessageBubble("assistant", "_Error: " + ev.message + "_");
         break;
       case "done":
+        // Tag the finished bubble with its stored id so read-aloud (which
+        // synthesizes server-side from the saved message) works immediately.
+        if (ev.message_id && assistantBubble) {
+          const w = assistantBubble.closest(".msg");
+          if (w && !w.dataset.msgId) w.dataset.msgId = ev.message_id;
+        }
         if (ev.tokens) completionTokens = ev.tokens;
         if (ev.prompt_tokens) state.promptTokens = ev.prompt_tokens;
         endThinking();

@@ -684,13 +684,9 @@ def create_client(mcp_manager) -> discord.Client:
             stream_msg: discord.Message | None = None
             stream_edit_at = 0.0
 
-            # Voice turns (DM only): the user's clip URL and, once the turn
-            # finishes, the TTS reading of the reply to send back as a file.
-            # text_delivered: the reply text went out at "done", before TTS
-            # synthesis, so the post-loop delivery must not send it again.
+            # Voice turns (DM only): the user's clip URL, stored on the message
+            # row so the web UI can replay the recording above its transcript.
             voice_url: str | None = None
-            tts_url: str | None = None
-            text_delivered = False
 
             async def update_status(tool_name: str, args: dict):
                 nonlocal _status_msg
@@ -725,8 +721,8 @@ def create_client(mcp_manager) -> discord.Client:
                     # Voice message (or any audio attachment): save the clip,
                     # transcribe it locally (same faster-whisper the web mic
                     # uses), and run the turn on the transcript. The clip URL
-                    # rides along so the web UI can replay it, and it flags the
-                    # turn for a spoken (TTS) reply.
+                    # rides along so the web UI can replay it. The reply is
+                    # text-only — the web UI's read-aloud button does TTS.
                     audio_att = _audio_attachment(message)
                     if audio_att is not None:
                         voice_url = await _save_dm_audio(audio_att)
@@ -784,15 +780,6 @@ def create_client(mcp_manager) -> discord.Client:
                                 await update_status(event.get("name", ""), json.loads(event.get("arguments") or "{}"))
                             except Exception:
                                 pass
-                        elif et == "done" and voice_url and reply_text.strip():
-                            # Voice turn: run_turn still has TTS synthesis ahead
-                            # of it after "done" — send the text right away so
-                            # the reply isn't held back by it; the spoken clip
-                            # follows as a file when the "audio" event lands.
-                            await _deliver_dm_text(message, stream_msg, reply_text)
-                            text_delivered = True
-                        elif et == "audio":
-                            tts_url = event.get("url")
                         elif et == "error":
                             raise RuntimeError(event.get("message", "turn error"))
                     if not reply_text:
@@ -834,31 +821,19 @@ def create_client(mcp_manager) -> discord.Client:
                 reply_text = f"Sorry, I couldn't generate a response ({type(e).__name__}). Please try again."
                 turn_failed = True
 
-        # Deliver, unless a voice turn already sent the text at "done". If a DM
-        # was streaming into a live message, finish it in place: the first chunk
-        # replaces the preview (dropping the ▌ cursor), overflow continues as
-        # plain messages. On failure the partial preview is deleted to match the
-        # DB rollback below.
-        if not text_delivered:
-            if stream_msg is not None and turn_failed:
-                try:
-                    await stream_msg.delete()
-                    await message.channel.send(reply_text)
-                except Exception as e:
-                    log.warning("Finalizing streamed DM failed (%s); resending", e)
-                    await _send_long_message(message, reply_text)
-            else:
-                await _deliver_dm_text(message, stream_msg, reply_text)
-
-        # Voice turn: follow the text with the spoken version as a playable
-        # audio attachment (text first, so the reply is skimmable either way).
-        if tts_url and not turn_failed:
+        # Deliver. If a DM was streaming into a live message, finish it in
+        # place: the first chunk replaces the preview (dropping the ▌ cursor),
+        # overflow continues as plain messages. On failure the partial preview
+        # is deleted to match the DB rollback below.
+        if stream_msg is not None and turn_failed:
             try:
-                await message.channel.send(
-                    file=discord.File(str(UPLOADS_DIR / Path(tts_url).name), filename="reply.mp3")
-                )
+                await stream_msg.delete()
+                await message.channel.send(reply_text)
             except Exception as e:
-                log.warning("Sending TTS clip failed: %s", e)
+                log.warning("Finalizing streamed DM failed (%s); resending", e)
+                await _send_long_message(message, reply_text)
+        else:
+            await _deliver_dm_text(message, stream_msg, reply_text)
 
         # If the turn failed after the user message was already stored, drop it
         # (and any partially-persisted tool messages). If that leaves the

@@ -1,12 +1,12 @@
-"""Text-to-speech for voice replies, via edge-tts (Microsoft Edge's online
-neural voices — free, no API key, needs outbound network).
+"""Text-to-speech via edge-tts (Microsoft Edge's online neural voices — free,
+no API key, needs outbound network).
 
-Used when a turn started from a voice message: the final assistant reply is
-rendered to an mp3 in UPLOADS_DIR so both Discord (file attachment with an
-inline player) and the web UI (<audio> element) can play it back. The voice is
-picked per reply from its language: predominantly-中文 text gets a native
-Chinese voice (TTS_VOICE_ZH), everything else the multilingual default
-(TTS_VOICE — see `edge-tts --list-voices` for options).
+On-demand only: the web UI's read-aloud button on an assistant reply calls
+/api/tts/<message_id>, which renders the reply to an mp3 in UPLOADS_DIR once
+and persists the URL on the message row. Nothing is synthesized automatically.
+The voice is picked per reply from its language: predominantly-中文 text gets
+a native Chinese voice (TTS_VOICE_ZH), everything else the multilingual
+default (TTS_VOICE — see `edge-tts --list-voices` for options).
 """
 from __future__ import annotations
 

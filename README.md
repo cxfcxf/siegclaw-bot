@@ -102,13 +102,9 @@ data/                SQLite DBs + uploads (created at runtime)
   most Discord's API allows); off, the reply lands as one complete message.
 - **Voice messages in DMs**: send a Discord voice message (or any audio file)
   and it's transcribed locally by the same in-process faster-whisper the web
-  mic uses, then answered normally — text reply first, followed by a **spoken
-  version** (edge-tts) as a playable audio attachment. The voice is picked
-  **per reply from its language**: predominantly-中文 answers get a native
-  Chinese voice (`TTS_VOICE_ZH`), everything else the multilingual default
-  (`TTS_VOICE`), so a bilingual conversation switches voices turn by turn. Both clips are stored on the conversation, so opening the
-  chat in the web UI shows your recording above its transcript and a playback
-  control under the reply.
+  mic uses, then answered as a normal text reply. The recording is stored on
+  the conversation, so opening the chat in the web UI shows your clip above
+  its transcript (and the reply can be read aloud from there on demand).
 - **DM slash commands** (hidden from channel autocomplete): `/new`, `/resume`,
   `/model`, and `/rename` — all argument-free. `/resume` opens a dropdown of
   conversations (with a group filter first when groups exist), `/model` a
@@ -192,7 +188,11 @@ a popover (provider select + searchable model combobox, last choice
 remembered); a **thinking toggle** + effort select; **image upload** (attach
 or paste — needs a vision model); **voice input** (mic button — records in
 the browser, transcribed by in-process faster-whisper, fully local, no cloud;
-`STT_MODEL` picks the size; mic access needs HTTPS or localhost); a collapsible **process trace** (reasoning +
+`STT_MODEL` picks the size; mic access needs HTTPS or localhost); a
+**read-aloud button** on every reply (hover toolbar — TTS is strictly on
+demand: the first click synthesizes via edge-tts, picking an English or
+Chinese voice from the reply's language, and persists the clip on the
+message; after that it's play/pause); a collapsible **process trace** (reasoning +
 nested tool calls, live activity light and timer); **per-response metrics**
 (wall time, thinking time, tok/s); a **context meter** under the composer
 (used vs. the model's max context, from the provider's `/models`); **stop**
@@ -230,7 +230,7 @@ All via `.env` (see `.env.example`) unless noted.
 | `DISCORD_ENABLE_SHELL` | Allow shell/file tools from Discord (default off) |
 | `DISCORD_STREAM_DMS` | Edit-in-place streaming for DM replies (default off) |
 | `STT_MODEL` | faster-whisper model for the mic button + DM voice messages (tiny/base/small/medium, default base) |
-| `TTS_VOICE` / `TTS_VOICE_ZH` / `TTS_MAX_CHARS` | edge-tts voices for spoken replies — default and Chinese, picked per reply by language — and clip length cap |
+| `TTS_VOICE` / `TTS_VOICE_ZH` / `TTS_MAX_CHARS` | edge-tts voices for the read-aloud button — default and Chinese, picked per reply by language — and clip length cap |
 | `HARNESS_TZ` | IANA timezone for the frozen prompt date and cron |
 | `CRON_KEEP_RUNS` | Newest cron-run conversations kept per job (default 30) |
 | `WORKSPACE_DIR` | Working directory for the bash/file tools |

@@ -28,7 +28,7 @@ from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import storage, stt, wiki
+from . import storage, stt, tts, wiki
 from .agent import build_registry, resolve_for_turn, run_turn
 from .config import (
     DISCORD_BOT_TOKEN,
@@ -421,6 +421,24 @@ async def api_transcribe(file: UploadFile):
     finally:
         os.unlink(path)
     return {"text": text}
+
+
+# --- Text-to-speech (read-aloud button on assistant replies) -----------------
+@app.post("/api/tts/{message_id}")
+async def api_tts(message_id: str):
+    """Synthesize (once) and return the TTS reading of a stored assistant
+    message. The clip is persisted on the row, so replaying the conversation
+    reuses it instead of re-synthesizing."""
+    msg = storage.get_message(message_id)
+    if not msg or msg.get("role") != "assistant" or not msg.get("content"):
+        raise HTTPException(404, "message not found")
+    if msg.get("audio"):
+        return {"url": msg["audio"]}
+    url = await tts.synthesize(msg["content"])
+    if not url:
+        raise HTTPException(502, "TTS synthesis failed")
+    storage.set_message_audio(message_id, url)
+    return {"url": url}
 
 
 # --- Chat (SSE) ------------------------------------------------------------

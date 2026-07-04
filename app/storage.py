@@ -364,9 +364,18 @@ def add_message(
     return msg_id
 
 
+def get_message(msg_id: str) -> dict[str, Any] | None:
+    with _conn() as conn:
+        r = conn.execute(
+            "SELECT id, conversation_id, role, content, audio FROM messages WHERE id=?",
+            (msg_id,),
+        ).fetchone()
+    return dict(r) if r else None
+
+
 def set_message_audio(msg_id: str, url: str) -> None:
     """Attach an audio URL to an existing message (the TTS reading of an
-    assistant reply is generated after the message row is written)."""
+    assistant reply is generated on demand, long after the row is written)."""
     with _conn() as conn:
         conn.execute("UPDATE messages SET audio=? WHERE id=?", (url, msg_id))
 

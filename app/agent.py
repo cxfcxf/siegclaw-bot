@@ -15,7 +15,7 @@ from datetime import datetime
 from typing import Any, AsyncGenerator
 from zoneinfo import ZoneInfo
 
-from . import storage, tts, wiki
+from . import storage, wiki
 from .config import (
     HARNESS_TZ,
     MAX_AGENT_ITERATIONS,
@@ -221,9 +221,8 @@ async def run_turn(
     client = client_for(provider)
     replay_reasoning = needs_reasoning_replay(provider)
 
-    # `audio` is the user's voice clip ('/uploads/...'): stored on the user row
-    # for playback, and it marks the turn as spoken — the final reply gets a
-    # TTS reading attached. The model itself only ever sees the transcript.
+    # `audio` is the user's voice clip ('/uploads/...'), stored on the user row
+    # for playback. The model itself only ever sees the transcript.
     user_msg_id = storage.add_message(
         conversation_id, "user", content=user_message, images=images, audio=audio
     )
@@ -380,20 +379,15 @@ async def run_turn(
                 )
             continue  # loop back for the model's next step
 
-        # No tool calls => the turn is complete.
+        # No tool calls => the turn is complete. message_id lets the web UI tag
+        # the finished bubble with its stored id (read-aloud needs it).
         if last_prompt_tokens:
             storage.set_prompt_tokens(conversation_id, last_prompt_tokens)
-        # "done" goes out before TTS: the text is final now, and consumers must
-        # be able to deliver it without waiting the seconds synthesis takes.
-        yield {"type": "done", "tokens": total_tokens or None, "prompt_tokens": last_prompt_tokens or None}
-        if audio and final_answer and final_answer_id:
-            # Voice in, voice out: a TTS reading of the reply trails the stream.
-            # Best-effort — synthesize() returns None on failure and the text
-            # stands alone.
-            tts_url = await tts.synthesize(final_answer)
-            if tts_url:
-                storage.set_message_audio(final_answer_id, tts_url)
-                yield {"type": "audio", "url": tts_url}
+        yield {
+            "type": "done", "tokens": total_tokens or None,
+            "prompt_tokens": last_prompt_tokens or None,
+            "message_id": final_answer_id,
+        }
         return
 
     yield {"type": "error", "message": f"Stopped after {MAX_AGENT_ITERATIONS} tool iterations."}
