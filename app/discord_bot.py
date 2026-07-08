@@ -1067,8 +1067,19 @@ def cmd_new(user_id: str) -> str:
     storage.dm_clear_active(user_id)
     return (
         "Starting a fresh conversation — your next message begins it.\n"
-        f"Model: {_default_model_line()}"
+        f"Model: {_default_model_line()}{_disarm_note(user_id)}"
     )
+
+
+def _disarm_note(user_id: str) -> str:
+    """Session boundaries (/new, /resume) drop research mode — a fresh or
+    resumed chat always starts in normal mode. Returns the confirmation line
+    to append when the mode was actually on (/model deliberately does NOT
+    disarm: switching engines mid-clarify shouldn't eat the mode)."""
+    if user_id in _research_armed:
+        _research_armed.discard(user_id)
+        return "\n💬 Deep research mode switched **off** for this chat."
+    return ""
 
 
 def _active_or_pending_conversation(user_id: str) -> dict:
@@ -1118,7 +1129,8 @@ def cmd_resume(user_id: str, ref: int) -> str:
     storage.dm_set_active_cid(user_id, convo["id"])
     return (
         f"Resumed **#{ref}** ({convo['title'] or 'Untitled'}).\n"
-        f"Model: `{convo['provider']}/{convo['model']}`\n\n"
+        f"Model: `{convo['provider']}/{convo['model']}`"
+        f"{_disarm_note(user_id)}\n\n"
         + _format_history_preview(convo["id"])
     )
 

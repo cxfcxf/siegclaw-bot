@@ -183,7 +183,9 @@ it finishes — minutes later — the report is **delivered where it was asked
 for**: a web-launched run posts a link back into the chat that asked; a
 DM-launched run sends the full report to the owner's DM and switches the DM
 session to it, so replying asks follow-ups (same convention as cron
-briefings). Research mode auto-disarms once the run launches; asking for
+briefings). Research mode auto-disarms once the run launches (and in DMs on
+`/new` and `/resume` — session boundaries reset to normal chat; `/model`
+doesn't); asking for
 "deep research on …" in plain words also works without arming. Research runs
 get read-only tools (web/browser/wiki — no shell, no wiki writes).
 
