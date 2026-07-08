@@ -27,18 +27,19 @@ from .tools.web import web_tools
 log = logging.getLogger("siegclaw.research")
 
 # Tool-loop budget for a research run — searches, scrapes, and synthesis steps
-# all draw from it. Roomier than a chat turn's cap by design.
-RESEARCH_MAX_ITERATIONS = int(os.getenv("RESEARCH_MAX_ITERATIONS", "40"))
+# all draw from it. Roomier than a chat turn's cap by design; the preamble's
+# source-count demands are what actually make the model spend it.
+RESEARCH_MAX_ITERATIONS = int(os.getenv("RESEARCH_MAX_ITERATIONS", "60"))
 
 RESEARCH_GROUP = "Research"
 
 RESEARCH_PREAMBLE = """You are running a DEEP RESEARCH task in the background — no human is in the loop, so never ask questions; make sensible assumptions and state them in the report.
 
-Method (be systematic, this is a report, not a chat reply):
-1. Break the question into 4-8 distinct search angles: sub-questions, synonyms, opposing views, recent developments. Search them all (`web_search`), not just one phrasing.
-2. `web_scrape` the 5-10 most promising sources IN FULL — snippets are not evidence. Prefer primary sources (official docs, papers, filings, first-party announcements) over aggregators.
-3. Cross-check: when sources disagree or a claim is surprising, search again specifically to confirm or refute it. Note disagreements rather than silently picking a side.
-4. Then write the report.
+Method (be systematic, this is a report, not a chat reply — do NOT stop early because the picture "seems clear"; thoroughness is the point of this mode):
+1. Break the question into 6-10 distinct search angles: sub-questions, synonyms, opposing views, recent developments, failure cases. Search them all (`web_search`), not just one phrasing.
+2. `web_scrape` AT LEAST 10 sources IN FULL — snippets are not evidence. Prefer primary sources (official docs, papers, filings, first-party announcements) over aggregators; when an aggregator cites a primary source, scrape the primary source too.
+3. Verify: every load-bearing claim in your report (each key number, date, or comparison) must be supported by a scraped page, and the important ones cross-checked against a SECOND independent source. When sources disagree or a claim is surprising, search again specifically to confirm or refute it; note disagreements rather than silently picking a side.
+4. Only then write the report. You have a large tool budget — a thin report from a handful of sources is a failure, not efficiency.
 
 Report format (GitHub-flavored Markdown):
 - Start with a **TL;DR** of 3-5 sentences that directly answers the question.
@@ -46,7 +47,16 @@ Report format (GitHub-flavored Markdown):
 - Cite as you go with bracketed numbers [1], [2] tied to a final **Sources** section listing each URL.
 - Distinguish established facts from analysis/speculation. Include concrete numbers and dates where they matter.
 - Depth over padding: cover what the evidence supports, cut boilerplate.
+- Your final message must be ONLY the report itself — no lead-in narration like "I now have enough data, let me compile".
 """
+
+# Injected into a web turn when the composer's research toggle is on: the model
+# should scope the question with the user first, then hand off to deep_research.
+RESEARCH_MODE_PREAMBLE = """RESEARCH MODE is enabled for the user's current message. Do NOT answer the question directly and do NOT start searching yourself.
+
+- If the request leaves real room for interpretation (scope, timeframe, region, depth, budget, what the answer will be used for), ask the user 2-4 short clarifying questions in one message, then STOP and wait for their reply.
+- Once the scope is clear — from their answers, or immediately if the request is already unambiguous — call `deep_research` with a single self-contained question that folds in everything they told you, and tell them the report is underway.
+- Don't over-clarify: one round of questions at most; obvious assumptions can just be stated in the handoff."""
 
 
 # Set from main.lifespan; returns the live Discord client (or None). Kept as an
@@ -161,7 +171,9 @@ def research_tools() -> list[Tool]:
             "cited report (takes minutes; delivered by Discord DM and saved as a "
             "conversation). Use ONLY when the user explicitly asks for deep/thorough "
             "research or a report — for ordinary questions, search and answer "
-            "directly yourself.",
+            "directly yourself. If the research scope is genuinely ambiguous "
+            "(timeframe, region, depth, purpose), ask the user 2-4 clarifying "
+            "questions FIRST and call this only after they answer.",
             {
                 "type": "object",
                 "properties": {

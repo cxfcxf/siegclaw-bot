@@ -30,7 +30,7 @@ from .config import (
     resolve_default_model,
 )
 from .providers import client_for
-from .research import research_tools
+from .research import RESEARCH_MODE_PREAMBLE, research_tools
 from .tools.browser import browser_tools
 from .tools.builtin import builtin_tools
 from .tools.clock import clock_tools
@@ -270,6 +270,7 @@ async def run_turn(
     audio: str | None = None,
     docs: list[dict] | None = None,
     max_iterations: int | None = None,  # tool-loop budget; None = the default cap
+    research_mode: bool = False,  # composer toggle: scope the question, then deep_research
 ) -> AsyncGenerator[dict[str, Any], None]:
     client = client_for(provider)
     replay_reasoning = needs_reasoning_replay(provider)
@@ -310,6 +311,13 @@ async def run_turn(
     sys_content = await asyncio.to_thread(static_system_prompt, *extra)
     messages: list[dict[str, Any]] = [{"role": "system", "content": sys_content}]
     messages.extend(_to_api_messages(storage.get_messages(conversation_id), provider))
+    # Research mode rides at the END of the prompt (right after the user's
+    # message) where models actually obey it — inside the system prefix it gets
+    # drowned out by the standing "answer with tools" instructions, and it
+    # would bust the prompt cache. Not persisted: the client re-sends the flag
+    # on the clarifying round-trip until deep_research actually launches.
+    if research_mode:
+        messages.append({"role": "system", "content": RESEARCH_MODE_PREAMBLE})
 
     tool_schemas = registry.schemas()
     extra_body = reasoning_extra_body(provider, think, effort)
@@ -317,6 +325,7 @@ async def run_turn(
     final_answer_id: str | None = None  # stored id of the message holding it
     total_tokens = 0  # completion tokens across all model calls this turn (for tok/s)
     last_prompt_tokens = 0  # prompt tokens of the final model call (context usage)
+    turn_prompt_tokens = 0  # prompt tokens summed over every call (billed total)
 
     iteration_cap = max_iterations or MAX_AGENT_ITERATIONS
     for _i in range(iteration_cap):
@@ -361,6 +370,7 @@ async def run_turn(
                 pt = getattr(usage, "prompt_tokens", None)
                 if pt:
                     last_prompt_tokens = pt
+                    turn_prompt_tokens += pt
             if not chunk.choices:
                 continue
             choice = chunk.choices[0]
@@ -449,6 +459,7 @@ async def run_turn(
         # the finished bubble with its stored id (read-aloud needs it).
         if last_prompt_tokens:
             storage.set_prompt_tokens(conversation_id, last_prompt_tokens)
+        storage.add_token_usage(turn_prompt_tokens, total_tokens)
         yield {
             "type": "done", "tokens": total_tokens or None,
             "prompt_tokens": last_prompt_tokens or None,
@@ -456,4 +467,5 @@ async def run_turn(
         }
         return
 
+    storage.add_token_usage(turn_prompt_tokens, total_tokens)  # spent even on a dead-end
     yield {"type": "error", "message": f"Stopped after {iteration_cap} tool iterations."}

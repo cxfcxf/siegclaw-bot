@@ -23,6 +23,7 @@ const state = {
   streamConvId: null,   // conversation id with an active background stream (for sidebar indicator)
   attachments: [],   // [{ url }]
   think: true,
+  research: false,   // composer research toggle (scope, then deep_research)
   abort: null,       // AbortController for the in-flight stream (stop button)
   stick: true,       // follow the bottom as content streams; false once you scroll up
 };
@@ -59,6 +60,16 @@ applyTheme(loadPref(THEME_KEY) || "system");
 
 // --- Thinking toggle --------------------------------------------------------
 const effortKey = (p) => `harness.effort.${p}`;
+// Research mode: the next message is scoped (the model may ask clarifying
+// questions back) and handed to deep_research. Stays on across the clarifying
+// round-trip; auto-disarms once the model actually launches the research.
+$("#research-toggle").onclick = () => {
+  state.research = !state.research;
+  $("#research-toggle").classList.toggle("on", state.research);
+  $("#research-toggle").setAttribute("aria-pressed", String(state.research));
+  setStatus(state.research ? "Research mode: the model will scope your question, then run a deep research." : "");
+};
+
 $("#think-toggle").onclick = () => {
   state.think = !state.think;
   $("#think-toggle").classList.toggle("on", state.think);
@@ -1763,7 +1774,7 @@ async function send(providedText, providedImages, providedDocs) {
     const resp = await fetch("/api/chat", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ conversation_id: state.conversationId, provider, model, message: text, images: images.length ? images : null, docs: docs.length ? docs : null, think: state.think, effort: state.think ? (state.effort || null) : null }),
+      body: JSON.stringify({ conversation_id: state.conversationId, provider, model, message: text, images: images.length ? images : null, docs: docs.length ? docs : null, think: state.think, effort: state.think ? (state.effort || null) : null, research: state.research }),
       signal: controller.signal,
     });
     if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
@@ -1876,6 +1887,13 @@ async function send(providedText, providedImages, providedDocs) {
       case "tool_call":
         thinkTick(false);
         endThinking();
+        // Research launched: disarm the composer toggle so follow-up messages
+        // in this chat are normal turns, not another research kickoff.
+        if (ev.name === "deep_research" && state.research) {
+          state.research = false;
+          $("#research-toggle").classList.remove("on");
+          $("#research-toggle").setAttribute("aria-pressed", "false");
+        }
         toolBlocks[ev.id] = addToolBlock(ev.name, ev.arguments || "");
         setTraceTool(true, `${ev.name} · ${truncate(ev.arguments || "", 48)}`);
         assistantBubble = null; assistantText = "";  // text after a tool is a new bubble
@@ -2208,6 +2226,13 @@ $("#show-jobs").onclick = async () => {
 };
 
 // --- Status page --------------------------------------------------------------
+const humanCount = (n) => {
+  if (n >= 1e9) return (n / 1e9).toFixed(2) + "B";
+  if (n >= 1e6) return (n / 1e6).toFixed(n >= 1e8 ? 0 : 1) + "M";
+  if (n >= 1e3) return (n / 1e3).toFixed(n >= 1e5 ? 0 : 1) + "K";
+  return String(n);
+};
+
 const humanBytes = (n) => {
   if (n < 1024) return n + " B";
   const units = ["KB", "MB", "GB"];
@@ -2293,10 +2318,17 @@ function renderStatus(data) {
   jobs.appendChild(statusRows(jrows.length ? jrows : [["—", "none", ""]]));
   body.appendChild(jobs);
 
+  const tok = data.stats.tokens || {};
+  const tp = (tok.tokens_prompt || {}).value || 0;
+  const tc = (tok.tokens_completion || {}).value || 0;
+  const since = (tok.tokens_prompt || tok.tokens_completion || {}).since;
+  const tokLabel = "Tokens" + (since ? ` (since ${new Date(since * 1000).toLocaleDateString()})` : "");
+
   const sys = statusSection("System");
   sys.appendChild(statusRows([
     ["Discord", data.discord.connected ? `● connected as ${data.discord.user}` : "○ not connected",
      data.discord.connected ? "ok" : "bad"],
+    [tokLabel, tp || tc ? `${humanCount(tp)} in · ${humanCount(tc)} out` : "counting starts now", ""],
     ["Conversations", `${data.stats.conversations} chats · ${data.stats.messages} messages`, ""],
     ["Database", humanBytes(data.storage.db_bytes), ""],
     ["Uploads", humanBytes(data.storage.uploads_bytes), ""],

@@ -117,6 +117,7 @@ class ChatRequest(BaseModel):
     docs: list[dict] | None = None   # [{"url", "name"}] document attachments
     think: bool = True               # toggle model reasoning per request
     effort: str | None = None        # reasoning effort for providers that support it
+    research: bool = False           # composer research toggle: clarify then deep_research
 
 
 class NewConversation(BaseModel):
@@ -547,6 +548,7 @@ async def api_chat(body: ChatRequest):
             cid, provider, model, body.message, registry,
             images=body.images, think=body.think, effort=effort,
             docs=body.docs,
+            research_mode=body.research,
         ):
             yield _sse(event)
 

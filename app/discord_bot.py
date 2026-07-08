@@ -280,6 +280,13 @@ async def run_discord_turn(
     schemas = registry.schemas()
     seen_calls: set[tuple[str, str]] = set()
     replay_reasoning = needs_reasoning_replay(provider)
+    spent = {"prompt": 0, "completion": 0}  # summed over all calls; recorded at return
+
+    def _track(resp) -> None:
+        u = getattr(resp, "usage", None)
+        if u:
+            spent["prompt"] += getattr(u, "prompt_tokens", 0) or 0
+            spent["completion"] += getattr(u, "completion_tokens", 0) or 0
 
     async def persist(fn, *a, **kw):
         if conversation_id:
@@ -299,6 +306,7 @@ async def run_discord_turn(
             tools=schemas or None,
             extra_body=extra_body,
         )
+        _track(resp)
         msg = resp.choices[0].message
         # Always read + persist the reasoning so DM turns (shared with the web
         # UI) show their thinking block there — Discord itself only surfaces tool
@@ -308,6 +316,7 @@ async def run_discord_turn(
         reasoning_text = _reasoning_of(msg)
         if not msg.tool_calls:
             await persist(storage.add_message, "assistant", content=msg.content or "", reasoning=reasoning_text)
+            storage.add_token_usage(spent["prompt"], spent["completion"])
             return msg.content or ""
 
         assistant_dump = msg.model_dump(exclude_none=True)
@@ -355,8 +364,10 @@ async def run_discord_turn(
     # Max iterations hit — force a final answer with no tools.
     messages.append({"role": "user", "content": "You have reached the maximum number of tool calls. Based on everything gathered so far, give your best answer now."})
     resp = await client.chat.completions.create(model=model, messages=messages, extra_body=extra_body)
+    _track(resp)
     final = resp.choices[0].message
     await persist(storage.add_message, "assistant", content=final.content or "", reasoning=_reasoning_of(final))
+    storage.add_token_usage(spent["prompt"], spent["completion"])
     return final.content or ""
 
 

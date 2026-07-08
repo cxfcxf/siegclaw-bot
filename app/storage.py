@@ -143,6 +143,12 @@ def init_db() -> None:
         )
         if not had_fts:
             conn.execute("INSERT INTO messages_fts(messages_fts) VALUES('rebuild')")
+        # Lifetime counters (e.g. total tokens consumed). created_at records
+        # when counting began — old turns predating the feature aren't counted.
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS counters"
+            " (name TEXT PRIMARY KEY, value INTEGER, created_at REAL)"
+        )
         _migrate_upload_layout(conn)
 
 
@@ -511,6 +517,31 @@ def get_messages(cid: str) -> list[dict[str, Any]]:
     return messages
 
 
+def bump_counter(name: str, delta: int) -> None:
+    if not delta:
+        return
+    with _conn() as conn:
+        conn.execute(
+            "INSERT INTO counters (name, value, created_at) VALUES (?,?,?)"
+            " ON CONFLICT(name) DO UPDATE SET value = value + excluded.value",
+            (name, delta, time.time()),
+        )
+
+
+def add_token_usage(prompt: int, completion: int) -> None:
+    """Record what one turn consumed. Prompt tokens are summed across every
+    model call of the turn (history is re-sent each tool round — that's what
+    the provider actually bills), completion likewise."""
+    bump_counter("tokens_prompt", prompt)
+    bump_counter("tokens_completion", completion)
+
+
+def get_counters() -> dict[str, dict[str, Any]]:
+    with _conn() as conn:
+        rows = conn.execute("SELECT name, value, created_at FROM counters").fetchall()
+    return {r["name"]: {"value": r["value"], "since": r["created_at"]} for r in rows}
+
+
 def usage_stats() -> dict[str, Any]:
     """Aggregate numbers for the status page: table sizes and which models have
     been answering (messages.model provenance), all-time and last 7 days."""
@@ -527,6 +558,7 @@ def usage_stats() -> dict[str, Any]:
     return {
         "conversations": conversations,
         "messages": messages,
+        "tokens": get_counters(),
         "models": [
             {"model": r["model"], "replies": r["total"], "replies_7d": r["last7"] or 0}
             for r in by_model
