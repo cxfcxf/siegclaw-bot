@@ -548,7 +548,12 @@ function convRow(c) {
   if (c.id === state.conversationId) item.classList.add("active");
   if (state.streaming && c.id === state.streamConvId) item.classList.add("streaming");
   const title = el("span", "title");
-  title.textContent = c.title || "Untitled";
+  const full = c.title || "Untitled";
+  title.textContent = full;
+  // The narrow sidebar ellipsizes long titles; hovering reveals the full text
+  // (native tooltip), itself capped — a pasted-question title doesn't need to
+  // be readable in its entirety to identify the chat.
+  item.title = full.length > 80 ? full.slice(0, 80) + "…" : full;
 
   const kebab = el("button", "cact kebab");
   kebab.type = "button";
@@ -597,7 +602,7 @@ async function loadConversations() {
     if (!byGroup.has(c.grp)) byGroup.set(c.grp, []);
     byGroup.get(c.grp).push(c);
   });
-  groups.forEach((g) => {
+  const renderGroup = (g) => {
     const items = byGroup.get(g.name) || [];
     const isCollapsed = !!collapsed[g.name];
     const h = el("div", "conv-group grp" + (isCollapsed ? " closed" : ""));
@@ -664,7 +669,22 @@ async function loadConversations() {
     }
     box.appendChild(h);
     if (!isCollapsed) items.forEach((c) => box.appendChild(convRow(c)));
-  });
+  };
+
+  // Two leagues, stable order: automatic groups (feature-owned — Research,
+  // Cron: *) always on top under their own label, then the user's groups.
+  const sysGroups = groups.filter((g) => g.system);
+  const customGroups = groups.filter((g) => !g.system);
+  if (sysGroups.length) {
+    const lbl = el("div", "conv-group");
+    lbl.textContent = "automatic";
+    box.appendChild(lbl);
+    sysGroups.forEach(renderGroup);
+  }
+  const clbl = el("div", "conv-group");
+  clbl.textContent = "your groups";
+  box.appendChild(clbl);
+  customGroups.forEach(renderGroup);
 
   // "+ new group": creates an empty group (chats can be moved in later).
   const add = el("div", "conv-group grp new");
