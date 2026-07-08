@@ -121,7 +121,7 @@ class Scheduler:
         now = datetime.now(ZoneInfo(HARNESS_TZ))
         title = f"{now.strftime('%b %-d %H:%M')} — {job['name']}"
         cid = storage.create_conversation(provider, model, title=title)
-        storage.set_conversation_group(cid, grp)
+        storage.set_conversation_group(cid, grp, system=True)
         # Cap retained runs so a minutely job can't grow the DB forever.
         storage.prune_group(grp, CRON_KEEP_RUNS)
 

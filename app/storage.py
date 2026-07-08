@@ -149,6 +149,14 @@ def init_db() -> None:
             "CREATE TABLE IF NOT EXISTS counters"
             " (name TEXT PRIMARY KEY, value INTEGER, created_at REAL)"
         )
+        # system: 1 = auto-created group owned by a feature (Research, Cron: *)
+        # — protected from rename/delete; cron pruning depends on the name.
+        gcols = [r["name"] for r in conn.execute("PRAGMA table_info(groups)").fetchall()]
+        if "system" not in gcols:
+            conn.execute("ALTER TABLE groups ADD COLUMN system INTEGER DEFAULT 0")
+            conn.execute(
+                "UPDATE groups SET system=1 WHERE name='Research' OR name LIKE 'Cron: %'"
+            )
         _migrate_upload_layout(conn)
 
 
@@ -331,42 +339,64 @@ def rename_conversation(cid: str, title: str) -> None:
         conn.execute("UPDATE conversations SET title=? WHERE id=?", (title, cid))
 
 
-def set_conversation_group(cid: str, grp: str | None) -> None:
+def set_conversation_group(cid: str, grp: str | None, system: bool = False) -> None:
+    """Assign a conversation to a group, creating it if needed. `system=True`
+    marks a feature-owned group (Research, Cron: *) as protected — used by the
+    auto-creation paths, never by user actions."""
     with _conn() as conn:
         if grp:
-            conn.execute("INSERT OR IGNORE INTO groups (name, created_at) VALUES (?,?)", (grp, time.time()))
+            conn.execute(
+                "INSERT OR IGNORE INTO groups (name, created_at, system) VALUES (?,?,?)",
+                (grp, time.time(), 1 if system else 0),
+            )
         conn.execute("UPDATE conversations SET grp=? WHERE id=?", (grp or None, cid))
+
+
+def group_is_system(name: str) -> bool:
+    with _conn() as conn:
+        row = conn.execute("SELECT system FROM groups WHERE name=?", (name,)).fetchone()
+    return bool(row and row["system"])
 
 
 def list_groups() -> list[dict[str, Any]]:
     with _conn() as conn:
         rows = conn.execute(
-            "SELECT g.name, g.created_at,"
+            "SELECT g.name, g.created_at, g.system,"
             " (SELECT COUNT(*) FROM conversations c WHERE c.grp = g.name) AS count,"
             " (SELECT MAX(c.updated_at) FROM conversations c WHERE c.grp = g.name) AS last_active"
             " FROM groups g ORDER BY last_active DESC NULLS LAST, g.name"
         ).fetchall()
-    return [dict(r) for r in rows]
+    return [{**dict(r), "system": bool(r["system"])} for r in rows]
 
 
 def create_group(name: str) -> None:
     with _conn() as conn:
-        conn.execute("INSERT OR IGNORE INTO groups (name, created_at) VALUES (?,?)", (name, time.time()))
+        conn.execute("INSERT OR IGNORE INTO groups (name, created_at, system) VALUES (?,?,0)", (name, time.time()))
 
 
-def rename_group(old: str, new: str) -> None:
-    """Rename a group; if the new name already exists, the two merge."""
+def rename_group(old: str, new: str) -> bool:
+    """Rename a (custom) group; if the new name already exists, the two merge.
+    System groups refuse — features find their conversations by group name
+    (cron pruning), so renaming would silently break them."""
     with _conn() as conn:
-        conn.execute("INSERT OR IGNORE INTO groups (name, created_at) VALUES (?,?)", (new, time.time()))
+        row = conn.execute("SELECT system FROM groups WHERE name=?", (old,)).fetchone()
+        if row and row["system"]:
+            return False
+        conn.execute("INSERT OR IGNORE INTO groups (name, created_at, system) VALUES (?,?,0)", (new, time.time()))
         conn.execute("UPDATE conversations SET grp=? WHERE grp=?", (new, old))
         if old != new:
             conn.execute("DELETE FROM groups WHERE name=?", (old,))
+    return True
 
 
-def delete_group(name: str) -> int:
-    """Delete a group. Its conversations are NOT deleted — they're ungrouped
-    (back to the date-sectioned root list). Returns how many were ungrouped."""
+def delete_group(name: str) -> int | None:
+    """Delete a (custom) group. Its conversations are NOT deleted — they're
+    ungrouped (back to the date-sectioned root list). Returns how many were
+    ungrouped, or None if the group is system-owned (refused)."""
     with _conn() as conn:
+        row = conn.execute("SELECT system FROM groups WHERE name=?", (name,)).fetchone()
+        if row and row["system"]:
+            return None
         cur = conn.execute("UPDATE conversations SET grp=NULL WHERE grp=?", (name,))
         conn.execute("DELETE FROM groups WHERE name=?", (name,))
         return cur.rowcount

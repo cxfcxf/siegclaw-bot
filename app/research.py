@@ -104,7 +104,7 @@ def start(question: str) -> dict | None:
     now = datetime.now(ZoneInfo(HARNESS_TZ))
     title = f"🔬 {question.strip()}"[:80]
     cid = storage.create_conversation(provider, model, title=title)
-    storage.set_conversation_group(cid, RESEARCH_GROUP)
+    storage.set_conversation_group(cid, RESEARCH_GROUP, system=True)
     convo = storage.get_conversation(cid)
     origin = _origin_cid.get()
     asyncio.create_task(_run(cid, provider, model, effort, question, title, origin))

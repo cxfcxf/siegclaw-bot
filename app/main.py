@@ -184,18 +184,24 @@ def api_create_group(body: GroupCreate):
 
 @app.patch("/api/groups/{name}")
 def api_rename_group(name: str, body: GroupCreate):
-    """Rename a group (renaming onto an existing name merges the two)."""
+    """Rename a group (renaming onto an existing name merges the two).
+    System groups (Research, Cron: *) refuse — features locate their
+    conversations by group name."""
     new = body.name.strip()[:50]
     if not new:
         raise HTTPException(400, "group name cannot be empty")
-    storage.rename_group(name, new)
+    if not storage.rename_group(name, new):
+        raise HTTPException(400, f"'{name}' is a system group and can't be renamed")
     return {"ok": True, "name": new}
 
 
 @app.delete("/api/groups/{name}")
 def api_delete_group(name: str):
-    """Deletes the group only — its conversations are ungrouped, not deleted."""
+    """Deletes the group only — its conversations are ungrouped, not deleted.
+    System groups refuse (deleting 'Cron: X' would silently break pruning)."""
     moved = storage.delete_group(name)
+    if moved is None:
+        raise HTTPException(400, f"'{name}' is a system group and can't be deleted")
     return {"ok": True, "conversations_ungrouped": moved}
 
 

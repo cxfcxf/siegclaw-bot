@@ -647,13 +647,21 @@ async function loadConversations() {
       await fetch(`/api/groups/${encodeURIComponent(g.name)}`, { method: "DELETE" });
       loadConversations();
     };
-    h.querySelector(".gact").onclick = (e) => {
-      e.stopPropagation();
-      showActionMenu(e.currentTarget, [
-        { icon: PENCIL_ICON, label: "Rename group", onClick: renameGroup },
-        { icon: TRASH_ICON, label: "Delete group", danger: true, onClick: deleteGroup },
-      ]);
-    };
+    // System groups (Research, Cron: *) are feature-owned: no rename/delete —
+    // renaming would break the feature's group-name linkage (cron pruning),
+    // and the group would just be recreated anyway. Chats inside can still be
+    // moved out individually.
+    if (g.system) {
+      h.querySelector(".gact").remove();
+    } else {
+      h.querySelector(".gact").onclick = (e) => {
+        e.stopPropagation();
+        showActionMenu(e.currentTarget, [
+          { icon: PENCIL_ICON, label: "Rename group", onClick: renameGroup },
+          { icon: TRASH_ICON, label: "Delete group", danger: true, onClick: deleteGroup },
+        ]);
+      };
+    }
     box.appendChild(h);
     if (!isCollapsed) items.forEach((c) => box.appendChild(convRow(c)));
   });
