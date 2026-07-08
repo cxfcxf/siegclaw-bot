@@ -805,6 +805,18 @@ select:focus { outline: none; border-color: var(--patina-dim); }
 /* Whole-page drop target: glow the composer while a file is dragged over. */
 body.dragging #composer { outline: 2px dashed var(--patina); outline-offset: 4px; }
 
+/* Sidebar chat-title tooltip: floats to the right of the hovered row, readable
+   size (the native title= tooltip font was too small). */
+#conv-tip {
+  position: fixed; z-index: 60; transform: translateY(-50%);
+  max-width: 340px; padding: 8px 12px;
+  background: var(--surface-2); border: 1px solid var(--line);
+  border-radius: var(--r-sm); box-shadow: 0 6px 24px -8px rgba(0, 0, 0, 0.5);
+  color: var(--text); font-size: 13.5px; line-height: 1.45;
+  pointer-events: none; opacity: 0; transition: opacity 0.12s;
+}
+#conv-tip.show { opacity: 1; }
+
 /* ===========================================================================
    Status page — label/value rows grouped in sections
    ========================================================================= */

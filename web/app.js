@@ -551,10 +551,10 @@ function convRow(c) {
   const full = c.title || "Untitled";
   title.textContent = full;
   // The narrow sidebar ellipsizes long titles; hovering reveals the full text
-  // (native tooltip), itself capped — a pasted-question title doesn't need to
-  // be readable in its entirety to identify the chat. Same 90-char threshold
-  // as long-link display shortening (LINK_TEXT_MAX).
-  item.title = full.length > LINK_TEXT_MAX ? full.slice(0, LINK_TEXT_MAX) + "…" : full;
+  // in a custom tooltip (the native title= font is unreadably small), itself
+  // capped at the same 90-char threshold as long-link shortening — a
+  // pasted-question title doesn't need to be readable in its entirety.
+  item.dataset.tip = full.length > LINK_TEXT_MAX ? full.slice(0, LINK_TEXT_MAX) + "…" : full;
 
   const kebab = el("button", "cact kebab");
   kebab.type = "button";
@@ -732,6 +732,44 @@ async function loadConversations() {
     box.appendChild(convRow(c));
   });
 }
+
+// --- Sidebar title tooltip ------------------------------------------------------
+// One floating element for all rows, shown beside the hovered chat after a
+// short delay — and only when the title is actually ellipsized (no tooltip
+// noise on rows you can already read in full).
+const convTip = (() => {
+  const tip = el("div");
+  tip.id = "conv-tip";
+  document.body.appendChild(tip);
+  return tip;
+})();
+let tipTimer = null;
+let tipRow = null;
+
+function hideConvTip() {
+  clearTimeout(tipTimer);
+  tipRow = null;
+  convTip.classList.remove("show");
+}
+
+$("#conversations").addEventListener("mouseover", (e) => {
+  const row = e.target.closest(".conv");
+  if (row === tipRow) return;
+  hideConvTip();
+  if (!row || !row.dataset.tip) return;
+  tipRow = row;
+  tipTimer = setTimeout(() => {
+    const t = row.querySelector(".title");
+    if (!t || t.scrollWidth <= t.clientWidth + 1) return;  // fits — nothing hidden
+    const r = row.getBoundingClientRect();
+    convTip.textContent = row.dataset.tip;
+    convTip.style.left = r.right + 10 + "px";
+    convTip.style.top = r.top + r.height / 2 + "px";
+    convTip.classList.add("show");
+  }, 350);
+});
+$("#conversations").addEventListener("mouseleave", hideConvTip);
+$("#conversations").addEventListener("scroll", hideConvTip);
 
 // --- Chat search --------------------------------------------------------------
 // A Gemini-style overlay: pill search input, "Recent"/"Results" section label,
