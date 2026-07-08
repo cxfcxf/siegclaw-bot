@@ -11,6 +11,7 @@ conversation for the web UI, where it can be resumed for follow-up questions.
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import logging
 import os
 from datetime import datetime
@@ -59,6 +60,18 @@ RESEARCH_MODE_PREAMBLE = """RESEARCH MODE is enabled for the user's current mess
 - Don't over-clarify: one round of questions at most; obvious assumptions can just be stated in the handoff."""
 
 
+# The conversation the deep_research call came from, set by run_turn for the
+# duration of a turn (contextvar: each concurrent turn sees its own). The
+# finished report links back to this chat so it doesn't dangle unanswered.
+_origin_cid: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "research_origin_cid", default=None
+)
+
+
+def set_origin(conversation_id: str) -> None:
+    _origin_cid.set(conversation_id)
+
+
 # Set from main.lifespan; returns the live Discord client (or None). Kept as an
 # injected getter so this module never imports the runtime.
 _discord_getter: Callable[[], object | None] = lambda: None
@@ -93,13 +106,24 @@ def start(question: str) -> dict | None:
     cid = storage.create_conversation(provider, model, title=title)
     storage.set_conversation_group(cid, RESEARCH_GROUP)
     convo = storage.get_conversation(cid)
-    asyncio.create_task(_run(cid, provider, model, effort, question, title))
+    origin = _origin_cid.get()
+    asyncio.create_task(_run(cid, provider, model, effort, question, title, origin))
     log.info("research started: %s (#%s, %s/%s)", title, convo["ref"], provider, model)
     return {"ref": convo["ref"], "title": title, "started": now.strftime("%H:%M")}
 
 
+def _note_origin(origin: str | None, cid: str, text: str) -> None:
+    """Close the loop in the chat that asked for the research: append a note
+    (with a #convo: link the web UI turns into a click-to-open) so it doesn't
+    linger with no trace of the outcome. Touch bumps it in the sidebar."""
+    if not origin or not storage.get_conversation(origin):
+        return
+    storage.add_message(origin, "assistant", content=text)
+    storage.touch_conversation(origin)
+
+
 async def _run(cid: str, provider: str, model: str, effort: str | None,
-               question: str, title: str) -> None:
+               question: str, title: str, origin: str | None = None) -> None:
     from .agent import run_turn  # deferred: agent imports this module's tools
 
     report = ""
@@ -122,9 +146,11 @@ async def _run(cid: str, provider: str, model: str, effort: str | None,
     if error:
         log.warning("research %s failed: %s", cid, error)
         storage.add_message(cid, "assistant", content=f"(research run failed: {error})")
+        _note_origin(origin, cid, f"🔬 The deep research failed: {error}")
         await _dm_owner(f"🔬 **{title}** failed: {error}", cid)
         return
     log.info("research done: %s (%d chars)", title, len(report))
+    _note_origin(origin, cid, f"🔬 Deep research finished — here is the result: [{title}](#convo:{cid})")
     await _dm_owner(f"🔬 **{title}** — report ready:\n\n{report.strip()}", cid)
 
 

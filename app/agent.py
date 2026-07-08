@@ -30,7 +30,7 @@ from .config import (
     resolve_default_model,
 )
 from .providers import client_for
-from .research import RESEARCH_MODE_PREAMBLE, research_tools
+from .research import RESEARCH_MODE_PREAMBLE, research_tools, set_origin as set_research_origin
 from .tools.browser import browser_tools
 from .tools.builtin import builtin_tools
 from .tools.clock import clock_tools
@@ -274,6 +274,8 @@ async def run_turn(
 ) -> AsyncGenerator[dict[str, Any], None]:
     client = client_for(provider)
     replay_reasoning = needs_reasoning_replay(provider)
+    # If this turn launches a deep_research, its finished report links back here.
+    set_research_origin(conversation_id)
 
     # `audio` is the user's voice clip ('/uploads/...'), stored on the user row
     # for playback. The model itself only ever sees the transcript.

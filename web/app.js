@@ -1391,6 +1391,14 @@ $("#messages").addEventListener("scroll", updateScrollJump);
 // Markdown images in responses (image_search results) open full-size in a new
 // tab. Attachment thumbnails (.msg-images) already have their own handler.
 $("#messages").addEventListener("click", (e) => {
+  // "#convo:<id>" links (e.g. a finished deep-research note) open that
+  // conversation in place instead of navigating.
+  const a = e.target.closest('.bubble a[href^="#convo:"]');
+  if (a) {
+    e.preventDefault();
+    openConversation(a.getAttribute("href").slice(7));
+    return;
+  }
   const img = e.target.closest(".bubble img");
   if (img && img.src && !img.closest(".msg-images")) window.open(img.src, "_blank");
 });
