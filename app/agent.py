@@ -322,6 +322,13 @@ async def run_turn(
         messages.append({"role": "system", "content": RESEARCH_MODE_PREAMBLE})
 
     tool_schemas = registry.schemas()
+    if research_mode:
+        # Structural enforcement of the preamble: with only deep_research on
+        # the menu, the model can't "helpfully" search and answer the question
+        # itself (deepseek-flash did exactly that when merely told not to).
+        tool_schemas = [
+            s for s in tool_schemas if s["function"]["name"] == "deep_research"
+        ]
     extra_body = reasoning_extra_body(provider, think, effort)
     final_answer = ""
     final_answer_id: str | None = None  # stored id of the message holding it

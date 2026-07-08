@@ -53,7 +53,7 @@ Report format (GitHub-flavored Markdown):
 
 # Injected into a web turn when the composer's research toggle is on: the model
 # should scope the question with the user first, then hand off to deep_research.
-RESEARCH_MODE_PREAMBLE = """RESEARCH MODE is enabled for the user's current message. Do NOT answer the question directly and do NOT start searching yourself.
+RESEARCH_MODE_PREAMBLE = """RESEARCH MODE is enabled for the user's current message. Do NOT answer the question — not from search (you have no search tools in this mode) and not from your own knowledge; answering it yourself instead of launching the research is a failure. `deep_research` is your ONLY tool right now, and every research-mode exchange must end with it being called.
 
 - If the request leaves real room for interpretation (scope, timeframe, region, depth, budget, what the answer will be used for), ask the user 2-4 short clarifying questions in one message, then STOP and wait for their reply.
 - Once the scope is clear — from their answers, or immediately if the request is already unambiguous — call `deep_research` with a single self-contained question that folds in everything they told you, and tell them the report is underway.
