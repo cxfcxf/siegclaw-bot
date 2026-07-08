@@ -552,8 +552,9 @@ function convRow(c) {
   title.textContent = full;
   // The narrow sidebar ellipsizes long titles; hovering reveals the full text
   // (native tooltip), itself capped — a pasted-question title doesn't need to
-  // be readable in its entirety to identify the chat.
-  item.title = full.length > 80 ? full.slice(0, 80) + "…" : full;
+  // be readable in its entirety to identify the chat. Same 90-char threshold
+  // as long-link display shortening (LINK_TEXT_MAX).
+  item.title = full.length > LINK_TEXT_MAX ? full.slice(0, LINK_TEXT_MAX) + "…" : full;
 
   const kebab = el("button", "cact kebab");
   kebab.type = "button";
