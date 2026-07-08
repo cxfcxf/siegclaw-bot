@@ -109,7 +109,7 @@ data/                SQLite DBs + uploads (runtime, gitignored; media lives in
 - **Voice messages in DMs** are transcribed locally and answered as normal
   text replies — see *Voice & audio*.
 - **DM slash commands** (hidden from channel autocomplete): `/new`, `/resume`,
-  `/model`, and `/rename` — all argument-free. `/resume` opens a dropdown of
+  `/model`, `/rename`, and `/research` — all argument-free. `/resume` opens a dropdown of
   conversations (with a group filter first when groups exist), `/model` a
   provider dropdown then that provider's models (◀ ▶ paged past Discord's
   25-option cap), and `/rename` pops a native **modal form** to rename the
@@ -171,15 +171,19 @@ older ones are auto-deleted — move a run out of its group to keep it).
 
 ### Deep research
 
-Owner surfaces (web + DMs) have a `deep_research` tool — ask for "deep
-research on …" and the agent launches a **background run**: 4-8 search angles,
+Owner surfaces (web + DMs) have a `deep_research` tool. Arm research mode with
+the **Deep Research** pill in the web composer, or `/research` in a Discord DM
+(a toggle: run it again to switch back to normal chat) — the agent then asks a
+couple of **scoping questions** about your request instead of answering it,
+and once the scope is clear hands off to a **background run**: 6-10 search angles,
 full-page scrapes of the best sources, cross-checking, then a structured
 **cited report**. The run is its own conversation (sidebar group *Research*,
 full tool trail) with a roomier tool budget (`RESEARCH_MAX_ITERATIONS`); when
 it finishes — minutes later — the report is **DM'd to the bot owner** and the
 DM session switches to it, so replying asks follow-ups (same convention as
-cron briefings). Research runs get read-only tools (web/browser/wiki — no
-shell, no wiki writes).
+cron briefings). Research mode auto-disarms once the run launches; asking for
+"deep research on …" in plain words also works without arming. Research runs
+get read-only tools (web/browser/wiki — no shell, no wiki writes).
 
 ### Document attachments
 

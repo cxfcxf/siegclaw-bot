@@ -527,6 +527,14 @@ class _EditChatModal(discord.ui.Modal):
         await inter.response.send_message(f"✏️ **{title}**" + (f" · 📁 {grp}" if grp else ""))
 
 
+# DM users with research mode armed (the /research toggle — the DM counterpart
+# of the web composer's Deep Research pill). While armed, DM turns carry
+# research_mode=True so the model scopes the question first, then hands off to
+# deep_research; the flag auto-disarms when that tool actually fires. In-memory
+# on purpose: it's transient UI state, same as the web toggle.
+_research_armed: set[str] = set()
+
+
 # --------------------------------------------------------------------------- #
 # Client + event wiring
 # --------------------------------------------------------------------------- #
@@ -550,6 +558,25 @@ def create_client(mcp_manager) -> discord.Client:
     @dm_only
     async def new_cmd(interaction: discord.Interaction):
         await _respond(interaction, cmd_new(str(interaction.user.id)), ephemeral=False)
+
+    @tree.command(name="research", description="Toggle deep research mode for this DM")
+    @dm_only
+    async def research_cmd(interaction: discord.Interaction):
+        # Posted for real (not ephemeral): the mode boundary should survive in
+        # the DM history, like /new does.
+        user_id = str(interaction.user.id)
+        if user_id in _research_armed:
+            _research_armed.discard(user_id)
+            await _respond(interaction, "💬 Deep research mode **off** — back to normal chat.", ephemeral=False)
+        else:
+            _research_armed.add(user_id)
+            await _respond(
+                interaction,
+                "🔬 Deep research mode **on** — describe what you want researched. "
+                "I'll ask a couple of scoping questions, then run the full research "
+                "in the background and DM you the report. `/research` again to turn it off.",
+                ephemeral=False,
+            )
 
     @tree.command(name="resume", description="Resume a conversation")
     @dm_only
@@ -791,6 +818,7 @@ def create_client(mcp_manager) -> discord.Client:
                         dm_cid, provider, model, user_text, registry,
                         images=image_paths or None, think=True, effort=effort,
                         audio=voice_url, docs=dm_docs or None,
+                        research_mode=user_id in _research_armed,
                     ):
                         et = event.get("type")
                         if et == "token":
@@ -811,6 +839,10 @@ def create_client(mcp_manager) -> discord.Client:
                                 except Exception as e:
                                     log.debug("Stream edit failed: %s", e)
                         elif et == "tool_call":
+                            if event.get("name") == "deep_research":
+                                # Handoff happened — disarm, same as the web
+                                # pill switching itself off on launch.
+                                _research_armed.discard(user_id)
                             try:
                                 await update_status(event.get("name", ""), json.loads(event.get("arguments") or "{}"))
                             except Exception:
