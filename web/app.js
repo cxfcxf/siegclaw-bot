@@ -770,6 +770,7 @@ const PAGES = {
   search: "#search-page",
   wiki: "#wiki-page",
   jobs: "#jobs-page",
+  status: "#status-page",
 };
 let currentPage = null;  // null = chat view
 
@@ -1012,13 +1013,14 @@ async function speakMessage(wrap, btn) {
   }
 }
 
-function addMessageBubble(role, markdown, images, msgId, model, audio) {
+function addMessageBubble(role, markdown, images, msgId, model, audio, docs) {
   const empty = $("#messages .empty");
   if (empty) empty.remove();
   const wrap = el("div", `msg ${role}`);
   if (msgId) wrap.dataset.msgId = msgId;
   wrap.dataset.rawText = markdown || "";
   if (images && images.length) wrap.dataset.images = JSON.stringify(images);
+  if (docs && docs.length) wrap.dataset.docs = JSON.stringify(docs);
   const r = el("div", "role");
   r.textContent = role === "user" ? "you" : "model";
   // Per-reply provenance: which provider/model produced this answer, shown
@@ -1031,6 +1033,19 @@ function addMessageBubble(role, markdown, images, msgId, model, audio) {
   const bubble = el("div", "bubble");
   bubble.innerHTML = markdown ? renderMarkdown(markdown) : "";
   shortenLongLinks(bubble);
+  // Document attachments render as chips above the question text; each links
+  // to the stored file. The model reads the extracted text server-side.
+  if (docs && docs.length) {
+    const box = el("div", "msg-docs");
+    docs.forEach((d) => {
+      const chip = el("a", "doc-chip");
+      chip.href = d.url;
+      chip.target = "_blank";
+      chip.textContent = "📄 " + (d.name || "document");
+      box.appendChild(chip);
+    });
+    bubble.prepend(box);
+  }
   if (images && images.length) {
     const box = el("div", "msg-images");
     images.forEach((u) => {
@@ -1152,7 +1167,8 @@ async function retryFromMessage(userWrap) {
 
   // Re-send via the composer path (handles the empty-state transition).
   const images = imagesJson ? JSON.parse(imagesJson) : [];
-  await send(text, images);
+  const docs = userWrap.dataset.docs ? JSON.parse(userWrap.dataset.docs) : [];
+  await send(text, images, docs);
 }
 
 // Edit the last message you sent: rewind from it and drop its text + images
@@ -1161,6 +1177,7 @@ async function editFromMessage(userWrap) {
   if (state.streaming) { setStatus("Stop the current turn before editing."); return; }
   const text = userWrap.dataset.rawText || "";
   const imagesJson = userWrap.dataset.images;
+  const docsJson = userWrap.dataset.docs;
 
   if (!(await rewindToMessage(userWrap, "Edit"))) return;
 
@@ -1168,7 +1185,8 @@ async function editFromMessage(userWrap) {
   const input = $("#input");
   input.value = text;
   autosizeInput();
-  state.attachments = (imagesJson ? JSON.parse(imagesJson) : []).map((url) => ({ url }));
+  state.attachments = (imagesJson ? JSON.parse(imagesJson) : []).map((url) => ({ url }))
+    .concat((docsJson ? JSON.parse(docsJson) : []).map((d) => ({ url: d.url, kind: "doc", name: d.name })));
   renderAttachments();
   updateSendVisibility();
 
@@ -1308,7 +1326,7 @@ function renderHistory(messages) {
   for (const m of messages) {
     if (m.role === "user") {
       resetTrace();
-      addMessageBubble("user", m.content || "", m.images, m.id, null, m.audio);
+      addMessageBubble("user", m.content || "", m.images, m.id, null, m.audio, m.docs);
     }
     else if (m.role === "assistant") {
       if (m.reasoning) addThinkingBlock(m.reasoning, false);
@@ -1425,6 +1443,24 @@ $("#file-input").addEventListener("change", async (e) => {
   for (const file of e.target.files) await uploadAttachment(file);
   e.target.value = "";
 });
+// Drag a file anywhere onto the page to attach it (image or document).
+// dragover must be cancelled continuously or the browser navigates to the file.
+document.addEventListener("dragover", (e) => {
+  if (e.dataTransfer && [...e.dataTransfer.types].includes("Files")) {
+    e.preventDefault();
+    document.body.classList.add("dragging");
+  }
+});
+document.addEventListener("dragleave", (e) => {
+  if (!e.relatedTarget) document.body.classList.remove("dragging");
+});
+document.addEventListener("drop", async (e) => {
+  document.body.classList.remove("dragging");
+  if (!e.dataTransfer || !e.dataTransfer.files.length) return;
+  e.preventDefault();
+  for (const file of e.dataTransfer.files) await uploadAttachment(file);
+});
+
 // Paste an image directly into the composer.
 $("#input").addEventListener("paste", async (e) => {
   for (const item of e.clipboardData.items) {
@@ -1435,17 +1471,31 @@ $("#input").addEventListener("paste", async (e) => {
   }
 });
 
+// Document formats the composer accepts alongside images (must mirror the
+// server's docs.DOC_EXT — the server is the real gate).
+const DOC_EXT_RE = /\.(pdf|txt|md|markdown|rst|csv|tsv|json|jsonl|log|yaml|yml|toml|ini|xml|html|py|js|ts|sh|sql|c|h|cpp|go|rs)$/i;
+
 async function uploadAttachment(file) {
-  if (!file || !file.type.startsWith("image/")) return;
-  const att = { url: null, uploading: true };
+  if (!file) return;
+  const isImage = file.type.startsWith("image/");
+  const isDoc = !isImage && DOC_EXT_RE.test(file.name || "");
+  if (!isImage && !isDoc) { setStatus(`Can't attach '${file.name}' — images and text/PDF documents only.`); return; }
+  const att = { url: null, uploading: true, kind: isDoc ? "doc" : "image", name: file.name };
   state.attachments.push(att);
   renderAttachments();
   try {
     const fd = new FormData();
     fd.append("file", file);
-    const res = await fetch("/api/upload", { method: "POST", body: fd }).then((r) => r.json());
-    if (res.url) { att.url = res.url; att.uploading = false; }
-    else { state.attachments = state.attachments.filter((a) => a !== att); setStatus("Upload failed."); }
+    const res = await fetch("/api/upload", { method: "POST", body: fd });
+    const data = await res.json();
+    if (res.ok && data.url) {
+      att.url = data.url;
+      att.uploading = false;
+      if (data.name) att.name = data.name;
+    } else {
+      state.attachments = state.attachments.filter((a) => a !== att);
+      setStatus(data.detail || "Upload failed.");
+    }
   } catch (err) {
     state.attachments = state.attachments.filter((a) => a !== att);
     setStatus("Upload error: " + err.message);
@@ -1457,13 +1507,21 @@ function renderAttachments() {
   const box = $("#attachments");
   box.innerHTML = "";
   state.attachments.forEach((att) => {
-    const thumb = el("div", "thumb" + (att.uploading ? " uploading" : ""));
-    const im = el("img");
-    im.src = att.url || "";
     const rm = el("button", "rm"); rm.type = "button"; rm.textContent = "✕";
     rm.onclick = () => { state.attachments = state.attachments.filter((a) => a !== att); renderAttachments(); };
-    thumb.append(im, rm);
-    box.appendChild(thumb);
+    if (att.kind === "doc") {
+      const chip = el("div", "thumb doc" + (att.uploading ? " uploading" : ""));
+      const label = el("span", "doc-name");
+      label.textContent = "📄 " + (att.name || "document");
+      chip.append(label, rm);
+      box.appendChild(chip);
+    } else {
+      const thumb = el("div", "thumb" + (att.uploading ? " uploading" : ""));
+      const im = el("img");
+      im.src = att.url || "";
+      thumb.append(im, rm);
+      box.appendChild(thumb);
+    }
   });
   updateSendVisibility();
 }
@@ -1591,24 +1649,29 @@ function updateSendVisibility() {
   $("#send").hidden = !show;
 }
 
-async function send(providedText, providedImages) {
+async function send(providedText, providedImages, providedDocs) {
   if (state.streaming) return;
-  // Retry passes an explicit text/images; otherwise read from the composer.
+  // Retry passes an explicit text/images/docs; otherwise read from the composer.
   const isRetry = providedText !== undefined;
   if (!isRetry && state.attachments.some((a) => a.uploading)) {
-    setStatus("Wait for image upload to finish…"); return;
+    setStatus("Wait for the upload to finish…"); return;
   }
   const text = (isRetry ? providedText : $("#input").value).trim();
   const provider = $("#provider").value;
   const model = $("#model").value;
-  const images = isRetry ? (providedImages || []) : state.attachments.map((a) => a.url).filter(Boolean);
-  if (!text && !images.length) return;
+  const images = isRetry
+    ? (providedImages || [])
+    : state.attachments.filter((a) => a.kind !== "doc").map((a) => a.url).filter(Boolean);
+  const docs = isRetry
+    ? (providedDocs || [])
+    : state.attachments.filter((a) => a.kind === "doc" && a.url).map((a) => ({ url: a.url, name: a.name }));
+  if (!text && !images.length && !docs.length) return;
   if (!provider || !model) { setStatus("Pick a provider and model first."); setModelMenu(true); return; }
   // What actually answers this turn — updated if the server falls back.
   let turnModel = `${provider}/${model}`;
 
   state.stick = true;  // a turn you just started should follow the new output
-  addMessageBubble("user", text, images);
+  addMessageBubble("user", text, images, null, null, null, docs);
   if (!isRetry) {
     $("#input").value = "";
     autosizeInput();
@@ -1700,7 +1763,7 @@ async function send(providedText, providedImages) {
     const resp = await fetch("/api/chat", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ conversation_id: state.conversationId, provider, model, message: text, images: images.length ? images : null, think: state.think, effort: state.think ? (state.effort || null) : null }),
+      body: JSON.stringify({ conversation_id: state.conversationId, provider, model, message: text, images: images.length ? images : null, docs: docs.length ? docs : null, think: state.think, effort: state.think ? (state.effort || null) : null }),
       signal: controller.signal,
     });
     if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
@@ -2142,6 +2205,115 @@ $("#show-jobs").onclick = async () => {
   resetJobForm();
   await loadJobChannels();
   await renderJobs();
+};
+
+// --- Status page --------------------------------------------------------------
+const humanBytes = (n) => {
+  if (n < 1024) return n + " B";
+  const units = ["KB", "MB", "GB"];
+  let u = -1;
+  do { n /= 1024; u++; } while (n >= 1024 && u < units.length - 1);
+  return n.toFixed(n >= 10 ? 0 : 1) + " " + units[u];
+};
+
+function statusSection(title) {
+  const sec = el("div", "status-section");
+  const h = el("h3");
+  h.textContent = title;
+  sec.appendChild(h);
+  return sec;
+}
+
+// A label/value rows table (plain divs; keeps markup out of innerHTML).
+function statusRows(pairs) {
+  const box = el("div", "status-rows");
+  pairs.forEach(([label, value, cls]) => {
+    const row = el("div", "status-row");
+    const l = el("span", "slabel"); l.textContent = label;
+    const v = el("span", "svalue" + (cls ? " " + cls : "")); v.textContent = value;
+    row.append(l, v);
+    box.appendChild(row);
+  });
+  return box;
+}
+
+function renderStatus(data) {
+  const body = $("#status-body");
+  body.innerHTML = "";
+
+  const prov = statusSection("Providers");
+  prov.appendChild(statusRows(data.providers.map((p) => [
+    `${p.name} · ${p.models} model${p.models === 1 ? "" : "s"}`,
+    p.serving ? "● serving" : "○ down",
+    p.serving ? "ok" : "bad",
+  ])));
+  body.appendChild(prov);
+
+  const search = statusSection("Search API quota");
+  if (!data.search) {
+    search.appendChild(statusRows([["searchmw", "not configured (IMAGE_SEARCH_URL)", ""]]));
+  } else if (data.search.error) {
+    search.appendChild(statusRows([["searchmw", data.search.error, "bad"]]));
+  } else {
+    const rows = (data.search.slots || []).map((s) => {
+      const q = s.quota || {};
+      let val = "?";
+      if (q.limit) {
+        const left = Math.max(0, q.limit - (q.used || 0));
+        val = `${left} left of ${q.limit}` + (q.source === "local-count" ? " (self-counted)" : "");
+      } else if (q.used != null) {
+        val = `${q.used} used`;
+      }
+      if (s.cooling_down) val += " · ⏸ cooling down";
+      return [s.slot, val, s.cooling_down ? "warn" : ""];
+    });
+    const cache = data.search.cache;
+    if (cache && cache.hit_rate != null) {
+      rows.push(["query cache", `${Math.round(cache.hit_rate * 100)}% hit rate (${cache.size} cached)`, ""]);
+    }
+    search.appendChild(statusRows(rows));
+  }
+  body.appendChild(search);
+
+  const usage = statusSection("Model usage (replies)");
+  const models = (data.stats.models || []).slice(0, 12);
+  usage.appendChild(statusRows(
+    models.length
+      ? models.map((m) => [m.model, `${m.replies_7d} this week · ${m.replies} all-time`, ""])
+      : [["—", "no replies recorded yet", ""]]
+  ));
+  body.appendChild(usage);
+
+  const jobs = statusSection("Scheduled jobs");
+  const jrows = (data.jobs || []).map((j) => [
+    `${j.enabled ? "●" : "○"} ${j.name}`,
+    `${j.cron_desc}${j.last_status ? " · last: " + j.last_status : ""}`,
+    j.last_status === "error" ? "bad" : "",
+  ]);
+  jobs.appendChild(statusRows(jrows.length ? jrows : [["—", "none", ""]]));
+  body.appendChild(jobs);
+
+  const sys = statusSection("System");
+  sys.appendChild(statusRows([
+    ["Discord", data.discord.connected ? `● connected as ${data.discord.user}` : "○ not connected",
+     data.discord.connected ? "ok" : "bad"],
+    ["Conversations", `${data.stats.conversations} chats · ${data.stats.messages} messages`, ""],
+    ["Database", humanBytes(data.storage.db_bytes), ""],
+    ["Uploads", humanBytes(data.storage.uploads_bytes), ""],
+  ]));
+  body.appendChild(sys);
+}
+
+$("#show-status").onclick = async () => {
+  showPage("status");
+  $("#status-body").innerHTML = '<p class="hint">Loading…</p>';
+  try {
+    const res = await fetch("/api/status");
+    renderStatus(await res.json());
+  } catch (err) {
+    $("#status-body").innerHTML = "";
+    $("#status-body").appendChild(statusRows([["error", err.message, "bad"]]));
+  }
 };
 
 // --- Boot -------------------------------------------------------------------

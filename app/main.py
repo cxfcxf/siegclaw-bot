@@ -28,12 +28,15 @@ from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import storage, stt, tts, wiki
+from . import docs, research, storage, stt, tts, wiki
 from .agent import build_registry, resolve_for_turn, run_turn
 from .config import (
+    DATA_DIR,
     DISCORD_BOT_TOKEN,
+    IMAGE_SEARCH_URL,
     UPLOADS_DIR,
     detect_providers,
+    provider_serving,
     resolve_default_model,
 )
 from .cronutil import describe as cron_describe, is_valid as cron_is_valid, next_run_after
@@ -56,6 +59,8 @@ _runtime: dict = {"discord_client": None, "scheduler": None}
 async def lifespan(app: FastAPI):
     storage.init_db()
     wiki.ensure_wiki()
+    # Deep research delivers finished reports to the owner's Discord DM.
+    research.configure(lambda: _runtime["discord_client"])
     status = await mcp_manager.start()
     if status:
         print("[mcp] " + " | ".join(status))
@@ -109,6 +114,7 @@ class ChatRequest(BaseModel):
     model: str
     message: str
     images: list[str] | None = None  # '/uploads/<file>' refs from /api/upload
+    docs: list[dict] | None = None   # [{"url", "name"}] document attachments
     think: bool = True               # toggle model reasoning per request
     effort: str | None = None        # reasoning effort for providers that support it
 
@@ -395,16 +401,89 @@ async def api_discord_channels():
     return {"connected": True, "channels": chans, "owner": owner}
 
 
-# --- Image upload ----------------------------------------------------------
+# --- Status page -------------------------------------------------------------
+def _dir_size(path: Path) -> int:
+    return sum(f.stat().st_size for f in path.rglob("*") if f.is_file())
+
+
+@app.get("/api/status")
+async def api_status():
+    """Everything the status page shows, in one round trip: provider health,
+    search-API quota (proxied from searchmw's /usage so the browser doesn't
+    need LAN access to :3003), model usage stats, storage footprint, Discord
+    and scheduler state."""
+    import httpx
+
+    search = None
+    if IMAGE_SEARCH_URL:
+        try:
+            async with httpx.AsyncClient() as hc:
+                r = await hc.get(f"{IMAGE_SEARCH_URL}/usage", timeout=4)
+                search = r.json()
+        except Exception as e:
+            search = {"error": f"{type(e).__name__}: {e}"}
+
+    def providers_snapshot():
+        return [
+            {
+                "id": p.id, "name": p.name, "models": len(p.models),
+                "serving": provider_serving(p.id),
+            }
+            for p in detect_providers()
+        ]
+
+    providers, stats, db_size, uploads_size = await asyncio.gather(
+        asyncio.to_thread(providers_snapshot),
+        asyncio.to_thread(storage.usage_stats),
+        asyncio.to_thread(lambda: (DATA_DIR / "conversations.db").stat().st_size),
+        asyncio.to_thread(_dir_size, UPLOADS_DIR),
+    )
+
+    client = _runtime.get("discord_client")
+    return {
+        "providers": providers,
+        "search": search,
+        "stats": stats,
+        "storage": {"db_bytes": db_size, "uploads_bytes": uploads_size},
+        "discord": {
+            "connected": bool(client is not None and client.is_ready()),
+            "user": str(client.user) if client is not None and client.user else None,
+        },
+        "jobs": [_job_view(j) for j in storage.list_jobs()],
+    }
+
+
+# --- Attachment upload (images + documents) ---------------------------------
 @app.post("/api/upload")
 async def api_upload(file: UploadFile):
-    ext = Path(file.filename or "").suffix.lower()
-    if ext not in ALLOWED_IMAGE_EXT:
-        raise HTTPException(400, f"Unsupported image type '{ext}'.")
+    """Save a composer attachment flat in UPLOADS_DIR (run_turn adopts it into
+    the conversation's directory at send time). Images pass through untouched;
+    documents (PDF/text) are text-extracted eagerly here — a file we can't read
+    is rejected now, not discovered broken mid-turn — and the extraction is
+    cached in a sidecar for every later turn."""
+    original = file.filename or ""
+    ext = Path(original).suffix.lower()
+    if ext in ALLOWED_IMAGE_EXT:
+        kind = "image"
+    elif ext in docs.DOC_EXT:
+        kind = "doc"
+    else:
+        raise HTTPException(400, f"Unsupported file type '{ext}'.")
     name = f"{uuid.uuid4().hex}{ext}"
     dest = UPLOADS_DIR / name
     dest.write_bytes(await file.read())
-    return {"url": f"/uploads/{name}"}
+    if kind == "doc":
+        try:
+            text = await asyncio.to_thread(docs.text_for, dest)
+        except Exception as exc:
+            dest.unlink(missing_ok=True)
+            raise HTTPException(400, f"Could not read '{original}': {type(exc).__name__}: {exc}")
+        if not text.strip():
+            dest.unlink(missing_ok=True)
+            dest.with_name(dest.name + ".txt").unlink(missing_ok=True)
+            raise HTTPException(400, f"'{original}' contains no extractable text (scanned PDF?).")
+        return {"url": f"/uploads/{name}", "kind": "doc", "name": original, "chars": len(text)}
+    return {"url": f"/uploads/{name}", "kind": "image"}
 
 
 # --- Speech-to-text (composer mic button) -----------------------------------
@@ -446,7 +525,11 @@ async def api_tts(message_id: str):
 async def api_chat(body: ChatRequest):
     cid = body.conversation_id
     if not cid or not storage.get_conversation(cid):
-        title = (body.message[:60] or ("📷 Image" if body.images else "New chat"))
+        title = (
+            body.message[:60]
+            or (f"📄 {body.docs[0].get('name', 'Document')}"[:60] if body.docs else "")
+            or ("📷 Image" if body.images else "New chat")
+        )
         cid = storage.create_conversation(body.provider, body.model, title)
 
     registry = build_registry(mcp_manager.tools)
@@ -463,6 +546,7 @@ async def api_chat(body: ChatRequest):
         async for event in run_turn(
             cid, provider, model, body.message, registry,
             images=body.images, think=body.think, effort=effort,
+            docs=body.docs,
         ):
             yield _sse(event)
 

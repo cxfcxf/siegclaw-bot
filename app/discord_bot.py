@@ -30,6 +30,7 @@ import discord
 from discord import app_commands
 
 from . import storage, stt, wiki
+from . import docs as docs_mod
 from .agent import (
     build_registry,
     conversation_time_block,
@@ -117,6 +118,7 @@ _TOOL_STATUS = {
     "fetch_user_messages": lambda a: f"📜 fetching messages from *{a.get('user_name', '')}*",
     "fetch_channel_history": lambda a: "📜 reading older channel history",
     "browser_use": lambda a: f"🌐 browser: {a.get('action', '')} {a.get('url', '') or a.get('query', '')}".strip(),
+    "deep_research": lambda a: f"🔬 launching deep research: *{a.get('question', '')[:120]}*",
     "schedule_job": lambda a: f"⏰ scheduling: {a.get('name', 'job')}",
     "list_scheduled_jobs": lambda a: "⏰ listing scheduled jobs",
     "cancel_scheduled_job": lambda a: "🗑️ cancelling scheduled job",
@@ -395,6 +397,20 @@ async def send_chunked(destination: discord.abc.Messageable, text: str) -> None:
     triggering message. Used by the scheduler to deliver job results."""
     for chunk in _chunk_message(text):
         await destination.send(chunk)
+
+
+async def owner_or_user(client: discord.Client, target_id: str = "owner"):
+    """Resolve a DM recipient: the bot's application owner for the 'owner'
+    sentinel (or an empty id), otherwise a specific user id. Shared by the
+    scheduler and background research delivery."""
+    if not target_id or target_id == "owner":
+        info = await client.application_info()
+        oid = getattr(info.owner, "id", None)
+        if oid is None:
+            return None
+        return client.get_user(oid) or await client.fetch_user(oid)
+    tid = int(target_id)
+    return client.get_user(tid) or await client.fetch_user(tid)
 
 
 # --------------------------------------------------------------------------- #
@@ -736,8 +752,16 @@ def create_client(mcp_manager) -> discord.Client:
                             return
                         user_text = f"{user_text}\n{transcript}".strip() if user_text else transcript
 
+                    # Document attachments (PDF/text): saved + text-extracted,
+                    # then injected into the prompt by run_turn. A DM can carry
+                    # a doc, a question, and even a voice clip in one message.
+                    dm_docs = await _save_dm_docs(message)
+                    if dm_docs and not user_text:
+                        user_text = f"(user attached {', '.join(d['name'] for d in dm_docs)})"
+
                     if dm_cid is None:
-                        dm_cid = storage.create_conversation(provider, model, user_text[:60] or "New chat")
+                        title = user_text[:60] or (f"📄 {dm_docs[0]['name']}"[:60] if dm_docs else "New chat")
+                        dm_cid = storage.create_conversation(provider, model, title)
                         storage.dm_set_active_cid(user_id, dm_cid)
                     elif user_text:
                         convo = storage.get_conversation(dm_cid)
@@ -755,7 +779,7 @@ def create_client(mcp_manager) -> discord.Client:
                     async for event in run_turn(
                         dm_cid, provider, model, user_text, registry,
                         images=image_paths or None, think=True, effort=effort,
-                        audio=voice_url,
+                        audio=voice_url, docs=dm_docs or None,
                     ):
                         et = event.get("type")
                         if et == "token":
@@ -878,6 +902,35 @@ def _audio_attachment(message: discord.Message) -> discord.Attachment | None:
         if Path(att.filename).suffix.lower() in _AUDIO_EXT:
             return att
     return None
+
+
+async def _save_dm_docs(message: discord.Message) -> list[dict]:
+    """Save document attachments (PDF/text) from a DM and return run_turn-shaped
+    docs [{"url", "name"}]. Extraction is warmed here (sidecar cache) so a
+    broken file surfaces as a note instead of failing mid-turn; unreadable
+    attachments are skipped with their name flagged in the returned list."""
+    out: list[dict] = []
+    for att in message.attachments:
+        if not docs_mod.is_doc(att.filename):
+            continue
+        if (att.content_type or "").startswith("audio/"):
+            continue  # voice clips take the transcription path
+        ext = Path(att.filename).suffix.lower()
+        name = f"doc-{uuid.uuid4().hex}{ext}"
+        dest = UPLOADS_DIR / name
+        dest.write_bytes(await att.read())
+        try:
+            text = await asyncio.to_thread(docs_mod.text_for, dest)
+        except Exception as e:
+            log.warning("DM doc %s unreadable: %s", att.filename, e)
+            dest.unlink(missing_ok=True)
+            continue
+        if not text.strip():
+            dest.unlink(missing_ok=True)
+            dest.with_name(dest.name + ".txt").unlink(missing_ok=True)
+            continue
+        out.append({"url": f"/uploads/{name}", "name": att.filename})
+    return out
 
 
 async def _save_dm_audio(att: discord.Attachment) -> str:

@@ -20,7 +20,7 @@ from . import storage
 from .agent import run_turn
 from .config import CRON_KEEP_RUNS, HARNESS_TZ, resolve_default_model
 from .cronutil import next_run_after
-from .discord_bot import build_discord_registry, send_chunked
+from .discord_bot import build_discord_registry, owner_or_user, send_chunked
 
 log = logging.getLogger("siegclaw.scheduler")
 
@@ -161,7 +161,7 @@ class Scheduler:
         body = f"**⏰ {job['name']}**\n{text}"
         try:
             if job["target_type"] == "dm":
-                user = await self._owner_or_user(client, job["target_id"])
+                user = await owner_or_user(client, job["target_id"])
                 if user is None:
                     return False, "could not resolve DM recipient (bot owner)"
                 dest: discord.abc.Messageable = user.dm_channel or await user.create_dm()
@@ -179,15 +179,3 @@ class Scheduler:
             log.warning("job %s delivery failed: %s", job["id"], e)
             return False, f"{type(e).__name__}: {e}"
 
-    async def _owner_or_user(self, client: discord.Client, target_id: str):
-        """Resolve a DM recipient: the bot's application owner for the 'owner'
-        sentinel (or an empty id), otherwise a specific user id."""
-        if not target_id or target_id == "owner":
-            info = await client.application_info()
-            owner = info.owner
-            oid = getattr(owner, "id", None)
-            if oid is None:
-                return None
-            return client.get_user(oid) or await client.fetch_user(oid)
-        tid = int(target_id)
-        return client.get_user(tid) or await client.fetch_user(tid)

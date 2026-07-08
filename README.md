@@ -45,6 +45,8 @@ app/
   scheduler.py       cron job runner (headless agent turn → Discord delivery)
   cronutil.py        cron-expression parsing / next-run (in HARNESS_TZ)
   wiki.py            the LLM-Wiki: page storage, prompt index, read/search/write tools
+  research.py        deep_research tool: background cited-report runs
+  docs.py            document attachments: PDF/text extraction for chat uploads
   storage.py         SQLite conversations (web UI + Discord DMs share one pool)
   mcp_client.py      connects mcp.json servers (stdio or HTTP)
   tools/             registry, builtin (fs/bash), web (Firecrawl), browser (CamoFox), clock
@@ -167,6 +169,30 @@ just replying in the DM asks follow-ups against the briefing (`/resume`
 switches back). Each job keeps its newest `CRON_KEEP_RUNS` runs (default 30;
 older ones are auto-deleted — move a run out of its group to keep it).
 
+### Deep research
+
+Owner surfaces (web + DMs) have a `deep_research` tool — ask for "deep
+research on …" and the agent launches a **background run**: 4-8 search angles,
+full-page scrapes of the best sources, cross-checking, then a structured
+**cited report**. The run is its own conversation (sidebar group *Research*,
+full tool trail) with a roomier tool budget (`RESEARCH_MAX_ITERATIONS`); when
+it finishes — minutes later — the report is **DM'd to the bot owner** and the
+DM session switches to it, so replying asks follow-ups (same convention as
+cron briefings). Research runs get read-only tools (web/browser/wiki — no
+shell, no wiki writes).
+
+### Document attachments
+
+Drop a **PDF or text file** (md/csv/json/code/…) into the web composer
+(drag-drop anywhere, attach button, or paste) or a **Discord DM** and ask
+about it. Text is extracted once at upload (pypdf for PDFs; rejected upfront
+if unreadable — e.g. scanned image PDFs) and cached in a sidecar next to the
+stored file; each turn injects it into the prompt inside
+`[Attached file: …]` markers, capped at `DOC_MAX_CHARS` per document (~400K
+chars ≈ 100-150K tokens — sized for big-context models). The file itself
+shows as a chip on the message (click to open) and lives in the
+conversation's upload dir like any media.
+
 ### Tools & MCP
 
 - **Builtin**: `read_file`, `write_file`, `edit_file`, `list_dir`, `bash`
@@ -189,9 +215,10 @@ top-right corner).
 
 - **Composer**: provider/model **chip** opening a popover (provider select +
   searchable model combobox, last choice remembered); **thinking toggle** +
-  effort select; **image upload** (attach or paste — needs a vision model);
-  **mic** voice input (see *Voice & audio*); auto-expanding input with a
-  fullscreen toggle; a **context meter** (used vs. the model's max context).
+  effort select; **attachments** — images (attach/paste/drag) and documents
+  (see *Document attachments*); **mic** voice input (see *Voice & audio*);
+  auto-expanding input with a fullscreen toggle; a **context meter** (used
+  vs. the model's max context).
 - **Responses**: collapsible **process trace** (reasoning + nested tool
   calls, live activity light, timers); **per-response metrics** (wall time,
   thinking time, tok/s); **stop** mid-turn; the per-reply model tag; a hover
@@ -204,7 +231,9 @@ top-right corner).
   group returns its chats to the root list (nothing else deleted). Full-page
   **search** (title matches + FTS5 full-text over message bodies, highlighted
   snippets). Tabs for the **wiki** (browse/edit pages, `home` = the system
-  prompt) and **cron** (scheduled jobs).
+  prompt), **cron** (scheduled jobs), and **status** (provider health,
+  search-API quota via searchmw, per-model reply counts, storage footprint,
+  Discord/scheduler state).
 
 ### Voice & audio
 
@@ -237,6 +266,8 @@ All via `.env` (see `.env.example`) unless noted.
 | `DISCORD_STREAM_DMS` | Edit-in-place streaming for DM replies (default off) |
 | `STT_MODEL` | faster-whisper model for the mic button + DM voice messages (tiny/base/small/medium, default base) |
 | `TTS_VOICE` / `TTS_VOICE_ZH` / `TTS_MAX_CHARS` | edge-tts voices for the read-aloud button — default and Chinese, picked per reply by language — and clip length cap |
+| `RESEARCH_MAX_ITERATIONS` | Tool-loop budget for one deep-research run (default 40) |
+| `DOC_MAX_CHARS` | Per-document cap on extracted text injected into the prompt (default 400K) |
 | `HARNESS_TZ` | IANA timezone for the frozen prompt date and cron |
 | `CRON_KEEP_RUNS` | Newest cron-run conversations kept per job (default 30) |
 | `WORKSPACE_DIR` | Working directory for the bash/file tools |

@@ -41,6 +41,10 @@
           <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>
           Cron
         </button>
+        <button id="show-status" class="nav-btn" type="button" data-page="status" title="System status — providers, search quota, usage">
+          <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12h4l3-8 4 16 3-8h4"/></svg>
+          Status
+        </button>
       </div>
       <div id="conversations"></div>
     </aside>
@@ -134,6 +138,14 @@
         </div>
       </div>
 
+      <div id="status-page" class="page" hidden>
+        <div class="page-inner">
+          <h2>Status</h2>
+          <p class="hint">Provider health, search-API quota, model usage, and storage. Snapshot from when the page was opened — reopen to refresh.</p>
+          <div id="status-body"></div>
+        </div>
+      </div>
+
       <div id="chat">
         <div id="messages"></div>
 
@@ -189,7 +201,7 @@
             </div>
           </div>
           <div id="ctx-meter" class="ctx-meter"></div>
-          <input id="file-input" type="file" accept="image/*" multiple hidden />
+          <input id="file-input" type="file" accept="image/*,.pdf,.txt,.md,.markdown,.rst,.csv,.tsv,.json,.jsonl,.log,.yaml,.yml,.toml,.ini,.xml,.html,.py,.js,.ts,.sh,.sql,.c,.h,.cpp,.go,.rs" multiple hidden />
         </form>
       </div>
     </main>

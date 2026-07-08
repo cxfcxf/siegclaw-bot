@@ -82,6 +82,10 @@ def init_db() -> None:
         # user's voice recording on user rows, the TTS reading on assistant rows.
         if "audio" not in cols:
             conn.execute("ALTER TABLE messages ADD COLUMN audio TEXT")
+        # docs: JSON [{"url", "name"}] of document attachments (PDF/text) on a
+        # user message; their extracted text is injected at prompt-build time.
+        if "docs" not in cols:
+            conn.execute("ALTER TABLE messages ADD COLUMN docs TEXT")
         ccols = [r["name"] for r in conn.execute("PRAGMA table_info(conversations)").fetchall()]
         if "prompt_tokens" not in ccols:
             conn.execute("ALTER TABLE conversations ADD COLUMN prompt_tokens INTEGER")
@@ -393,12 +397,13 @@ def add_message(
     reasoning: str | None = None,
     model: str | None = None,
     audio: str | None = None,
+    docs: list[dict] | None = None,
 ) -> str:
     msg_id = uuid.uuid4().hex
     with _conn() as conn:
         conn.execute(
-            "INSERT INTO messages (id, conversation_id, role, content, tool_calls, tool_call_id, name, images, reasoning, model, audio, created_at)"
-            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+            "INSERT INTO messages (id, conversation_id, role, content, tool_calls, tool_call_id, name, images, reasoning, model, audio, docs, created_at)"
+            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (
                 msg_id,
                 cid,
@@ -411,6 +416,7 @@ def add_message(
                 reasoning or None,
                 model,
                 audio,
+                json.dumps(docs) if docs else None,
                 time.time(),
             ),
         )
@@ -471,7 +477,7 @@ def get_messages(cid: str) -> list[dict[str, Any]]:
     """Return messages in OpenAI chat format, oldest first."""
     with _conn() as conn:
         rows = conn.execute(
-            "SELECT id, role, content, tool_calls, tool_call_id, name, images, reasoning, model, audio FROM messages"
+            "SELECT id, role, content, tool_calls, tool_call_id, name, images, reasoning, model, audio, docs FROM messages"
             " WHERE conversation_id=? ORDER BY created_at ASC",
             (cid,),
         ).fetchall()
@@ -498,8 +504,34 @@ def get_messages(cid: str) -> list[dict[str, Any]]:
         if r["audio"]:
             # Non-API field; voice clip (user) or TTS reading (assistant).
             msg["audio"] = r["audio"]
+        if r["docs"]:
+            # Non-API field; the agent injects the extracted text at prompt time.
+            msg["docs"] = json.loads(r["docs"])
         messages.append(msg)
     return messages
+
+
+def usage_stats() -> dict[str, Any]:
+    """Aggregate numbers for the status page: table sizes and which models have
+    been answering (messages.model provenance), all-time and last 7 days."""
+    week_ago = time.time() - 7 * 86400
+    with _conn() as conn:
+        conversations = conn.execute("SELECT COUNT(*) FROM conversations").fetchone()[0]
+        messages = conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
+        by_model = conn.execute(
+            "SELECT model, COUNT(*) AS total, SUM(created_at >= ?) AS last7"
+            " FROM messages WHERE role='assistant' AND model IS NOT NULL"
+            " GROUP BY model ORDER BY total DESC",
+            (week_ago,),
+        ).fetchall()
+    return {
+        "conversations": conversations,
+        "messages": messages,
+        "models": [
+            {"model": r["model"], "replies": r["total"], "replies_7d": r["last7"] or 0}
+            for r in by_model
+        ],
+    }
 
 
 # --- Full-text search --------------------------------------------------------- #

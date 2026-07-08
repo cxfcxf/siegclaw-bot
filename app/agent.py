@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any, AsyncGenerator
 from zoneinfo import ZoneInfo
 
-from . import storage, wiki
+from . import docs, storage, wiki
 from .config import (
     HARNESS_TZ,
     MAX_AGENT_ITERATIONS,
@@ -30,6 +30,7 @@ from .config import (
     resolve_default_model,
 )
 from .providers import client_for
+from .research import research_tools
 from .tools.browser import browser_tools
 from .tools.builtin import builtin_tools
 from .tools.clock import clock_tools
@@ -59,6 +60,7 @@ def build_registry(mcp_tools: list | None = None) -> Registry:
     registry.extend(browser_tools())
     registry.extend(wiki.wiki_tools(writable=True))
     registry.extend(job_tools())
+    registry.extend(research_tools())
     if mcp_tools:
         registry.extend(mcp_tools)
     return registry
@@ -206,6 +208,10 @@ def _adopt_upload(conversation_id: str, url: str) -> str:
     dest_dir = UPLOADS_DIR / conversation_id
     dest_dir.mkdir(exist_ok=True)
     src.rename(dest_dir / m.group(1))
+    # A document's extraction sidecar ('<file>.txt') travels with it.
+    side = src.with_name(src.name + ".txt")
+    if side.is_file():
+        side.rename(dest_dir / side.name)
     return f"/uploads/{conversation_id}/{m.group(1)}"
 
 
@@ -213,18 +219,31 @@ def _to_api_messages(history: list[dict[str, Any]], provider: str | None = None)
     """Convert stored messages into OpenAI-ready ones, expanding any attached
     images into multimodal `content` parts and dropping the non-API `images` key.
 
+    Document attachments (`docs`) are expanded into their extracted text,
+    prepended to the user's message inside [Attached file: ...] markers — the
+    model reads the document as part of the question, every turn.
+
     For providers that require the chain-of-thought to be replayed on tool-call
     turns (DeepSeek, Xiaomi MiMo), the stored `reasoning` is emitted back as
     `reasoning_content`; for everyone else it's dropped."""
-    drop = ("images", "reasoning", "model", "audio")  # non-API display fields
+    drop = ("images", "reasoning", "model", "audio", "docs")  # non-API display fields
     keep_reasoning = needs_reasoning_replay(provider)
     out: list[dict[str, Any]] = []
     for msg in history:
         images = msg.get("images")
         base = {k: v for k, v in msg.items() if k not in drop}
+        if msg.get("docs"):
+            blocks = []
+            for d in msg["docs"]:
+                path = _upload_path(d.get("url", ""))
+                if path is not None and path.exists():
+                    blocks.append(docs.prompt_block(d.get("name") or path.name, path))
+                else:
+                    blocks.append(f"[Attached file {d.get('name', '?')!r} is no longer available]")
+            base["content"] = "\n\n".join(blocks + [msg.get("content") or ""]).strip()
         if images:
             parts: list[dict[str, Any]] = []
-            text = msg.get("content")
+            text = base.get("content")  # includes any expanded doc blocks
             if text:
                 parts.append({"type": "text", "text": text})
             for url in images:
@@ -249,18 +268,28 @@ async def run_turn(
     effort: str | None = None,
     preamble: str | None = None,
     audio: str | None = None,
+    docs: list[dict] | None = None,
+    max_iterations: int | None = None,  # tool-loop budget; None = the default cap
 ) -> AsyncGenerator[dict[str, Any], None]:
     client = client_for(provider)
     replay_reasoning = needs_reasoning_replay(provider)
 
     # `audio` is the user's voice clip ('/uploads/...'), stored on the user row
     # for playback. The model itself only ever sees the transcript.
+    # `docs` are document attachments [{"url", "name"}]; their extracted text is
+    # injected at prompt-build time (_to_api_messages), not stored in content.
     if images:
         images = [_adopt_upload(conversation_id, u) for u in images]
     if audio:
         audio = _adopt_upload(conversation_id, audio)
+    if docs:
+        docs = [
+            {**d, "url": _adopt_upload(conversation_id, d["url"])}
+            for d in docs if d.get("url")
+        ] or None
     user_msg_id = storage.add_message(
-        conversation_id, "user", content=user_message, images=images, audio=audio
+        conversation_id, "user", content=user_message, images=images, audio=audio,
+        docs=docs,
     )
     storage.touch_conversation(conversation_id, provider, model)
     # Tell the client the stored id of this user message so the UI can offer
@@ -289,11 +318,12 @@ async def run_turn(
     total_tokens = 0  # completion tokens across all model calls this turn (for tok/s)
     last_prompt_tokens = 0  # prompt tokens of the final model call (context usage)
 
-    for _i in range(MAX_AGENT_ITERATIONS):
+    iteration_cap = max_iterations or MAX_AGENT_ITERATIONS
+    for _i in range(iteration_cap):
         # On the final allowed step, don't let the loop dead-end with no answer:
         # tell the model it's out of tool budget and strip the tools so it must
         # return its best prose answer from what it already gathered.
-        final_pass = _i == MAX_AGENT_ITERATIONS - 1
+        final_pass = _i == iteration_cap - 1
         if final_pass:
             messages.append({
                 "role": "user",
@@ -426,4 +456,4 @@ async def run_turn(
         }
         return
 
-    yield {"type": "error", "message": f"Stopped after {MAX_AGENT_ITERATIONS} tool iterations."}
+    yield {"type": "error", "message": f"Stopped after {iteration_cap} tool iterations."}
