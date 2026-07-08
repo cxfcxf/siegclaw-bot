@@ -898,6 +898,26 @@ function renderMarkdown(text) {
   return marked.parse(convertTabsToTables(embedBareImageUrls(text)));
 }
 
+// Bare pasted URLs render with the whole URL as the link text; a 200-char eBay
+// link is noise. Shorten the *display text* of such links (href untouched, so
+// the click still goes to the real place; full URL on hover via title). Only
+// links whose text is the URL itself are touched — authored link text stays.
+// ~90 chars is one line of bubble at this font size: a URL that fits on one
+// line is left whole, and anything shortened saves at least a third of its
+// length (never elide a handful of chars — that destroys info for no gain).
+const LINK_TEXT_MAX = 90;
+function shortenLongLinks(root) {
+  for (const a of root.querySelectorAll("a")) {
+    const t = a.textContent;
+    if (t.length > LINK_TEXT_MAX && /^https?:\/\//.test(t) && !a.title) {
+      a.title = t;
+      // Bracketed elision marker: "[…]" can't occur in a valid URL, so it
+      // reads unambiguously as "characters omitted" rather than URL content.
+      a.textContent = t.slice(0, 42) + "[…]" + t.slice(-14);
+    }
+  }
+}
+
 const BARE_IMG_URL_RE = /^https?:\/\/\S+\.(png|jpe?g|gif|webp|avif|bmp)(\?\S*)?$/i;
 function embedBareImageUrls(text) {
   const out = [];
@@ -1010,6 +1030,7 @@ function addMessageBubble(role, markdown, images, msgId, model, audio) {
   }
   const bubble = el("div", "bubble");
   bubble.innerHTML = markdown ? renderMarkdown(markdown) : "";
+  shortenLongLinks(bubble);
   if (images && images.length) {
     const box = el("div", "msg-images");
     images.forEach((u) => {
@@ -1786,6 +1807,7 @@ async function send(providedText, providedImages) {
         ensureMetricsEl(assistantBubble);
         assistantText += ev.text;
         assistantBubble.innerHTML = renderMarkdown(assistantText);
+        shortenLongLinks(assistantBubble);
         scroll();
         break;
       case "tool_call":

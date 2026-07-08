@@ -453,7 +453,9 @@ select:focus { outline: none; border-color: var(--patina-dim); }
   border-radius: var(--r) var(--r) 4px var(--r); padding: 11px 15px; max-width: 80%;
 }
 
-.bubble { color: var(--text); }
+/* overflow-wrap: long unbreakable strings (URLs pasted into chat) must wrap
+   inside the bubble instead of blowing the page width out sideways. */
+.bubble { color: var(--text); overflow-wrap: anywhere; }
 .bubble > :first-child { margin-top: 0; }
 .bubble > :last-child { margin-bottom: 0; }
 .bubble p { margin: 0 0 10px; }
