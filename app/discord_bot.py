@@ -29,7 +29,7 @@ from pathlib import Path
 import discord
 from discord import app_commands
 
-from . import storage, stt, wiki
+from . import research, storage, stt, wiki
 from . import docs as docs_mod
 from .agent import (
     build_registry,
@@ -807,6 +807,9 @@ def create_client(mcp_manager) -> discord.Client:
                             storage.rename_conversation(dm_cid, user_text[:60])
 
                     registry = build_registry(mcp_manager.tools)
+                    # A deep_research launched from this turn should deliver its
+                    # report back here (DM), not just note the web conversation.
+                    research.set_surface("dm")
                     # Send-time fallback: if the conversation's provider isn't
                     # serving (e.g. llama.cpp was stopped), retry a few times
                     # then switch this DM to the fallback model for the session.

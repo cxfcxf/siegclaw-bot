@@ -4,9 +4,10 @@ Triggered by the `deep_research` tool (owner surfaces — web UI and Discord DMs
 the tool returns immediately and the run continues in the background as its own
 conversation (sidebar group "Research"), driving the normal agent loop with a
 research preamble and a bigger tool budget — fan out searches, scrape sources,
-synthesize. When it finishes, the report is DM'd to the bot owner on Discord
-(the run takes minutes; the DM is the "it's done" ping) and lives in the
-conversation for the web UI, where it can be resumed for follow-up questions.
+synthesize. The finished report is delivered where it was asked for: a run
+launched from the web UI links back into the origin chat; a run launched from
+a Discord DM is DM'd in full to the bot owner. Either way it lives in its own
+conversation, resumable for follow-up questions.
 """
 from __future__ import annotations
 
@@ -67,9 +68,20 @@ _origin_cid: contextvars.ContextVar[str | None] = contextvars.ContextVar(
     "research_origin_cid", default=None
 )
 
+# Which surface the deep_research call came from ("web" or "dm"): the finished
+# report is delivered where it was asked for — a web-launched run notes the
+# origin chat only; only a DM-launched run gets DM'd to the owner.
+_origin_surface: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "research_origin_surface", default="web"
+)
+
 
 def set_origin(conversation_id: str) -> None:
     _origin_cid.set(conversation_id)
+
+
+def set_surface(surface: str) -> None:
+    _origin_surface.set(surface)
 
 
 # Set from main.lifespan; returns the live Discord client (or None). Kept as an
@@ -107,7 +119,8 @@ def start(question: str) -> dict | None:
     storage.set_conversation_group(cid, RESEARCH_GROUP, system=True)
     convo = storage.get_conversation(cid)
     origin = _origin_cid.get()
-    asyncio.create_task(_run(cid, provider, model, effort, question, title, origin))
+    surface = _origin_surface.get()
+    asyncio.create_task(_run(cid, provider, model, effort, question, title, origin, surface))
     log.info("research started: %s (#%s, %s/%s)", title, convo["ref"], provider, model)
     return {"ref": convo["ref"], "title": title, "started": now.strftime("%H:%M")}
 
@@ -123,7 +136,8 @@ def _note_origin(origin: str | None, cid: str, text: str) -> None:
 
 
 async def _run(cid: str, provider: str, model: str, effort: str | None,
-               question: str, title: str, origin: str | None = None) -> None:
+               question: str, title: str, origin: str | None = None,
+               surface: str = "web") -> None:
     from .agent import run_turn  # deferred: agent imports this module's tools
 
     report = ""
@@ -147,11 +161,16 @@ async def _run(cid: str, provider: str, model: str, effort: str | None,
         log.warning("research %s failed: %s", cid, error)
         storage.add_message(cid, "assistant", content=f"(research run failed: {error})")
         _note_origin(origin, cid, f"🔬 The deep research failed: {error}")
-        await _dm_owner(f"🔬 **{title}** failed: {error}", cid)
+        if surface == "dm":
+            await _dm_owner(f"🔬 **{title}** failed: {error}", cid)
         return
     log.info("research done: %s (%d chars)", title, len(report))
     _note_origin(origin, cid, f"🔬 Deep research finished — here is the result: [{title}](#convo:{cid})")
-    await _dm_owner(f"🔬 **{title}** — report ready:\n\n{report.strip()}", cid)
+    # Deliver where it was asked for: a web-launched run already closed the
+    # loop with the origin-chat note above; only a DM-launched run pings the
+    # owner's DM with the full report (and switches the active DM session).
+    if surface == "dm":
+        await _dm_owner(f"🔬 **{title}** — report ready:\n\n{report.strip()}", cid)
 
 
 async def _dm_owner(text: str, cid: str) -> None:
@@ -180,13 +199,19 @@ def research_tools() -> list[Tool]:
         info = start(question)
         if info is None:
             return "Cannot start research: no model/provider is available."
+        arrival = (
+            "will be sent to this DM"
+            if _origin_surface.get() == "dm"
+            else "will be saved in that conversation, and a link to it will be "
+            "posted in this chat"
+        )
         return (
             f"Deep research started in background conversation #{info['ref']} "
             f"({info['title']}). It will run for several minutes (multiple search "
-            "angles, full-source reading, synthesis) and the finished cited report "
-            "will be DM'd to the owner on Discord and saved in that conversation. "
-            "Tell the user it's underway and where the report will arrive — do NOT "
-            "wait for it or attempt to answer the research question yourself now."
+            f"angles, full-source reading, synthesis) and the finished cited report "
+            f"{arrival}. Tell the user it's underway and where the report will "
+            "arrive — do NOT wait for it or attempt to answer the research "
+            "question yourself now."
         )
 
     return [
