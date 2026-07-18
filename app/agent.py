@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import logging
 import mimetypes
 import re
 from datetime import datetime
@@ -25,6 +26,7 @@ from .config import (
     SEND_FALLBACK_RETRY_DELAY,
     THINK_KWARG,
     UPLOADS_DIR,
+    detect_providers,
     model_valid_for,
     provider_serving,
     resolve_default_model,
@@ -43,6 +45,8 @@ from .tools.web import web_tools
 # (they 400 otherwise). The stored `reasoning` is emitted back as
 # `reasoning_content` for these; for everyone else it's dropped.
 _REASONING_REPLAY_PROVIDERS = ("deepseek", "xiaomi")
+
+log = logging.getLogger("siegclaw.agent")
 
 
 def needs_reasoning_replay(provider: str) -> bool:
@@ -138,6 +142,22 @@ async def resolve_for_turn(
         return fb
     # No different fallback available — return as-is and let the turn surface the error.
     return provider, model, effort
+
+
+def fallback_after_failure(provider: str, model: str) -> tuple[str, str, str | None] | None:
+    """A different (provider, model, effort) to retry on after `provider` failed
+    an ACTUAL completion call. This covers the case the send-time preflight
+    can't: a provider whose /models probe answers but whose completions fail
+    (e.g. llama.cpp running with no model loaded). The failing provider is
+    excluded outright before re-resolving the default, so the liveness cache
+    (which believes it's up) can't hand it straight back. Returns None when
+    nothing different is available."""
+    providers = {p.id: p for p in detect_providers()}
+    providers.pop(provider, None)
+    fb = resolve_default_model(providers)
+    if fb and (fb[0] != provider or fb[1] != model):
+        return fb
+    return None
 
 
 def reasoning_extra_body(provider: str, think: bool, effort: str | None = None) -> dict[str, Any]:
@@ -337,6 +357,7 @@ async def run_turn(
     turn_prompt_tokens = 0  # prompt tokens summed over every call (billed total)
 
     iteration_cap = max_iterations or MAX_AGENT_ITERATIONS
+    fell_back = False  # one call-failure fallback per turn
     for _i in range(iteration_cap):
         # On the final allowed step, don't let the loop dead-end with no answer:
         # tell the model it's out of tool budget and strip the tools so it must
@@ -351,8 +372,11 @@ async def run_turn(
                     "using what you already have."
                 ),
             })
-        try:
-            stream = await client.chat.completions.create(
+        # Closure over the current client/model/extra_body so the call-failure
+        # fallback below can retry with the switched provider without
+        # duplicating the argument list.
+        async def _create():
+            return await client.chat.completions.create(
                 model=model,
                 messages=messages,
                 tools=None if final_pass else (tool_schemas or None),
@@ -361,9 +385,42 @@ async def run_turn(
                 stream_options={"include_usage": True},
                 extra_body=extra_body,
             )
+
+        try:
+            stream = await _create()
         except Exception as exc:
-            yield {"type": "error", "message": f"{type(exc).__name__}: {exc}"}
-            return
+            # The completion call itself failed on a provider the preflight
+            # probe called serving (e.g. llama.cpp up with no model loaded).
+            # Switch to the fallback model once per turn and retry in place;
+            # persist the switch so the rest of the session sticks to it.
+            fb = None if fell_back else fallback_after_failure(provider, model)
+            if fb is None:
+                yield {"type": "error", "message": f"{type(exc).__name__}: {exc}"}
+                return
+            fell_back = True
+            log.warning(
+                "Completion call on %s/%s failed (%s); retrying on %s/%s",
+                provider, model, type(exc).__name__, fb[0], fb[1],
+            )
+            provider, model, effort = fb
+            client = client_for(provider)
+            replay_reasoning = needs_reasoning_replay(provider)
+            extra_body = reasoning_extra_body(provider, think, effort)
+            storage.update_conversation_model(conversation_id, provider, model)
+            # The API-shaped history is provider-specific (reasoning-replay
+            # fields differ), so rebuild it for the switched provider. Only
+            # safe before the first call — later iterations carry loop-appended
+            # tool exchanges that aren't in storage yet.
+            if _i == 0 and not final_pass:
+                messages[1:] = _to_api_messages(storage.get_messages(conversation_id), provider)
+                if research_mode:
+                    messages.append({"role": "system", "content": RESEARCH_MODE_PREAMBLE})
+            yield {"type": "model", "provider": provider, "model": model, "effort": effort}
+            try:
+                stream = await _create()
+            except Exception as exc:
+                yield {"type": "error", "message": f"{type(exc).__name__}: {exc}"}
+                return
 
         content_buf = ""
         reasoning_buf = ""

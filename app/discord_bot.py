@@ -34,6 +34,7 @@ from . import docs as docs_mod
 from .agent import (
     build_registry,
     conversation_time_block,
+    fallback_after_failure,
     needs_reasoning_replay,
     reasoning_extra_body,
     resolve_for_turn,
@@ -299,13 +300,39 @@ async def run_discord_turn(
         # Non-streaming responses expose the chain-of-thought as reasoning_content.
         return getattr(m, "reasoning_content", None)
 
+    fell_back = False  # one call-failure fallback per turn
     for _ in range(MAX_AGENT_ITERATIONS):
-        resp = await client.chat.completions.create(
-            model=model,
-            messages=messages,
-            tools=schemas or None,
-            extra_body=extra_body,
-        )
+        try:
+            resp = await client.chat.completions.create(
+                model=model,
+                messages=messages,
+                tools=schemas or None,
+                extra_body=extra_body,
+            )
+        except Exception as e:
+            # The completion call failed on a provider the preflight probe
+            # called serving (e.g. llama.cpp up with no model loaded). Switch
+            # to the fallback model once per turn and retry in place.
+            fb = None if fell_back else fallback_after_failure(provider, model)
+            if fb is None:
+                raise
+            fell_back = True
+            log.warning(
+                "Completion call on %s/%s failed (%s); retrying on %s/%s",
+                provider, model, type(e).__name__, fb[0], fb[1],
+            )
+            provider, model, effort = fb
+            client = client_for(provider)
+            replay_reasoning = needs_reasoning_replay(provider)
+            extra_body = reasoning_extra_body(provider, think, effort)
+            if conversation_id:
+                storage.update_conversation_model(conversation_id, provider, model)
+            resp = await client.chat.completions.create(
+                model=model,
+                messages=messages,
+                tools=schemas or None,
+                extra_body=extra_body,
+            )
         _track(resp)
         msg = resp.choices[0].message
         # Always read + persist the reasoning so DM turns (shared with the web
@@ -859,6 +886,11 @@ def create_client(mcp_manager) -> discord.Client:
                     # Channel mention: live Discord history is the source of truth
                     # (not persisted). Build the timestamped transcript + question,
                     # then drive the non-streaming tool loop to a single reply.
+                    # Same send-time fallback as the DM path: fresh-probe the
+                    # chosen provider (retrying transient blips) and switch to
+                    # the fallback model if it's down. No conversation to
+                    # persist the switch on — channel turns are stateless.
+                    provider, model, effort = await resolve_for_turn(None, provider, model, effort)
                     registry = build_discord_registry(
                         message.channel, client.user.id, mcp_manager.tools
                     )

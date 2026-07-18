@@ -1955,6 +1955,9 @@ async function send(providedText, providedImages, providedDocs) {
         if (!assistantBubble) assistantBubble = addMessageBubble("assistant", "", null, null, turnModel);
         ensureMetricsEl(assistantBubble);
         assistantText += ev.text;
+        // Keep the copy source in sync while streaming — the bubble was
+        // created empty, so without this the copy button copies "".
+        assistantBubble.closest(".msg").dataset.rawText = assistantText;
         assistantBubble.innerHTML = renderMarkdown(assistantText);
         shortenLongLinks(assistantBubble);
         scroll();

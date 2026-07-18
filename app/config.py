@@ -261,13 +261,17 @@ def provider_serving(provider_id: str) -> bool:
     fallback. Keyed (cloud) providers count as serving when their key is set
     (they're effectively always up). Keyless local engines get a fresh, UNCACHED
     HTTP /models probe — the only check that sees through a port-forward or a
-    server with no model loaded (a TCP connect would falsely succeed)."""
+    server with no model loaded (a TCP connect would falsely succeed). The fresh
+    result is written back into the liveness cache, so once a stopped engine is
+    caught here, detect_providers/resolve_default_model immediately stop
+    offering it instead of serving the stale "up" entry until a background
+    refresh happens to run."""
     spec = get_provider(provider_id)
     if spec is None:
         return False
     if spec.key_env:
         return bool(spec.api_key())
-    return _models_reachable(spec.base_url(), None, timeout=_LIVENESS_TIMEOUT) is not None
+    return _do_probe_keyless(provider_id, spec.base_url()) is not None
 
 
 def model_valid_for(provider_id: str, model: str) -> bool:
