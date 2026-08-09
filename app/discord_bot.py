@@ -224,12 +224,25 @@ def build_discord_registry(
     channel: discord.abc.Messageable | None,
     bot_user_id: int | None,
     mcp_tools: list | None,
+    *,
+    wiki_space: str = wiki.PUBLIC,
+    wiki_writable: bool = True,
 ) -> Registry:
     """Per-message registry for NON-owner surfaces (channel mentions, cron):
-    harness web/browser/MCP tools + read-only wiki + Discord-history tools.
-    The wiki is read/search only here — it feeds every future system prompt,
-    so only the owner's surfaces (web UI, DMs via build_registry) may write it.
+    harness web/browser/MCP tools + one wiki space + Discord-history tools.
     Shell/file tools are withheld unless enabled.
+
+    Channel mentions take the defaults: the PUBLIC wiki (`wiki-public/`), read
+    AND write. The channel keeps its own shared notebook, and the owner's
+    private wiki is unreachable — these tools are bound to the public directory
+    at construction, so there is no page name a channel user could ask for that
+    resolves into it. Owner surfaces (web UI, DMs via build_registry) get the
+    private space instead.
+
+    The scheduler passes `wiki_space=PRIVATE, wiki_writable=False`: cron
+    prompts are owner-authored, and their system prompt comes from
+    `static_system_prompt()`'s private default — the two must name the same
+    space or the prompt would index pages the tools can't open.
 
     When `channel` is None (e.g. a scheduled job with no channel context) the
     Discord-history tools are omitted."""
@@ -239,7 +252,7 @@ def build_discord_registry(
         registry.extend(builtin_tools())
     registry.extend(web_tools())
     registry.extend(browser_tools())
-    registry.extend(wiki.wiki_tools(writable=False))
+    registry.extend(wiki.wiki_tools(writable=wiki_writable, space=wiki_space))
     registry.extend(job_tools())
     if mcp_tools:
         registry.extend(mcp_tools)
@@ -249,12 +262,15 @@ def build_discord_registry(
 
 
 def discord_system_prompt() -> str:
-    """Stable Discord system prefix for channel mentions: wiki home + multi-user
-    preamble + day-level time + wiki index. Channel turns are single-shot, so
-    the prefix stays byte-identical across the turn's own tool-loop iterations
-    — keeping it cacheable. For the precise time the model calls `current_time`;
-    for remembered facts, `search_wiki` / `read_wiki_page`."""
-    return static_system_prompt(DISCORD_PREAMBLE, conversation_time_block())
+    """Stable Discord system prefix for channel mentions: PUBLIC wiki home +
+    multi-user preamble + day-level time + public wiki index. Channel turns are
+    single-shot, so the prefix stays byte-identical across the turn's own
+    tool-loop iterations — keeping it cacheable. For the precise time the model
+    calls `current_time`; for remembered facts, `search_wiki` /
+    `read_wiki_page` — all against the public space.
+
+    Nothing from the owner's private wiki appears here, not even page names."""
+    return static_system_prompt(DISCORD_PREAMBLE, conversation_time_block(), space=wiki.PUBLIC)
 
 
 # --------------------------------------------------------------------------- #

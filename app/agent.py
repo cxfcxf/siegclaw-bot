@@ -54,15 +54,16 @@ def needs_reasoning_replay(provider: str) -> bool:
 
 
 def build_registry(mcp_tools: list | None = None) -> Registry:
-    """Assemble all tools for owner surfaces (web UI + Discord DMs). The wiki
-    tools are WRITABLE here — the wiki feeds every future system prompt, so
-    only the owner's surfaces may write it."""
+    """Assemble all tools for owner surfaces (web UI + Discord DMs). These get
+    the PRIVATE wiki, read-write. They never get the public (Discord-channel)
+    space: the owner's surfaces have no reason to search it, and keeping the
+    binding one-way means channel-authored text can't reach an owner prompt."""
     registry = Registry()
     registry.extend(clock_tools())
     registry.extend(builtin_tools())
     registry.extend(web_tools())
     registry.extend(browser_tools())
-    registry.extend(wiki.wiki_tools(writable=True))
+    registry.extend(wiki.wiki_tools(writable=True, space=wiki.PRIVATE))
     registry.extend(job_tools())
     registry.extend(research_tools())
     if mcp_tools:
@@ -94,12 +95,16 @@ def conversation_time_block(started_at: float | None = None) -> str:
     )
 
 
-def static_system_prompt(*extra: str) -> str:
-    """The system prompt: the wiki's home page (the model's own root page) +
-    any caller-supplied sections (surface preamble, day-level time) + the wiki
-    index. Stable within a conversation unless a wiki page changes — a page
-    write busts the prompt cache once, which is the price of learning."""
-    sections = [wiki.home_text(), *extra, wiki.wiki_index()]
+def static_system_prompt(*extra: str, space: str = wiki.PRIVATE) -> str:
+    """The system prompt: the home page of ONE wiki space (the model's own root
+    page) + any caller-supplied sections (surface preamble, day-level time) +
+    that space's index. Stable within a conversation unless a wiki page changes
+    — a page write busts the prompt cache once, the price of learning.
+
+    `space` decides which corpus the turn can see at all. Owner surfaces pass
+    PRIVATE (the default); Discord channels pass PUBLIC, so neither the owner's
+    home page nor even the *names* of their pages enter the prompt."""
+    sections = [wiki.home_text(space), *extra, wiki.wiki_index(space)]
     return "\n\n".join(p for p in sections if p)
 
 

@@ -6,6 +6,9 @@ workspace/
 # The LLM-Wiki is personal runtime data — only the stock system prompt ships.
 wiki/*
 !wiki/home.md
+# Same for the Discord-channel wiki: the channel writes its own pages at runtime.
+wiki-public/*
+!wiki-public/home.md
 .venv/
 venv/
 *.egg-info/

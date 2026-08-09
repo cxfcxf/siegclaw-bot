@@ -58,7 +58,8 @@ _runtime: dict = {"discord_client": None, "scheduler": None}
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     storage.init_db()
-    wiki.ensure_wiki()
+    wiki.ensure_wiki(wiki.PRIVATE)
+    wiki.ensure_wiki(wiki.PUBLIC)
     # Deep research delivers finished reports to the owner's Discord DM.
     research.configure(lambda: _runtime["discord_client"])
     status = await mcp_manager.start()
@@ -255,34 +256,43 @@ def api_rewind(cid: str, message_id: str):
 
 
 # --- LLM-Wiki ----------------------------------------------------------------
+# `space` selects the corpus: 'private' (the owner's memory, default) or
+# 'public' (the Discord-channel wiki). The web UI is the owner's console, so it
+# is the one place that can edit BOTH — the agent surfaces each see only one.
+def _wiki_space(space: str) -> str:
+    if space not in wiki.SPACES:
+        raise HTTPException(400, f"unknown wiki space '{space}'")
+    return space
+
+
 @app.get("/api/wiki")
-def api_wiki_list():
-    return {"pages": wiki.list_pages()}
+def api_wiki_list(space: str = wiki.PRIVATE):
+    return {"space": _wiki_space(space), "pages": wiki.list_pages(space)}
 
 
 @app.get("/api/wiki/{name}")
-def api_wiki_get(name: str):
-    page = wiki.read_page(name)
+def api_wiki_get(name: str, space: str = wiki.PRIVATE):
+    page = wiki.read_page(name, _wiki_space(space))
     if page is None:
         raise HTTPException(404, "no such wiki page")
     summary, body = page
-    return {"name": name, "summary": summary, "content": body}
+    return {"name": name, "space": space, "summary": summary, "content": body}
 
 
 @app.put("/api/wiki/{name}")
-def api_wiki_put(name: str, body: WikiPageUpdate):
+def api_wiki_put(name: str, body: WikiPageUpdate, space: str = wiki.PRIVATE):
     try:
-        slug = wiki.write_page(name, body.summary, body.content)
+        slug = wiki.write_page(name, body.summary, body.content, space=_wiki_space(space))
     except ValueError as e:
         raise HTTPException(400, str(e))
-    return {"ok": True, "name": slug}
+    return {"ok": True, "name": slug, "space": space}
 
 
 @app.delete("/api/wiki/{name}")
-def api_wiki_delete(name: str):
+def api_wiki_delete(name: str, space: str = wiki.PRIVATE):
     if name == wiki.HOME:
         raise HTTPException(400, "the home page cannot be deleted")
-    return {"ok": wiki.delete_page(name)}
+    return {"ok": wiki.delete_page(name, _wiki_space(space))}
 
 
 # --- Scheduled jobs --------------------------------------------------------

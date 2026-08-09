@@ -914,7 +914,19 @@ body.dragging #composer { outline: 2px dashed var(--patina); outline-offset: 4px
 }
 .page-actions button.primary:hover { box-shadow: 0 0 16px -5px rgba(214,163,92,0.7); }
 
-/* --- LLM-Wiki: page cards + editor --- */
+/* --- LLM-Wiki: space tabs + page cards + editor --- */
+/* The two spaces are separate corpora, so the tabs read as a hard switch
+   rather than a filter — only one is ever live. */
+.wiki-spaces { display: flex; gap: 6px; margin: 10px 0 12px; }
+.wiki-space-btn {
+  padding: 6px 14px; border: 1px solid var(--line); border-radius: var(--r-sm);
+  background: var(--surface-2); color: var(--text-faint);
+  font-family: var(--font-display); font-size: 13px; cursor: pointer;
+}
+.wiki-space-btn:hover { background: var(--surface-3); color: var(--text); }
+.wiki-space-btn.active {
+  background: var(--surface-3); color: var(--brass); border-color: var(--brass-deep);
+}
 .wiki-list-actions { justify-content: flex-end; margin: 0 0 12px; }
 #wiki-list { display: flex; flex-direction: column; gap: 8px; }
 #wiki-list .empty { padding: 28px; text-align: center; }

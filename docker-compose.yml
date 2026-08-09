@@ -27,8 +27,11 @@ services:
     # wiki/ is the LLM-Wiki — the assistant's entire durable knowledge (system
     # prompt, memory, lessons) as markdown pages. A directory mount, so edits
     # from either side (host editor or the model itself) apply immediately.
+    # wiki-public/ is the separate Discord-channel wiki: channel mentions read
+    # and write only that one, and never see wiki/ (see app/wiki.py).
     volumes:
       - ./wiki:/app/wiki
+      - ./wiki-public:/app/wiki-public
       - ./data:/app/data
       - ./workspace:/app/workspace
     restart: unless-stopped

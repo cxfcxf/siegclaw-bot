@@ -2031,7 +2031,28 @@ function setStatus(s) { $("#status").textContent = s; }
 // --- LLM-Wiki -----------------------------------------------------------------
 // One page, two views: the page list (cards) and the editor (name + summary +
 // body). `home` is the system prompt — it's editable but not deletable.
+//
+// Two independent spaces, switched by the tabs at the top: `private` (the
+// owner's memory — web UI, DMs and research read it) and `public` (the Discord
+// channel's own wiki). The agent surfaces each see exactly one; this console is
+// the only place both are editable, so every request carries ?space=.
 let wikiEditing = null;  // page name being edited, or null for a new page
+let wikiSpace = "private";
+
+const WIKI_SPACE_HINTS = {
+  private: "Your memory. Read and written by the web UI, Discord DMs and research runs — " +
+    "never by a Discord channel. System prompt (<code>home</code>), facts, lessons, as markdown " +
+    "pages the model curates itself. Files live in <code>wiki/</code>.",
+  public: "The Discord channel's own wiki — a separate corpus in <code>wiki-public/</code>. " +
+    "Channel mentions read and write only this; they cannot see your private pages, or even their " +
+    "names. Everyone in the server can effectively read it, so keep personal details out. " +
+    "<code>home</code> is the channel persona and only you can edit it.",
+};
+
+function wikiUrl(name) {
+  const q = `?space=${encodeURIComponent(wikiSpace)}`;
+  return name ? `/api/wiki/${encodeURIComponent(name)}${q}` : `/api/wiki${q}`;
+}
 
 function fmtWikiDate(ts) {
   if (!ts) return "";
@@ -2044,7 +2065,11 @@ function setWikiView(editor) {
 }
 
 async function renderWikiList() {
-  const data = await fetch("/api/wiki").then((r) => r.json());
+  $("#wiki-space-hint").innerHTML = WIKI_SPACE_HINTS[wikiSpace];
+  document.querySelectorAll(".wiki-space-btn").forEach((b) => {
+    b.classList.toggle("active", b.dataset.space === wikiSpace);
+  });
+  const data = await fetch(wikiUrl(null)).then((r) => r.json());
   const list = $("#wiki-list");
   list.innerHTML = "";
   (data.pages || []).forEach((p) => {
@@ -2059,7 +2084,7 @@ async function renderWikiList() {
       del.onclick = async (e) => {
         e.stopPropagation();
         if (!(await confirmDialog(`Delete wiki page “${p.name}”? The model loses this knowledge.`))) return;
-        await fetch(`/api/wiki/${encodeURIComponent(p.name)}`, { method: "DELETE" });
+        await fetch(wikiUrl(p.name), { method: "DELETE" });
         renderWikiList();
       };
       head.appendChild(del);
@@ -2073,12 +2098,17 @@ async function renderWikiList() {
   if (!list.children.length) list.innerHTML = '<div class="empty">No wiki pages yet.</div>';
 }
 
+function wikiTitleFor(name) {
+  if (name !== "home") return name;
+  return wikiSpace === "public" ? "home — the channel persona" : "home — the system prompt";
+}
+
 async function openWikiEditor(name) {
   wikiEditing = name;
   $("#wiki-status").textContent = "";
   if (name) {
-    const data = await fetch(`/api/wiki/${encodeURIComponent(name)}`).then((r) => r.json());
-    $("#wiki-editor-title").textContent = name === "home" ? "home — the system prompt" : name;
+    const data = await fetch(wikiUrl(name)).then((r) => r.json());
+    $("#wiki-editor-title").textContent = wikiTitleFor(name);
     $("#wiki-name").value = name;
     $("#wiki-name").disabled = true;
     $("#wiki-summary").value = data.summary || "";
@@ -2101,12 +2131,20 @@ $("#show-wiki").onclick = async () => {
 };
 $("#wiki-new").onclick = () => openWikiEditor(null);
 $("#wiki-back").onclick = async () => { setWikiView(false); await renderWikiList(); };
+document.querySelectorAll(".wiki-space-btn").forEach((btn) => {
+  btn.onclick = async () => {
+    if (wikiSpace === btn.dataset.space) return;
+    wikiSpace = btn.dataset.space;
+    setWikiView(false);   // an open editor belongs to the space we just left
+    await renderWikiList();
+  };
+});
 
 let wikiStatusTimer = null;
 $("#wiki-save").onclick = async () => {
   const name = ($("#wiki-name").value || "").trim();
   if (!name) { $("#wiki-status").textContent = "page name required"; return; }
-  const res = await fetch(`/api/wiki/${encodeURIComponent(name)}`, {
+  const res = await fetch(wikiUrl(name), {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ summary: $("#wiki-summary").value, content: $("#wiki-content").value }),
@@ -2120,7 +2158,7 @@ $("#wiki-save").onclick = async () => {
   wikiEditing = saved.name;
   $("#wiki-name").value = saved.name;
   $("#wiki-name").disabled = true;
-  $("#wiki-editor-title").textContent = saved.name === "home" ? "home — the system prompt" : saved.name;
+  $("#wiki-editor-title").textContent = wikiTitleFor(saved.name);
   $("#wiki-status").textContent = "saved — applies to the next turn";
   clearTimeout(wikiStatusTimer);
   wikiStatusTimer = setTimeout(() => { $("#wiki-status").textContent = ""; }, 4000);

@@ -29,6 +29,10 @@ def _path(env: str, default: str) -> Path:
 WORKSPACE_DIR = _path("WORKSPACE_DIR", "./workspace")
 DATA_DIR = _path("DATA_DIR", "./data")
 WIKI_DIR = _path("WIKI_DIR", "./wiki")
+# The Discord-channel wiki: a SEPARATE corpus with its own home page, index and
+# pages. Channel users can reach only this one; the owner's private wiki above
+# is never read, searched or indexed on a channel turn. See app/wiki.py.
+WIKI_PUBLIC_DIR = _path("WIKI_PUBLIC_DIR", "./wiki-public")
 MCP_CONFIG_PATH = _path("MCP_CONFIG_PATH", "./mcp.json")
 
 UPLOADS_DIR = DATA_DIR / "uploads"
@@ -36,6 +40,7 @@ UPLOADS_DIR = DATA_DIR / "uploads"
 WORKSPACE_DIR.mkdir(parents=True, exist_ok=True)
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 WIKI_DIR.mkdir(parents=True, exist_ok=True)
+WIKI_PUBLIC_DIR.mkdir(parents=True, exist_ok=True)
 UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
 
 # --- Research stack --------------------------------------------------------

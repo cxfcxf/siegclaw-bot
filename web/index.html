@@ -84,9 +84,11 @@
         <div class="page-inner">
           <div id="wiki-list-view">
             <h2>LLM-Wiki</h2>
-            <p class="hint">Everything the model durably knows — system prompt (<code>home</code>), facts, lessons — as
-            markdown pages it reads and rewrites itself (<code>read_wiki_page</code> / <code>write_wiki_page</code>).
-            Files live in <code>wiki/</code>; edit them here or let the model curate.</p>
+            <div class="wiki-spaces" role="tablist">
+              <button id="wiki-space-private" class="wiki-space-btn active" type="button" role="tab" data-space="private">🔒 Private</button>
+              <button id="wiki-space-public" class="wiki-space-btn" type="button" role="tab" data-space="public"># Discord channel</button>
+            </div>
+            <p class="hint" id="wiki-space-hint"></p>
             <div class="page-actions wiki-list-actions">
               <button id="wiki-new" type="button" class="primary">New page</button>
             </div>

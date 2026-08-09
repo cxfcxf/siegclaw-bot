@@ -96,13 +96,16 @@ def configure(discord_getter: Callable[[], object | None]) -> None:
 
 def _research_registry() -> Registry:
     """Research runs with the reading tools only: web + browser + clock +
-    read-only wiki (owner context can shape a report; a background job should
-    never write memory or shell out)."""
+    read-only PRIVATE wiki (owner context can shape a report; a background job
+    should never write memory or shell out). Research is owner-launched only —
+    `research_tools` is in build_registry, not the Discord-channel registry —
+    so the private space is the right one, and it matches the private system
+    prompt run_turn builds for the run."""
     registry = Registry()
     registry.extend(clock_tools())
     registry.extend(web_tools())
     registry.extend(browser_tools())
-    registry.extend(wiki.wiki_tools(writable=False))
+    registry.extend(wiki.wiki_tools(writable=False, space=wiki.PRIVATE))
     return registry
 
 

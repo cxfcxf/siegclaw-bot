@@ -16,7 +16,7 @@ from zoneinfo import ZoneInfo
 
 import discord
 
-from . import storage
+from . import storage, wiki
 from .agent import run_turn
 from .config import CRON_KEEP_RUNS, HARNESS_TZ, resolve_default_model
 from .cronutil import next_run_after
@@ -114,7 +114,12 @@ class Scheduler:
             return "error", "No model available — check provider config."
         provider, model, effort = pm
 
-        registry = build_discord_registry(None, None, self._mcp.tools)
+        # Cron prompts are owner-authored, so a job runs against the owner's
+        # PRIVATE wiki (read-only — an unattended run must not rewrite memory),
+        # matching the private system prompt run_turn builds below.
+        registry = build_discord_registry(
+            None, None, self._mcp.tools, wiki_space=wiki.PRIVATE, wiki_writable=False
+        )
         # The "Cron:" marker lives on the group; runs inside it carry the
         # date + time so every run is distinguishable regardless of cadence.
         grp = f"Cron: {job['name']}"

@@ -44,16 +44,19 @@ app/
   discord_context.py Discord history window + image/YouTube helpers
   scheduler.py       cron job runner (headless agent turn → Discord delivery)
   cronutil.py        cron-expression parsing / next-run (in HARNESS_TZ)
-  wiki.py            the LLM-Wiki: page storage, prompt index, read/search/write tools
+  wiki.py            the LLM-Wiki: two spaces (private + Discord-channel public),
+                     page storage, prompt index, read/search/write tools
   research.py        deep_research tool: background cited-report runs
   docs.py            document attachments: PDF/text extraction for chat uploads
   storage.py         SQLite conversations (web UI + Discord DMs share one pool)
   mcp_client.py      connects mcp.json servers (stdio or HTTP)
   tools/             registry, builtin (fs/bash), web (Firecrawl), browser (CamoFox), clock
 web/                 vanilla HTML/CSS/JS frontend
-wiki/                the LLM-Wiki. Only home.md (the stock system prompt) is committed;
-                     every other page is personal runtime data the model writes for its
-                     owner (gitignored)
+wiki/                the LLM-Wiki (private space). Only home.md (the stock system prompt)
+                     is committed; every other page is personal runtime data the model
+                     writes for its owner (gitignored)
+wiki-public/         the Discord-channel wiki (public space) — a separate corpus channel
+                     mentions read and write. Same committed/gitignored split
 mcp.json             MCP server definitions
 data/                SQLite DBs + uploads (runtime, gitignored; media lives in
                      uploads/<conversation-id>/ — see Voice & audio)
@@ -121,6 +124,14 @@ data/                SQLite DBs + uploads (runtime, gitignored; media lives in
   stateless and always use the default model.
 - The shell/file tools are **withheld from Discord** (multi-user) unless
   `DISCORD_ENABLE_SHELL=true`.
+- **DMs are owner-only.** A DM is the owner surface — it carries the private
+  wiki read-write, and `/resume` can open any stored conversation including the
+  web UI's. Discord has no owner-only-DM setting (anyone sharing a server with
+  the bot can message it), so the bot enforces it: non-owner DMs are ignored
+  silently, and the DM slash commands reject non-owners. The owner is the
+  Discord application owner, or `DISCORD_OWNER_ID` if set; if neither resolves
+  it fails closed. **Channel @mentions stay open to everyone** — they run on the
+  public wiki (see below).
 
 ### LLM-Wiki (memory + system prompt + skills, unified)
 
@@ -137,9 +148,6 @@ side containers. The model is the memory system:
   relevant, `search_wiki` (keyword search) when unsure which page, and
   `write_wiki_page` to save durable facts, corrections, and procedures that
   worked. A write replaces the whole page, so it's told to read-then-fold-in.
-- **Write access is owner-only**: web UI and Discord DM turns can write;
-  channel mentions and cron jobs get read/search only (the wiki feeds every
-  future system prompt — channel users must not inject into it).
 - Pages are plain files: browse/edit/delete them in the **wiki** tab in the
   sidebar, or with any editor (`wiki/` is a directory mount — edits apply on
   the next turn, no restart).
@@ -147,6 +155,34 @@ side containers. The model is the memory system:
   install starts from (created automatically if missing). Everything else in
   `wiki/` is personal: pages the model accumulates about *its* owner. Those
   are gitignored, like `data/`.
+
+#### Two spaces: private vs. Discord channel
+
+The wiki is split into two **independent** corpora, each with its own `home`
+page, index, and pages. Nothing merges them, and no code path resolves one
+space's name into the other's directory:
+
+| space | directory | who sees it | access |
+| --- | --- | --- | --- |
+| `private` | `WIKI_DIR` (`./wiki`) | web UI, Discord **DMs**, research runs, cron jobs | read + write (read-only for cron/research) |
+| `public` | `WIKI_PUBLIC_DIR` (`./wiki-public`) | Discord **channel** mentions | read + write |
+
+This is the privacy boundary. A channel turn's system prompt is built from the
+*public* home page and *public* index, and its `read_wiki_page` / `search_wiki`
+/ `write_wiki_page` tools are bound to the public directory when the registry
+is constructed — so a channel user cannot read, search, or even learn the
+*names* of the owner's private pages. There is no page name they could ask for
+that reaches them; it's structural, not a prompt instruction. Conversely the
+owner's surfaces never read the public space, so channel-authored text can't
+walk into an owner prompt.
+
+The channel writes its own space freely (that's how it remembers the server),
+with one exception: **`home` is not writable from a channel**, since it *is*
+the system prompt — the persona and its rules stay owner-only.
+
+The **web UI is the only place that sees both**: the wiki tab has 🔒 Private /
+\# Discord channel tabs, so you curate the channel's wiki yourself. (The API
+takes `?space=private|public`, defaulting to private.)
 
 ### Scheduled jobs
 
@@ -205,8 +241,9 @@ conversation's upload dir like any media.
 
 - **Builtin**: `read_file`, `write_file`, `edit_file`, `list_dir`, `bash`
   (workspace = `WORKSPACE_DIR`), `current_time`.
-- **Wiki**: `read_wiki_page`, `search_wiki`, `write_wiki_page` (write is
-  owner-surfaces-only — see the LLM-Wiki section).
+- **Wiki**: `read_wiki_page`, `search_wiki`, `write_wiki_page`, bound to one
+  space per surface — private for the owner, public for Discord channels; see
+  the LLM-Wiki section.
 - **Web**: Firecrawl (`web_search`, `web_scrape`, `web_map`, `web_crawl`) via
   `FIRECRAWL_API_URL`; `image_search` via `IMAGE_SEARCH_URL` (the searchmw
   middleware's `/images` — Brave image API + Tavily with 429 failover) returns
@@ -271,6 +308,7 @@ All via `.env` (see `.env.example`) unless noted.
 | `SEND_FALLBACK_RETRIES` / `SEND_FALLBACK_RETRY_DELAY` / `PROVIDER_LIVENESS_CACHE_TTL` | Send-time fallback tuning |
 | `DISCORD_BOT_TOKEN` | Run the Discord bot (omit for web UI only) |
 | `DISCORD_ENABLE_SHELL` | Allow shell/file tools from Discord (default off) |
+| `DISCORD_OWNER_ID` | User id allowed to DM the bot (default: the Discord application owner) |
 | `DISCORD_STREAM_DMS` | Edit-in-place streaming for DM replies (default off) |
 | `STT_MODEL` | faster-whisper model for the mic button + DM voice messages (tiny/base/small/medium, default base) |
 | `TTS_VOICE` / `TTS_VOICE_ZH` / `TTS_MAX_CHARS` | edge-tts voices for the read-aloud button — default and Chinese, picked per reply by language — and clip length cap |
@@ -279,7 +317,8 @@ All via `.env` (see `.env.example`) unless noted.
 | `HARNESS_TZ` | IANA timezone for the frozen prompt date and cron |
 | `CRON_KEEP_RUNS` | Newest cron-run conversations kept per job (default 30) |
 | `WORKSPACE_DIR` | Working directory for the bash/file tools |
-| `WIKI_DIR` | LLM-Wiki pages directory (default `./wiki`) |
+| `WIKI_DIR` | LLM-Wiki pages directory, private space (default `./wiki`) |
+| `WIKI_PUBLIC_DIR` | Discord-channel wiki directory, public space (default `./wiki-public`) |
 | `FIRECRAWL_API_URL` | Firecrawl backend for web tools |
 | `IMAGE_SEARCH_URL` | searchmw middleware for `image_search` (its `/images` endpoint) |
 | `CAMOFOX_URL` | Stealth-browser backend for `browser_use` |
