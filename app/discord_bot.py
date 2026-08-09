@@ -43,6 +43,7 @@ from .agent import (
 )
 from .config import (
     DISCORD_ENABLE_SHELL,
+    DISCORD_OWNER_ID,
     DISCORD_STREAM_DMS,
     MAX_AGENT_ITERATIONS,
     MAX_DISCORD_LENGTH,
@@ -453,6 +454,35 @@ async def send_chunked(destination: discord.abc.Messageable, text: str) -> None:
         await destination.send(chunk)
 
 
+_owner_id: int | None = None  # cached across messages; resolved once
+
+
+async def resolve_owner_id(client: discord.Client) -> int | None:
+    """The Discord user id treated as the owner, cached. DISCORD_OWNER_ID wins;
+    otherwise ask Discord for the application owner. Returns None only if both
+    fail — callers must treat that as "not the owner" and fail closed."""
+    global _owner_id
+    if _owner_id is not None:
+        return _owner_id
+    if DISCORD_OWNER_ID:
+        try:
+            _owner_id = int(DISCORD_OWNER_ID)
+            return _owner_id
+        except ValueError:
+            log.error("DISCORD_OWNER_ID=%r is not a user id; ignoring it", DISCORD_OWNER_ID)
+    try:
+        info = await client.application_info()
+        oid = getattr(info.owner, "id", None)
+    except Exception as e:
+        log.error("Could not resolve the Discord application owner (%s); "
+                  "DMs stay closed until this succeeds", e)
+        return None
+    if oid is None:
+        return None
+    _owner_id = int(oid)
+    return _owner_id
+
+
 async def owner_or_user(client: discord.Client, target_id: str = "owner"):
     """Resolve a DM recipient: the bot's application owner for the 'owner'
     sentinel (or an empty id), otherwise a specific user id. Shared by the
@@ -597,13 +627,43 @@ def create_client(mcp_manager) -> discord.Client:
     # ephemeral messages on client reload).
     dm_only = app_commands.allowed_contexts(guilds=False, dms=True, private_channels=True)
 
+    async def _is_owner(interaction: discord.Interaction) -> bool:
+        """These are owner tools, not public ones: /resume lists every stored
+        conversation (web UI included), /research runs against the private wiki,
+        /model spends the owner's tokens. `dm_only` hides them from channels but
+        anyone who can DM the bot could still invoke them, so check the caller.
+        Fails closed when the owner id can't be resolved."""
+        oid = await resolve_owner_id(client)
+        if oid is not None and interaction.user.id == oid:
+            return True
+        name = interaction.command.name if interaction.command else "?"
+        log.info("Ignoring /%s from non-owner %s (%s)", name, interaction.user, interaction.user.id)
+        await _respond(interaction, "These commands are limited to the bot's owner.")
+        return False
+
+    owner_only = app_commands.check(_is_owner)
+
+    @tree.error
+    async def on_app_command_error(interaction: discord.Interaction, error: Exception):
+        # _is_owner already replied; swallow its CheckFailure instead of logging
+        # a traceback for every non-owner poke.
+        if isinstance(error, app_commands.CheckFailure):
+            return
+        log.warning("Slash command error: %s", error)
+        try:
+            await _respond(interaction, f"Command failed: {type(error).__name__}")
+        except Exception:
+            pass
+
     @tree.command(name="new", description="Start a new conversation")
     @dm_only
+    @owner_only
     async def new_cmd(interaction: discord.Interaction):
         await _respond(interaction, cmd_new(str(interaction.user.id)), ephemeral=False)
 
     @tree.command(name="research", description="Toggle deep research mode for this DM")
     @dm_only
+    @owner_only
     async def research_cmd(interaction: discord.Interaction):
         # Posted for real (not ephemeral): the mode boundary should survive in
         # the DM history, like /new does.
@@ -623,6 +683,7 @@ def create_client(mcp_manager) -> discord.Client:
 
     @tree.command(name="resume", description="Resume a conversation")
     @dm_only
+    @owner_only
     async def resume_cmd(interaction: discord.Interaction):
         user_id = str(interaction.user.id)
         convos = storage.list_all_conversations()
@@ -662,6 +723,7 @@ def create_client(mcp_manager) -> discord.Client:
 
     @tree.command(name="rename", description="Rename the current chat and set its group")
     @dm_only
+    @owner_only
     async def rename_cmd(interaction: discord.Interaction):
         convo = _active_or_pending_conversation(str(interaction.user.id))
         await interaction.response.send_modal(
@@ -670,6 +732,7 @@ def create_client(mcp_manager) -> discord.Client:
 
     @tree.command(name="model", description="Switch the active conversation's model")
     @dm_only
+    @owner_only
     async def model_cmd(interaction: discord.Interaction):
         user_id = str(interaction.user.id)
         convo = _active_or_pending_conversation(user_id)
@@ -720,6 +783,17 @@ def create_client(mcp_manager) -> discord.Client:
             except Exception as e:
                 log.warning("Slash command sync failed: %s", e)
         log.info("Logged in as %s (ID: %s)", client.user, client.user.id)
+        # Resolve the DM owner once here (rather than lazily on the first DM) so
+        # the id is in the startup log — it's the thing to check if DMs are
+        # unexpectedly ignored, and nobody remembers their own Discord user id.
+        owner_id = await resolve_owner_id(client)
+        if owner_id is None:
+            log.error("No DM owner resolved — ALL DMs will be ignored. "
+                      "Set DISCORD_OWNER_ID to your Discord user id.")
+        else:
+            src = "DISCORD_OWNER_ID" if DISCORD_OWNER_ID else "Discord app owner"
+            log.info("DMs restricted to owner id %s (from %s); channel mentions stay open",
+                     owner_id, src)
     on_ready._synced = False
 
     @client.event
@@ -749,6 +823,18 @@ def create_client(mcp_manager) -> discord.Client:
 
         is_dm = message.guild is None
         user_id = str(message.author.id)
+
+        # DMs are the owner surface — they get the private wiki, read-write, and
+        # `home` there IS the system prompt. Anyone sharing a server with the bot
+        # can open a DM with it, so gate on the owner and drop everything else
+        # silently (no reply, no model call). Fails closed if the owner id can't
+        # be resolved. Channel mentions are unaffected: they run on the public
+        # wiki and stay open to everyone.
+        if is_dm:
+            owner_id = await resolve_owner_id(client)
+            if owner_id is None or message.author.id != owner_id:
+                log.info("Ignoring DM from non-owner %s (%s)", message.author, user_id)
+                return
 
         # Resolve provider + model. Everything uses the freshly resolved default
         # (local engine if it's up, else the fallback) — a conversation's stored

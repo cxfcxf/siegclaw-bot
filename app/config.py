@@ -72,6 +72,11 @@ DISCORD_BOT_TOKEN = os.getenv("DISCORD_BOT_TOKEN", "").strip()
 # Discord is multi-user; the builtin shell/file tools run in this container, so
 # they're withheld from Discord unless explicitly enabled.
 DISCORD_ENABLE_SHELL = os.getenv("DISCORD_ENABLE_SHELL", "false").lower() in ("1", "true", "yes")
+# DMs are the OWNER surface: they carry the private wiki, read-write. Anyone who
+# shares a server with the bot can DM it (Discord has no owner-only-DM setting),
+# so non-owner DMs are ignored. Empty = resolve the application owner from
+# Discord at runtime; set an id here to override (e.g. a second account).
+DISCORD_OWNER_ID = os.getenv("DISCORD_OWNER_ID", "").strip()
 # Stream DM replies by editing the message in place (~1s per edit — Discord has
 # no real streaming, so this is send-then-overwrite). Off by default: the reply
 # lands as one complete message when the turn finishes.
