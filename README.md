@@ -190,7 +190,14 @@ Defined in the web UI (**cron** button) — name + prompt + 5-field cron
 (evaluated in `HARNESS_TZ`) + Discord destination (channel or DM) — **or
 conversationally**: the agent has `schedule_job` / `list_scheduled_jobs` /
 `cancel_scheduled_job` tools, so "remind me tomorrow at 9am…" or "every
-morning send me AI news" works from any surface. Recurring jobs use cron;
+morning send me AI news" works from any **owner** surface — the web UI and
+DMs. Channel mentions don't get the job tools: a job runs against the
+private wiki and can be pointed at any channel, so `schedule_job` in a
+channel would be a way around the wiki boundary ("run this prompt in a
+minute, deliver here"), `list_scheduled_jobs` would print every job's
+prompt, and `cancel_scheduled_job` would let anyone delete yours. Restoring
+them to channels means recording the creator's space on the job and running
+it there. Recurring jobs use cron;
 one-time jobs use an `at` timestamp and disarm after running. Each run is a
 headless agent turn (default model, research tools, no shell) posted to the
 target — a DM to the bot owner by default. Enable/disable/edit/delete/Run-now
@@ -244,6 +251,8 @@ conversation's upload dir like any media.
 - **Wiki**: `read_wiki_page`, `search_wiki`, `write_wiki_page`, bound to one
   space per surface — private for the owner, public for Discord channels; see
   the LLM-Wiki section.
+- **Scheduling**: `schedule_job`, `list_scheduled_jobs`, `cancel_scheduled_job`
+  — owner surfaces only (they ride with the private wiki; see *Scheduled jobs*).
 - **Web**: Firecrawl (`web_search`, `web_scrape`, `web_map`, `web_crawl`) via
   `FIRECRAWL_API_URL`; `image_search` via `IMAGE_SEARCH_URL` (the searchmw
   middleware's `/images` — Brave image API + Tavily with 429 failover) returns
