@@ -254,7 +254,14 @@ def build_discord_registry(
     registry.extend(web_tools())
     registry.extend(browser_tools())
     registry.extend(wiki.wiki_tools(writable=wiki_writable, space=wiki_space))
-    registry.extend(job_tools())
+    # Scheduling is an OWNER capability, so it rides with the private wiki and is
+    # withheld from channels. A channel user with `schedule_job` could otherwise
+    # walk around the wiki boundary entirely: jobs run on the owner's private
+    # space and can be pointed at any channel ("run this prompt in one minute,
+    # deliver here"). `list_scheduled_jobs` also prints every job's prompt, and
+    # `cancel_scheduled_job` would let a stranger delete the owner's jobs.
+    if wiki_space == wiki.PRIVATE:
+        registry.extend(job_tools())
     if mcp_tools:
         registry.extend(mcp_tools)
     if channel is not None and bot_user_id is not None:
