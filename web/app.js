@@ -575,6 +575,12 @@ function convRow(c) {
   };
   item.append(title, kebab);
   item.onclick = () => openConversation(c.id);
+  item.tabIndex = 0;
+  item.setAttribute("role", "link");
+  item.setAttribute("aria-label", full);
+  item.onkeydown = (e) => {
+    if (e.target === item && e.key === "Enter") { e.preventDefault(); item.click(); }
+  };
   return item;
 }
 
@@ -605,13 +611,18 @@ async function loadConversations() {
   });
   const renderGroup = (g) => {
     const items = byGroup.get(g.name) || [];
-    const isCollapsed = !!collapsed[g.name];
+    const isCollapsed = collapsed[g.name] === undefined ? !!g.system : !!collapsed[g.name];
     const h = el("div", "conv-group grp" + (isCollapsed ? " closed" : ""));
     h.innerHTML = `<span class="tri">▾</span>${FOLDER_ICON}<span class="gname"></span><span class="gcount"></span><button class="gact kebab" type="button" title="Options">${KEBAB_ICON}</button>`;
     h.querySelector(".gname").textContent = g.name;
     h.querySelector(".gcount").textContent = items.length || "empty";
+    h.tabIndex = 0;
+    h.setAttribute("aria-expanded", String(!isCollapsed));
+    h.onkeydown = (e) => {
+      if (e.target === h && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); h.click(); }
+    };
     h.onclick = () => {
-      if (isCollapsed) delete collapsed[g.name]; else collapsed[g.name] = 1;
+      collapsed[g.name] = isCollapsed ? 0 : 1;
       saveGrpCollapsed(collapsed);
       loadConversations();
     };
@@ -854,6 +865,8 @@ let currentPage = null;  // null = chat view
 
 function showPage(name) {
   currentPage = name || null;
+  $("#view-label").textContent = ({search: "Search chats", wiki: "Wiki", jobs: "Scheduled jobs", status: "Status"})[currentPage] || (state.conversationId ? "Conversation" : "New conversation");
+  if (window.matchMedia("(max-width: 720px)").matches) setSidebarCollapsed(true);
   Object.entries(PAGES).forEach(([k, sel]) => { $(sel).hidden = k !== currentPage; });
   $("#chat").hidden = !!currentPage;
   document.querySelectorAll("#sidebar .nav-btn[data-page]").forEach((b) => {
@@ -895,15 +908,30 @@ $("#chat-search-input").addEventListener("keydown", (e) => {
 // --- Collapsible sidebar ----------------------------------------------------
 function setSidebarCollapsed(collapsed) {
   $("#app").classList.toggle("sidebar-collapsed", collapsed);
-  try { localStorage.setItem("harness.sidebar", collapsed ? "1" : "0"); } catch (_) {}
+  $("#sidebar").inert = collapsed;
+  $("#sidebar-backdrop").hidden = collapsed || !window.matchMedia("(max-width: 720px)").matches;
+  $("#expand-sidebar").setAttribute("aria-expanded", String(!collapsed));
+  if (!window.matchMedia("(max-width: 720px)").matches) {
+    try { localStorage.setItem("harness.sidebar", collapsed ? "1" : "0"); } catch (_) {}
+  }
 }
 $("#collapse-sidebar").onclick = () => setSidebarCollapsed(true);
 $("#expand-sidebar").onclick = () => setSidebarCollapsed(false);
-try { if (localStorage.getItem("harness.sidebar") === "1") setSidebarCollapsed(true); } catch (_) {}
+try { setSidebarCollapsed(window.matchMedia("(max-width: 720px)").matches || localStorage.getItem("harness.sidebar") === "1"); } catch (_) {}
+$("#sidebar-backdrop").onclick = () => setSidebarCollapsed(true);
+window.matchMedia("(max-width: 720px)").addEventListener("change", () => setSidebarCollapsed(true));
+document.addEventListener("keydown", (e) => {
+  if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
+    e.preventDefault();
+    openChatSearch();
+  }
+  if (e.key === "Escape" && window.matchMedia("(max-width: 720px)").matches) setSidebarCollapsed(true);
+});
 
 async function openConversation(id) {
   showPage(null);
   state.conversationId = id;
+  $("#view-label").textContent = "Conversation";
   // Resumed chats always start on the current default model, not the model the
   // chat last used (that stays logged server-side, it's just not restored) —
   // e.g. when the local engine comes up, old chats should pick it up too.
@@ -927,13 +955,37 @@ async function openConversation(id) {
 }
 
 const EMPTY_STATE = `
-  <div class="empty">
-    <h2>Ready when you are</h2>
+  <div class="empty welcome">
+    <div class="welcome-kicker"><span></span> A little curiosity goes a long way</div>
+    <h1>What’s on your mind?</h1>
+    <p>Explore an idea, untangle a question, or make something happen.</p>
+    <div class="starter-actions" aria-label="Conversation starters">
+      <button type="button" data-starter="research"><span aria-hidden="true">↗</span> Explore a topic</button>
+      <button type="button" data-starter="compare"><span aria-hidden="true">⇄</span> Compare options</button>
+      <button type="button" data-starter="plan"><span aria-hidden="true">☷</span> Make a plan</button>
+    </div>
   </div>`;
+
+$("#messages").addEventListener("click", (e) => {
+  const starter = e.target.closest("[data-starter]");
+  if (!starter) return;
+  const prompts = {
+    research: "Help me explore a topic. I’d like to understand ",
+    compare: "Help me compare these options and their tradeoffs: ",
+    plan: "Help me turn this goal into a practical plan: ",
+  };
+  const input = $("#input");
+  if (!input.value.trim()) {
+    input.value = prompts[starter.dataset.starter];
+    input.dispatchEvent(new Event("input", {bubbles: true}));
+  }
+  input.focus();
+});
 
 function newChat() {
   showPage(null);
   state.conversationId = null;
+  $("#view-label").textContent = "New conversation";
   state.promptTokens = null;
   state.stick = true;
   // A new conversation starts on the server-resolved default model. Re-detect
@@ -1478,6 +1530,10 @@ function setMainEmpty(empty) {
   const main = $("#main");
   const wasEmpty = main.classList.contains("is-empty");
   if (empty === wasEmpty) return;
+  if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+    main.classList.toggle("is-empty", empty);
+    return;
+  }
 
   if (!empty && wasEmpty) {
     // FLIP: capture "first" positions, apply the layout change, then animate
@@ -1684,7 +1740,7 @@ $("#composer").addEventListener("submit", (e) => {
   if (state.streaming) stopStream(); else send();
 });
 $("#input").addEventListener("keydown", (e) => {
-  if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); if (!state.streaming) send(); }
+  if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); if (!state.streaming) send(); }
 });
 
 // Abort the in-flight stream regardless of where it is (thinking, tools, tokens).
@@ -2466,6 +2522,7 @@ $("#show-status").onclick = async () => {
 
 // --- Boot -------------------------------------------------------------------
 (async function init() {
+  $("#messages").innerHTML = EMPTY_STATE;
   // The sidebar history doesn't depend on provider detection, so load it in
   // parallel — a slow provider probe must never hold back the chat list.
   const convos = loadConversations();
