@@ -52,11 +52,16 @@ FALLBACK_MODEL=deepseek-flash
 FALLBACK_EFFORT=high
 ```
 
-Then rebuild with `docker compose up -d --build`. The llama.cpp adapter has been
-removed; delete obsolete `LLAMACPP_BASE_URL`, `THINK_KWARG`, and
-`PROVIDER_LIVENESS_*` settings. Old llama.cpp selections resolve to the configured
-default on the next turn. Legacy DeepSeek Flash model IDs are normalized to
+Then rebuild with `docker compose up -d --build`. The llama.cpp, OpenRouter and
+Xiaomi MiMo adapters have all been removed; delete obsolete `LLAMACPP_BASE_URL`,
+`THINK_KWARG`, `PROVIDER_LIVENESS_*`, `OPENROUTER_API_KEY` and `XIAOMI_API_KEY`
+settings. Selections on a removed provider resolve to the configured default on
+the next turn. Legacy DeepSeek Flash model IDs are normalized to
 `deepseek-flash` when a conversation is used.
+
+Nothing else about an existing `.env` needs to change when upgrading to the
+settings UI: with no overrides stored, every value still comes from `.env`
+exactly as before (see *Settings*).
 
 ## Code map
 
@@ -64,7 +69,8 @@ default on the next turn. Legacy DeepSeek Flash model IDs are normalized to
 app/
   main.py            FastAPI: /api/* + SSE chat + static UI; starts the Discord bot
   agent.py           streaming tool-call loop (web + Discord DM); wiki-based system prompt
-  config.py          provider registry + env detection, default→fallback model resolution
+  config.py          paths, provider registry, default→fallback model resolution
+  settings.py        the settings registry + live store (stored > env > default)
   providers.py       OpenAI-compatible (async) client factory
   discord_bot.py     Discord client + on_message; DM slash commands; channel/cron use the non-streaming loop
   discord_context.py Discord history window + image/YouTube helpers
@@ -85,7 +91,9 @@ wiki-public/         the Discord-channel wiki (public space) — a separate corp
                      mentions read and write. Same committed/gitignored split
 mcp.json             MCP server definitions
 data/                SQLite DBs + uploads (runtime, gitignored; media lives in
-                     uploads/<conversation-id>/ — see Voice & audio)
+                     uploads/<conversation-id>/ — see Voice & audio).
+                     settings.db holds only the values overridden in the UI —
+                     delete it to fall back entirely to .env
 ```
 
 ## How it works
@@ -123,7 +131,7 @@ data/                SQLite DBs + uploads (runtime, gitignored; media lives in
 
 ### Settings
 
-Everything except paths is a **live setting**: changed in the web UI (sidebar →
+Most configuration is a **live setting**: changed in the web UI (sidebar →
 Settings), applied from the next read, no restart. Each one is declared once in
 `app/settings.py` — type, default, bounds, category, and whether it is a secret
 — and the UI form is generated from that, so adding a setting there makes it
@@ -143,10 +151,15 @@ credentials before you commit to them. Changing a key or base URL clears the
 cached model catalog, which would otherwise keep serving the old key's catalog
 for up to a day.
 
-Two things stay environment-only by necessity: **paths** (`DATA_DIR`, `WIKI_DIR`,
-…), because the settings database lives inside `DATA_DIR` and cannot locate
-itself; and `DISCORD_BOT_TOKEN`, because the Discord client is constructed once
-at startup. Both still need a restart and an `.env` edit.
+Some settings stay environment-only and need an `.env` edit plus a restart:
+
+- **Paths** (`DATA_DIR`, `WORKSPACE_DIR`, `WIKI_DIR`, …) — the settings database
+  lives inside `DATA_DIR`, so a path cannot come from the store a path locates.
+- **`DISCORD_BOT_TOKEN`** — the Discord client is constructed once at startup.
+- `STT_MODEL`, `TTS_VOICE`, `TTS_VOICE_ZH`, `TTS_MAX_CHARS`, `DOC_MAX_CHARS` and
+  `RESEARCH_MAX_ITERATIONS` — these are still read with `os.getenv` in their own
+  modules (`stt.py`, `tts.py`, `docs.py`, `research.py`) rather than through the
+  registry. Nothing stops them being moved; they just haven't been.
 
 In code, read settings through the live object — never copy one into a module
 constant, or it stops tracking changes:
@@ -358,7 +371,7 @@ top-right corner).
   group returns its chats to the root list (nothing else deleted). Full-page
   **search** (title matches + FTS5 full-text over message bodies, highlighted
   snippets). Tabs for the **wiki** (browse/edit pages, `home` = the system
-  prompt), **cron** (scheduled jobs), and **status** (provider health,
+  prompt), **cron** (scheduled jobs), **settings**, and **status** (provider health,
   search-API quota via searchmw, per-model reply counts, storage footprint,
   Discord/scheduler state).
 
@@ -380,9 +393,9 @@ top-right corner).
 
 ## Configuration reference
 
-Everything below can be set in the web UI (Settings), which overrides `.env`.
-`.env` (see `.env.example`) remains the floor and the only way to set paths and
-the Discord token.
+`.env` (see `.env.example`) is the floor for everything below. Most entries can
+also be set in the web UI, which overrides `.env` — the exceptions are listed
+under *Settings* above.
 
 | Variable | What it does |
 | --- | --- |
