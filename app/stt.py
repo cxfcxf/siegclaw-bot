@@ -9,25 +9,27 @@ Whisper is multilingual — mixed 中文/English input works.
 """
 from __future__ import annotations
 
-import os
 import threading
 
-from .config import DATA_DIR
-
-STT_MODEL = os.getenv("STT_MODEL", "base")
+from .config import DATA_DIR, settings
 
 _lock = threading.Lock()
 _model = None
+_model_name = None
 
 
 def _get_model():
-    global _model
+    """The cached whisper model, rebuilt when the configured size changes — the
+    setting is live, so a model loaded under the old name would silently keep
+    serving it."""
+    global _model, _model_name
     with _lock:
-        if _model is None:
+        if _model is None or _model_name != settings.STT_MODEL:
             from faster_whisper import WhisperModel  # heavy import, deferred
 
+            _model_name = settings.STT_MODEL
             _model = WhisperModel(
-                STT_MODEL,
+                _model_name,
                 device="cpu",
                 compute_type="int8",
                 download_root=str(DATA_DIR / "stt-models"),

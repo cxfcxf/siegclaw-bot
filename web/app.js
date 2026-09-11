@@ -2528,7 +2528,7 @@ $("#show-status").onclick = async () => {
 // app/settings.py makes it appear here with no change to this file.
 const SETTINGS_LABELS = {
   providers: "Providers", models: "Models", agent: "Agent",
-  locale: "Locale", research: "Research", discord: "Discord",
+  locale: "Locale", research: "Research", discord: "Discord", media: "Voice & docs",
 };
 // A secret is never sent to the browser, so an untouched password field submits
 // this sentinel and the server keeps the key it already has.
@@ -2580,6 +2580,12 @@ function settingsField(spec) {
 
   const meta = el("div", "settings-meta");
   if (spec.help) { const h = el("span", "hint"); h.textContent = spec.help; meta.appendChild(h); }
+  if (spec.restart) {
+    const r = el("span", "settings-restart");
+    r.textContent = "needs restart";
+    r.title = "Stored immediately, but only picked up the next time the app starts";
+    meta.appendChild(r);
+  }
   if (spec.overridden) {
     const tag = el("button", "settings-reset");
     tag.type = "button";
@@ -2673,7 +2679,7 @@ async function resetSettings(keys) {
   const data = await res.json();
   settingsSpecs = data.settings;
   renderSettings();
-  settingsMessage(data.changed.length ? "Reset — the .env value (or default) is in effect." : "Nothing to reset.");
+  settingsMessage(data.changed.length ? "Reset — the built-in default is in effect." : "Nothing to reset.");
   await loadProviders();
 }
 

@@ -14,9 +14,12 @@ lessons) as markdown pages it reads and rewrites itself.
 Docker — single container, web UI on <http://localhost:8800>:
 
 ```bash
-cp .env.example .env      # set DEEPSEEK_API_KEY before starting
 docker compose up --build -d
 ```
+
+Then open the web UI, go to **Settings → Providers**, paste a DeepSeek API key
+and save — there is no config file to edit. Add the Discord bot token under
+**Settings → Discord** and restart if you want the bot.
 
 *OrbStack note: if a build fails on DNS, add `--build-arg HTTP_PROXY=""`.*
 
@@ -24,9 +27,11 @@ Local — web UI only (plus the bot if the token is set), on <http://localhost:8
 
 ```bash
 pip install -e .
-cp .env.example .env      # provider keys, DISCORD_BOT_TOKEN, …
 python -m uvicorn app.main:app --port 8080
 ```
+
+Configuration is entered in the UI and stored in `data/settings.db`; see
+*Settings*.
 
 Providers appear automatically when usable: a cloud provider when its key is
 set (`OPENAI_API_KEY`, `DEEPSEEK_API_KEY`). DeepSeek is the only provider wired
@@ -41,27 +46,17 @@ base64 `image_url` blocks in user messages. Thinking supports `low`, `high`, and
 `max` effort. See DeepSeek's [model docs](https://api-docs.deepseek.com/) and
 [vision guide](https://api-docs.deepseek.com/guides/vision/).
 
-For an existing installation, update these entries in `.env` (keep your API key):
+For an existing installation, the defaults above are already what a new
+conversation uses, so there is nothing to set. The llama.cpp, OpenRouter and
+Xiaomi MiMo adapters have all been removed; any `LLAMACPP_BASE_URL`,
+`THINK_KWARG`, `PROVIDER_LIVENESS_*`, `OPENROUTER_API_KEY` or `XIAOMI_API_KEY`
+left in an old `.env` is simply ignored — no setting matches them. Selections on
+a removed provider resolve to the configured default on the next turn, and
+legacy DeepSeek Flash model IDs are normalized to `deepseek-flash` when a
+conversation is used.
 
-```dotenv
-DEFAULT_PROVIDER=deepseek
-DEFAULT_MODEL=deepseek-flash
-DEFAULT_EFFORT=high
-FALLBACK_PROVIDER=deepseek
-FALLBACK_MODEL=deepseek-flash
-FALLBACK_EFFORT=high
-```
-
-Then rebuild with `docker compose up -d --build`. The llama.cpp, OpenRouter and
-Xiaomi MiMo adapters have all been removed; delete obsolete `LLAMACPP_BASE_URL`,
-`THINK_KWARG`, `PROVIDER_LIVENESS_*`, `OPENROUTER_API_KEY` and `XIAOMI_API_KEY`
-settings. Selections on a removed provider resolve to the configured default on
-the next turn. Legacy DeepSeek Flash model IDs are normalized to
-`deepseek-flash` when a conversation is used.
-
-Nothing else about an existing `.env` needs to change when upgrading to the
-settings UI: with no overrides stored, every value still comes from `.env`
-exactly as before (see *Settings*).
+If you are coming from a `.env`-based install, see *Settings* for the one-time
+import that carries your keys and tuning across.
 
 ## Code map
 
@@ -92,8 +87,8 @@ wiki-public/         the Discord-channel wiki (public space) — a separate corp
 mcp.json             MCP server definitions
 data/                SQLite DBs + uploads (runtime, gitignored; media lives in
                      uploads/<conversation-id>/ — see Voice & audio).
-                     settings.db holds only the values overridden in the UI —
-                     delete it to fall back entirely to .env
+                     settings.db holds the configuration, including every API
+                     key and the Discord token — back it up
 ```
 
 ## How it works
@@ -131,18 +126,18 @@ data/                SQLite DBs + uploads (runtime, gitignored; media lives in
 
 ### Settings
 
-Most configuration is a **live setting**: changed in the web UI (sidebar →
-Settings), applied from the next read, no restart. Each one is declared once in
-`app/settings.py` — type, default, bounds, category, and whether it is a secret
-— and the UI form is generated from that, so adding a setting there makes it
-appear in the UI with no frontend change.
+**There is no `.env` file.** Configuration lives in `data/settings.db` and is
+edited in the web UI (sidebar → Settings), applied from the next read. Each
+setting is declared once in `app/settings.py` — type, default, bounds, category,
+and whether it is a secret — and the UI form is generated from that, so adding a
+setting there makes it appear in the UI with no frontend change.
 
-Values resolve **stored > environment > default**. An existing install keeps
-working untouched: nothing is stored yet, so every read falls through to
-`.env`. Saving in the UI stores an override; *Reset* on a field drops it and the
-`.env` value (or built-in default) shows through again — the escape hatch when a
-value set through the UI turns out to be wrong. Only fields you actually change
-are submitted, so saving one setting never silently pins its neighbours.
+Values resolve **stored > default**. *Reset* on a field drops the stored value
+and the built-in default takes over — the escape hatch when a value set through
+the UI turns out to be wrong. Only fields you actually change are submitted, so
+saving one setting never silently pins its neighbours. A field marked *needs
+restart* (currently only the Discord bot token) is stored immediately but picked
+up when the app next starts.
 
 API keys are **write-only**: they are never sent to the browser, so the UI shows
 only whether one is set. Leaving a key field blank keeps the stored key; *Reset*
@@ -151,15 +146,24 @@ credentials before you commit to them. Changing a key or base URL clears the
 cached model catalog, which would otherwise keep serving the old key's catalog
 for up to a day.
 
-Some settings stay environment-only and need an `.env` edit plus a restart:
+**Paths are the one exception** and the only thing still read from the process
+environment: `DATA_DIR`, `WORKSPACE_DIR`, `WIKI_DIR`, `WIKI_PUBLIC_DIR` and
+`MCP_CONFIG_PATH`. The settings database lives inside `DATA_DIR`, so a path
+cannot be read from the database that a path locates. Set them through compose's
+`environment:` block if the defaults don't suit; otherwise nothing needs setting.
 
-- **Paths** (`DATA_DIR`, `WORKSPACE_DIR`, `WIKI_DIR`, …) — the settings database
-  lives inside `DATA_DIR`, so a path cannot come from the store a path locates.
-- **`DISCORD_BOT_TOKEN`** — the Discord client is constructed once at startup.
-- `STT_MODEL`, `TTS_VOICE`, `TTS_VOICE_ZH`, `TTS_MAX_CHARS`, `DOC_MAX_CHARS` and
-  `RESEARCH_MAX_ITERATIONS` — these are still read with `os.getenv` in their own
-  modules (`stt.py`, `tts.py`, `docs.py`, `research.py`) rather than through the
-  registry. Nothing stops them being moved; they just haven't been.
+**Upgrading from `.env`**: on the first start against a database that has never
+been migrated, every setting present in the process environment is imported into
+the store, once, and the environment is ignored from then on. So the upgrade is:
+start once with the old `.env` still in place, confirm the log line naming what
+was imported, then delete `.env` and drop `env_file` from `docker-compose.yml`.
+A value identical to its built-in default is skipped rather than stored as a
+redundant override, and one that no longer validates is logged and skipped
+rather than blocking startup.
+
+**Backups matter more now.** `data/settings.db` holds the only copy of the
+Discord bot token and every API key. It is gitignored and bind-mounted from
+`./data`; losing it means re-entering those secrets by hand.
 
 In code, read settings through the live object — never copy one into a module
 constant, or it stops tracking changes:
@@ -360,9 +364,10 @@ top-right corner).
   calls, live activity light, timers); **per-response metrics** (wall time,
   thinking time, tok/s); **stop** mid-turn; the per-reply model tag; a hover
   toolbar with **copy / retry / edit-and-resend / read-aloud**.
-- **Settings page**: providers and API keys, default/fallback models, agent
-  limits, timezone and the Discord context window — generated from the server's
-  spec and applied live (see *Settings*).
+- **Settings page**: the entire server configuration — providers and API keys,
+  default/fallback models, agent limits, timezone, Discord (token, context
+  window), voice/document caps — generated from the server's spec and applied
+  live (see *Settings*).
 - **Sidebar**: history grouped Today / Yesterday / Previous 7 days / dates;
   a **⋮ menu** on each chat and group header (rename / move to group /
   delete — destructive actions behind an in-app confirm dialog). **Groups**
@@ -393,9 +398,9 @@ top-right corner).
 
 ## Configuration reference
 
-`.env` (see `.env.example`) is the floor for everything below. Most entries can
-also be set in the web UI, which overrides `.env` — the exceptions are listed
-under *Settings* above.
+All of these are edited in the web UI (sidebar → Settings) and stored in
+`data/settings.db`. The table is a map of what exists, not a file to write —
+only the path variables at the end are read from the environment.
 
 | Variable | What it does |
 | --- | --- |
@@ -405,7 +410,7 @@ under *Settings* above.
 | `FALLBACK_PROVIDER` / `FALLBACK_MODEL` / `FALLBACK_EFFORT` | Used when the default provider is down |
 | `PROVIDER_MODELS_CACHE_TTL` | Model catalog cache lifetime in seconds (default 86400) |
 | `SEND_FALLBACK_RETRIES` / `SEND_FALLBACK_RETRY_DELAY` | Send-time fallback tuning |
-| `DISCORD_BOT_TOKEN` | Run the Discord bot (omit for web UI only) |
+| `DISCORD_BOT_TOKEN` | Run the Discord bot (blank for web UI only; needs a restart) |
 | `DISCORD_ENABLE_SHELL` | Allow shell/file tools from Discord (default off) |
 | `DISCORD_OWNER_ID` | User id allowed to DM the bot (default: the Discord application owner) |
 | `DISCORD_STREAM_DMS` | Edit-in-place streaming for DM replies (default off) |
@@ -415,12 +420,17 @@ under *Settings* above.
 | `DOC_MAX_CHARS` | Per-document cap on extracted text injected into the prompt (default 400K) |
 | `HARNESS_TZ` | IANA timezone for the frozen prompt date and cron |
 | `CRON_KEEP_RUNS` | Newest cron-run conversations kept per job (default 30) |
-| `WORKSPACE_DIR` | Working directory for the bash/file tools |
-| `WIKI_DIR` | LLM-Wiki pages directory, private space (default `./wiki`) |
-| `WIKI_PUBLIC_DIR` | Discord-channel wiki directory, public space (default `./wiki-public`) |
+| `WORKSPACE_DIR` † | Working directory for the bash/file tools |
+| `WIKI_DIR` † | LLM-Wiki pages directory, private space (default `./wiki`) |
+| `WIKI_PUBLIC_DIR` † | Discord-channel wiki directory, public space (default `./wiki-public`) |
+| `DATA_DIR` † | SQLite DBs and uploads (default `./data`) |
+| `MCP_CONFIG_PATH` † | MCP server definitions (default `./mcp.json`) |
 | `FIRECRAWL_API_URL` | Firecrawl backend for web tools |
 | `IMAGE_SEARCH_URL` | searchmw middleware for `image_search` (its `/images` endpoint) |
 | `CAMOFOX_URL` | Stealth-browser backend for `browser_use` |
+
+† Read from the process environment (compose's `environment:` block), not the
+settings store — the store's database lives inside `DATA_DIR`.
 
 ## Notes
 

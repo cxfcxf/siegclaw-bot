@@ -19,8 +19,9 @@ services:
       - "8800:8080"
     extra_hosts:
       - "host.docker.internal:host-gateway"
-    env_file:
-      - .env
+    # No env_file: configuration lives in data/settings.db and is edited in the
+    # web UI (sidebar -> Settings). Only paths and the proxy opt-out are passed
+    # through the environment; everything else is stored.
     environment:
       <<: *noproxy
     # Only mount runtime data; app code comes from the image. Rebuild to change code.

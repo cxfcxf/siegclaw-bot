@@ -14,7 +14,6 @@ from __future__ import annotations
 import asyncio
 import contextvars
 import logging
-import os
 from datetime import datetime
 from typing import Callable
 from zoneinfo import ZoneInfo
@@ -27,11 +26,6 @@ from .tools.registry import Registry, Tool
 from .tools.web import web_tools
 
 log = logging.getLogger("siegclaw.research")
-
-# Tool-loop budget for a research run — searches, scrapes, and synthesis steps
-# all draw from it. Roomier than a chat turn's cap by design; the preamble's
-# source-count demands are what actually make the model spend it.
-RESEARCH_MAX_ITERATIONS = int(os.getenv("RESEARCH_MAX_ITERATIONS", "60"))
 
 RESEARCH_GROUP = "Research"
 
@@ -149,7 +143,7 @@ async def _run(cid: str, provider: str, model: str, effort: str | None,
         async for ev in run_turn(
             cid, provider, model, question, _research_registry(),
             think=True, effort=effort, preamble=RESEARCH_PREAMBLE,
-            max_iterations=RESEARCH_MAX_ITERATIONS,
+            max_iterations=settings.RESEARCH_MAX_ITERATIONS,
         ):
             et = ev.get("type")
             if et == "token":

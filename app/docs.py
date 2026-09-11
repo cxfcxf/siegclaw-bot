@@ -13,8 +13,9 @@ time (agent._to_api_messages) wrapped in [Attached file: ...] markers — with a
 from __future__ import annotations
 
 import logging
-import os
 from pathlib import Path
+
+from .config import settings
 
 log = logging.getLogger("siegclaw.docs")
 
@@ -24,12 +25,6 @@ DOC_EXT = {
     ".jsonl", ".log", ".yaml", ".yml", ".toml", ".ini", ".xml", ".html",
     ".py", ".js", ".ts", ".sh", ".sql", ".c", ".h", ".cpp", ".go", ".rs",
 }
-
-# Per-document cap on text injected into the prompt. ~400K chars is roughly
-# 100-150K tokens: comfortable for the 1M-context cloud models this feature
-# targets, deliberately more than a local model can take (the provider will
-# error rather than silently answer from half a document).
-DOC_MAX_CHARS = int(os.getenv("DOC_MAX_CHARS", "400000"))
 
 
 def is_doc(filename: str) -> bool:
@@ -69,7 +64,8 @@ def prompt_block(name: str, path: Path) -> str:
         log.warning("doc extraction failed for %s: %s", path, e)
         return f"[Attached file {name!r} could not be read: {type(e).__name__}]"
     clipped = ""
-    if len(text) > DOC_MAX_CHARS:
-        text = text[:DOC_MAX_CHARS]
-        clipped = f"\n[... truncated at {DOC_MAX_CHARS} characters ...]"
+    cap = settings.DOC_MAX_CHARS
+    if len(text) > cap:
+        text = text[:cap]
+        clipped = f"\n[... truncated at {cap} characters ...]"
     return f"[Attached file: {name}]\n{text}{clipped}\n[End of file: {name}]"

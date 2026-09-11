@@ -1,14 +1,17 @@
 """Configuration and provider auto-detection.
 
-Paths come from the environment (see .env.example) because the settings store
-lives inside one of them. Everything else is a live setting: declared in
-`app.settings`, resolved stored-value > environment > default, and editable at
-runtime from the web UI. Read those through the re-exported ``settings`` object
-(``settings.HARNESS_TZ``) — never copy one into a module constant, or it will
-stop tracking changes.
+Paths come from the process environment because the settings store lives inside
+one of them — a path cannot be read from the database that a path locates. They
+are the only configuration that does; everything else is a live setting,
+declared in `app.settings`, stored in SQLite and edited from the web UI. Read
+those through the re-exported ``settings`` object (``settings.HARNESS_TZ``) —
+never copy one into a module constant, or it will stop tracking changes.
+
+There is no .env file and no dotenv loader: on first run the store imports
+whatever the environment holds, and after that the database is the only source.
 
 A provider is "available" (and therefore offered in the web UI) when its API
-key is set, from either source.
+key is set.
 """
 from __future__ import annotations
 
@@ -20,18 +23,17 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import httpx
-from dotenv import load_dotenv
 
 from . import settings as settings_store
 from .settings import settings
-
-load_dotenv()
 
 # --- Paths -----------------------------------------------------------------
 BASE_DIR = Path(__file__).resolve().parent.parent
 
 
 def _path(env: str, default: str) -> Path:
+    """Paths are read from the real environment (e.g. compose's `environment:`),
+    not from the settings store — the store's database lives inside DATA_DIR."""
     return (BASE_DIR / os.getenv(env, default)).resolve()
 
 
@@ -57,10 +59,6 @@ settings_store.init(DATA_DIR / "settings.db")
 
 # Discord's hard per-message limit — a protocol fact, not a preference.
 MAX_DISCORD_LENGTH = 2000
-
-# The Discord client is built once at startup, so its token stays env-only
-# rather than pretending to be live-editable.
-DISCORD_BOT_TOKEN = os.getenv("DISCORD_BOT_TOKEN", "").strip()
 
 
 def _blank_to_none(value: str | None) -> str | None:

@@ -1197,6 +1197,7 @@ body { background: var(--ink); }
 .settings-reset { padding: 2px 8px; font-size: 11px; }
 .settings-reset:hover, .settings-test:hover { background: var(--surface-3); color: var(--text); }
 .settings-test { margin-top: 14px; padding: 7px 14px; font-size: 12.5px; }
+.settings-restart { font-size: 11px; color: var(--clay); }
 /* The actions bar stays reachable while a long category scrolls. */
 .settings-actions {
   position: sticky; bottom: 0; z-index: 1;

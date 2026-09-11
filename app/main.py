@@ -33,7 +33,6 @@ from . import docs, research, settings as settings_store, storage, stt, tts, wik
 from .agent import build_registry, resolve_for_turn, run_turn
 from .config import (
     DATA_DIR,
-    DISCORD_BOT_TOKEN,
     UPLOADS_DIR,
     detect_providers,
     get_provider,
@@ -73,11 +72,12 @@ async def lifespan(app: FastAPI):
     # alongside the web UI. The web UI works fine without one.
     discord_client = None
     discord_task = None
-    if DISCORD_BOT_TOKEN:
+    token = settings.DISCORD_BOT_TOKEN
+    if token:
         from .discord_bot import create_client
 
         discord_client = create_client(mcp_manager)
-        discord_task = asyncio.create_task(discord_client.start(DISCORD_BOT_TOKEN))
+        discord_task = asyncio.create_task(discord_client.start(token))
         _runtime["discord_client"] = discord_client
         print("[discord] starting bot")
 

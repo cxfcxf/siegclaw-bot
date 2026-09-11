@@ -11,19 +11,12 @@ default (TTS_VOICE — see `edge-tts --list-voices` for options).
 from __future__ import annotations
 
 import logging
-import os
 import re
 import uuid
 
-from .config import UPLOADS_DIR
+from .config import UPLOADS_DIR, settings
 
 log = logging.getLogger("siegclaw.tts")
-
-TTS_VOICE = os.getenv("TTS_VOICE", "en-US-AvaMultilingualNeural")
-TTS_VOICE_ZH = os.getenv("TTS_VOICE_ZH", "zh-CN-XiaoxiaoNeural")
-# Keep clips a few minutes at most — nobody listens to a 20-minute reply, and
-# huge inputs make edge-tts slow.
-TTS_MAX_CHARS = int(os.getenv("TTS_MAX_CHARS", "4000"))
 
 _CODE_BLOCK = re.compile(r"```.*?```", re.S)
 _INLINE_MD = re.compile(r"[*_`#>|]+")
@@ -41,7 +34,7 @@ def _speakable(markdown: str) -> str:
     text = _URL.sub("", text)
     text = _INLINE_MD.sub("", text)
     text = re.sub(r"[ \t]+", " ", text).strip()
-    return text[:TTS_MAX_CHARS]
+    return text[:settings.TTS_MAX_CHARS]
 
 
 _CJK = re.compile(r"[㐀-䶿一-鿿豈-﫿]")
@@ -57,9 +50,9 @@ def _voice_for(text: str) -> str:
     flip. Both voices can pronounce the other language for the leftovers."""
     cjk = len(_CJK.findall(text))
     if not cjk:
-        return TTS_VOICE
+        return settings.TTS_VOICE
     latin = len(_LATIN.findall(text))
-    return TTS_VOICE_ZH if cjk * 5 >= latin else TTS_VOICE
+    return settings.TTS_VOICE_ZH if cjk * 5 >= latin else settings.TTS_VOICE
 
 
 async def synthesize(markdown: str, conversation_id: str) -> str | None:

@@ -1,15 +1,22 @@
-"""Live, DB-backed settings with an environment floor.
+"""Live, DB-backed settings.
 
 Every tunable is declared once in ``SPECS`` — name, type, default, category and
-whether it holds a secret. A value is resolved in three layers:
+whether it holds a secret — and a value resolves in two layers:
 
-    stored (SQLite)  >  environment (.env)  >  spec default
+    stored (SQLite)  >  spec default
 
-so an existing deployment keeps running untouched (nothing is stored yet, so
-every read falls through to `.env`), and anything changed in the web UI wins
-from the next read onward. Clearing a stored value re-exposes the env/default
-underneath it, which is the escape hatch when a value set through the UI turns
-out to be wrong.
+The database is the only source of configuration: there is no `.env` file and
+no dotenv loader. Settings are edited in the web UI and apply from the next
+read. Clearing a stored value re-exposes the built-in default underneath it,
+which is the escape hatch when a value set through the UI turns out to be
+wrong.
+
+On first run against a database that has never been migrated, values are
+imported once from the process environment (see ``_migrate_from_env``), so an
+installation upgrading from the old `.env` keeps its keys and tuning without
+anyone retyping them. After that the environment is ignored entirely — the
+paths in `config` are the sole exception, since the database that would hold
+them lives inside one of those paths.
 
 Reads are served from an in-memory cache refreshed on write, so a per-turn
 lookup costs a dict access rather than a query. Writes go through ``set_many``,
@@ -47,6 +54,7 @@ class Spec:
     label: str
     help: str = ""
     secret: bool = False          # write-only: never returned to a client
+    restart: bool = False         # stored live, but only picked up on restart
     choices: tuple[str, ...] = ()
     minimum: float | None = None
     maximum: float | None = None
@@ -124,6 +132,9 @@ SPECS: tuple[Spec, ...] = (
        "The search middleware behind Firecrawl, hit directly for /images."),
 
     # --- Discord -----------------------------------------------------------
+    _s("DISCORD_BOT_TOKEN", "", "discord", "Bot token",
+       "Blank runs the web UI only. The Discord client is built once at"
+       " startup, so a change here needs a restart.", secret=True, restart=True),
     _b("DISCORD_ENABLE_SHELL", False, "discord", "Enable shell tools in Discord",
        "Discord is multi-user and the builtin shell/file tools run in this"
        " container, so they are withheld unless this is on."),
@@ -144,6 +155,23 @@ SPECS: tuple[Spec, ...] = (
        minimum=1, maximum=1000),
     _i("CONTEXT_MAX_CHARS", 16000, "discord", "Channel history char cap",
        minimum=500, maximum=500_000),
+
+    # --- Voice, documents, research ---------------------------------------
+    _s("STT_MODEL", "base", "media", "Speech-to-text model",
+       "faster-whisper size for the mic button and Discord voice messages.",
+       choices=("tiny", "base", "small", "medium")),
+    _s("TTS_VOICE", "en-US-AvaMultilingualNeural", "media", "Read-aloud voice"),
+    _s("TTS_VOICE_ZH", "zh-CN-XiaoxiaoNeural", "media", "Read-aloud voice (Chinese)",
+       "Picked automatically by the reply's language."),
+    _i("TTS_MAX_CHARS", 4000, "media", "Read-aloud length cap",
+       "Nobody listens to a 20-minute reply, and long inputs make edge-tts slow.",
+       minimum=100, maximum=100_000),
+    _i("DOC_MAX_CHARS", 400_000, "media", "Document text cap",
+       "Per-document cap on extracted text injected into the prompt. ~400K"
+       " chars is roughly 100-150K tokens.", minimum=1000, maximum=5_000_000),
+    _i("RESEARCH_MAX_ITERATIONS", 60, "media", "Deep-research iterations",
+       "Tool-loop budget for one research run — roomier than a chat turn by"
+       " design.", minimum=1, maximum=500),
 )
 
 BY_KEY: dict[str, Spec] = {s.key: s for s in SPECS}
@@ -196,9 +224,16 @@ _lock = threading.RLock()
 _listeners: list[Callable[[set[str]], None]] = []
 
 
+# Marker row recording that the one-time environment import has run. It lives in
+# the settings table itself so the check is a single query, and is not a Spec,
+# so `_stored` skips it as an unknown key.
+_MIGRATED_KEY = "__env_imported__"
+
+
 def init(db_path) -> None:
-    """Point the store at its SQLite file and warm the cache. Called by
-    `config` once the data directory is known."""
+    """Point the store at its SQLite file, import any legacy environment
+    configuration once, and warm the cache. Called by `config` as soon as the
+    data directory is known."""
     global _db_path
     with _lock:
         _db_path = str(db_path)
@@ -209,7 +244,56 @@ def init(db_path) -> None:
                 " value TEXT NOT NULL,"   # JSON-encoded
                 " updated_at REAL)"
             )
+            _migrate_from_env(conn)
         _reload()
+
+
+def _migrate_from_env(conn: sqlite3.Connection) -> None:
+    """Import configuration from the process environment, exactly once per
+    database. This is the upgrade path off the old `.env` file: on the first
+    start after that file goes away, whatever it had already exported into the
+    environment is captured into the store and never read again.
+
+    A value that no longer validates (a setting whose bounds tightened, a
+    provider that was removed) is skipped with a warning rather than aborting
+    the import — losing one stale entry beats failing to start.
+
+    The "already migrated" marker is only written when something was actually
+    imported. An import that found nothing must not consume the one shot: any
+    process that touches the database (a script, a test, a shell one-liner)
+    runs this, and one that happens to have no environment would otherwise
+    silently spend the migration and leave the real start with nothing.
+    """
+    if conn.execute("SELECT 1 FROM settings WHERE key = ?", (_MIGRATED_KEY,)).fetchone():
+        return
+    imported = []
+    for spec in SPECS:
+        raw = os.getenv(spec.key)
+        if raw is None or not raw.strip():
+            continue  # an unset or empty env var is not a value
+        try:
+            value = coerce(spec, raw)
+        except SettingsError as exc:
+            log.warning("settings: skipping %s during import (%s)", spec.key, exc)
+            continue
+        if value == spec.default:
+            continue  # storing a value identical to the default only adds noise
+        conn.execute(
+            "INSERT OR REPLACE INTO settings (key, value, updated_at)"
+            " VALUES (?, ?, strftime('%s','now'))",
+            (spec.key, json.dumps(value)),
+        )
+        imported.append(spec.key)
+    if not imported:
+        return
+    conn.execute(
+        "INSERT OR REPLACE INTO settings (key, value, updated_at)"
+        " VALUES (?, ?, strftime('%s','now'))",
+        (_MIGRATED_KEY, json.dumps(True)),
+    )
+    # Names only — several of these are secrets.
+    log.info("settings: imported %d setting(s) from the environment: %s",
+             len(imported), ", ".join(sorted(imported)))
 
 
 def _conn() -> sqlite3.Connection:
@@ -237,16 +321,14 @@ def _stored() -> dict[str, Any]:
 
 
 def _resolve(spec: Spec, stored: dict[str, Any]) -> Any:
-    """stored > environment > default, with a bad value never fatal."""
-    for source, raw in (("stored", stored.get(spec.key)), ("env", os.getenv(spec.key))):
-        if raw is None:
-            continue
-        if source == "env" and not raw.strip() and spec.default != "":
-            continue  # an empty env var means "unset", not "blank"
+    """stored > default, with a bad stored value never fatal — it is logged and
+    the default is used, rather than taking the whole app down on a read."""
+    raw = stored.get(spec.key)
+    if raw is not None:
         try:
             return coerce(spec, raw)
         except SettingsError as exc:
-            log.warning("settings: ignoring %s value (%s)", source, exc)
+            log.warning("settings: ignoring stored value (%s)", exc)
     return spec.default
 
 
@@ -361,6 +443,7 @@ def describe() -> list[dict[str, Any]]:
             "label": spec.label,
             "help": spec.help,
             "secret": spec.secret,
+            "restart": spec.restart,
             "overridden": spec.key in stored,
             "choices": list(spec.choices),
             "minimum": spec.minimum,
