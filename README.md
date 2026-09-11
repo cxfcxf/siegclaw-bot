@@ -29,8 +29,9 @@ python -m uvicorn app.main:app --port 8080
 ```
 
 Providers appear automatically when usable: a cloud provider when its key is
-set (`OPENAI_API_KEY`, `OPENROUTER_API_KEY`, `DEEPSEEK_API_KEY`, …). If a provider
-doesn't list models, type a model id — the model field is a free-text combobox.
+set (`OPENAI_API_KEY`, `DEEPSEEK_API_KEY`). DeepSeek is the only provider wired
+up by default; OpenAI works if you point a key at it. If a provider doesn't list
+models, type a model id — the model field is a free-text combobox.
 
 DeepSeek uses `deepseek-flash`, the canonical API id for **V4.1 Flash** and the
 default primary and fallback model, with `high` reasoning effort. It supports
@@ -100,9 +101,8 @@ data/                SQLite DBs + uploads (runtime, gitignored; media lives in
   cache never invalidates. Anything fresher comes from tools (`current_time`,
   `read_wiki_page`, `search_wiki`); only an actual wiki edit busts the cache —
   the price of learning, paid once per edit.
-- **Thinking is provider-aware**: DeepSeek/MiMo via `thinking.type`
-  (DeepSeek also accepts `reasoning_effort`),
-  OpenRouter via `reasoning.enabled`. Reasoning is read back from whichever
+- **Thinking is provider-aware**: DeepSeek via `thinking.type`
+  (it also accepts `reasoning_effort`). Reasoning is read back from whichever
   field the provider emits (`reasoning_content` / `reasoning` /
   `reasoning_details`) and shown in the collapsible process trace.
 
@@ -120,6 +120,17 @@ data/                SQLite DBs + uploads (runtime, gitignored; media lives in
   provider stops serving mid-life, the turn retries then permanently switches
   that conversation to the fallback (persisted — no flapping); new
   conversations pick up the original once it's back.
+
+### Context windows
+
+The context meter needs each model's maximum context. Most providers report it
+on `/models` as `context_length` (or `context_window` / nested `meta`), and
+`config._context_of` reads whichever shape turns up. DeepSeek is not one of
+them — its `/models` returns only `id`/`object`/`owned_by` — so its published
+figures live in `config.STATIC_MODEL_CONTEXT` (both models: 1M). A value the
+API actually reports always wins over that table; the table is only consulted
+when the catalog omits the field. Add an entry there when a new provider is
+similarly quiet, and the meter works with no other changes.
 
 ### Discord
 
@@ -296,7 +307,7 @@ top-right corner).
   effort select; **attachments** — images (attach/paste/drag) and documents
   (see *Document attachments*); **mic** voice input (see *Voice & audio*);
   auto-expanding input with a fullscreen toggle; a **context meter** (used
-  vs. the model's max context).
+  vs. the model's max context — see *Context windows*).
 - **Responses**: collapsible **process trace** (reasoning + nested tool
   calls, live activity light, timers); **per-response metrics** (wall time,
   thinking time, tok/s); **stop** mid-turn; the per-reply model tag; a hover
@@ -335,7 +346,7 @@ All via `.env` (see `.env.example`) unless noted.
 
 | Variable | What it does |
 | --- | --- |
-| `OPENAI_API_KEY` / `OPENROUTER_API_KEY` / `DEEPSEEK_API_KEY` … | Enable a cloud provider |
+| `OPENAI_API_KEY` / `DEEPSEEK_API_KEY` | Enable a cloud provider |
 | `DEFAULT_PROVIDER` / `DEFAULT_MODEL` | Model for every new conversation (blank model = first model in the provider catalog) |
 | `DEFAULT_EFFORT` | Default reasoning effort (`high`; DeepSeek supports `low`, `high`, `max`) |
 | `FALLBACK_PROVIDER` / `FALLBACK_MODEL` / `FALLBACK_EFFORT` | Used when the default provider is down |

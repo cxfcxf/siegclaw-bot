@@ -82,7 +82,7 @@ MAX_DISCORD_LENGTH = 2000
 # Every NEW conversation — web UI, Discord DM, Discord channel mention — starts
 # on this model. The preferred default is tried first; if its provider isn't
 # available, the fallback is used instead. A blank model selects the provider's
-# first listed model. EFFORT applies to DeepSeek/OpenRouter.
+# first listed model. EFFORT applies to DeepSeek.
 DEFAULT_PROVIDER = os.getenv("DEFAULT_PROVIDER", "deepseek").strip()
 DEFAULT_MODEL = os.getenv("DEFAULT_MODEL", "deepseek-flash").strip()
 DEFAULT_EFFORT = os.getenv("DEFAULT_EFFORT", "high").strip() or None
@@ -122,9 +122,7 @@ class ProviderSpec:
 # Registry of known OpenAI-compatible providers.
 KNOWN_PROVIDERS: list[ProviderSpec] = [
     ProviderSpec("openai", "OpenAI", "OPENAI_BASE_URL", "https://api.openai.com/v1", "OPENAI_API_KEY"),
-    ProviderSpec("openrouter", "OpenRouter", "OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1", "OPENROUTER_API_KEY"),
     ProviderSpec("deepseek", "DeepSeek", "DEEPSEEK_BASE_URL", "https://api.deepseek.com/v1", "DEEPSEEK_API_KEY"),
-    ProviderSpec("xiaomi", "Xiaomi MiMo", "XIAOMI_BASE_URL", "https://api.xiaomimimo.com/v1", "XIAOMI_API_KEY"),
 ]
 
 
@@ -167,37 +165,19 @@ EFFORT_LEVELS: dict[str, list[str]] = {
     "deepseek": ["low", "high", "max"],
 }
 
-def _openrouter_context_index() -> dict[str, int]:
-    """Context windows harvested from OpenRouter's /models, which — unlike most
-    direct provider APIs (DeepSeek, MiMo return only id/owner) — reports
-    context_length for every model. Used to fill context for those providers so
-    the UI meter works without any hardcoded values.
-
-    Indexed by both the full OpenRouter id (``vendor/model``) and the bare model
-    id, so a direct provider's plain id (e.g. ``deepseek-v4-flash``) matches
-    OpenRouter's ``deepseek/deepseek-v4-flash``. Requires OPENROUTER_API_KEY;
-    returns {} otherwise. Reuses the day-TTL model cache (with background
-    refresh), so it adds no extra fetch beyond detecting OpenRouter itself."""
-    spec = get_provider("openrouter")
-    if spec is None or not spec.api_key():
-        return {}
-    index: dict[str, int] = {}
-    for m in _cached_models("openrouter", spec.base_url(), spec.api_key()):
-        ctx = m.get("context")
-        if not ctx:
-            continue
-        mid = m["id"]
-        index[mid] = ctx
-        bare = mid.split("/", 1)[1] if "/" in mid else mid
-        index.setdefault(bare, ctx)  # full id wins on a bare-name collision
-    return index
+# Context windows for models whose provider's /models omits the field —
+# DeepSeek returns only id/object/owned_by, so its published figures are kept
+# here. A value the API actually reports always wins over this table.
+STATIC_MODEL_CONTEXT: dict[str, dict[str, int]] = {
+    "deepseek": {"deepseek-flash": 1_000_000, "deepseek-v4-pro": 1_000_000},
+}
 
 
 def _context_of(m: dict) -> int | None:
     """Pull a max-context-window value out of a /models entry across providers.
 
-    Field name/shape varies: OpenRouter uses context_length; gateways may use
-    context_window or nested metadata.
+    Field name/shape varies: providers may report context_length, and gateways
+    may use context_window or nested metadata.
     """
     for key in ("context_length", "context_window", "max_context_length"):
         v = m.get(key)
@@ -300,7 +280,6 @@ def _cached_models(provider_id: str, base_url: str, api_key: str | None) -> list
 def detect_providers() -> list[AvailableProvider]:
     """List providers with API keys and their cached model catalogs."""
     available: list[AvailableProvider] = []
-    or_ctx = _openrouter_context_index()  # context source for APIs that omit it
     for spec in KNOWN_PROVIDERS:
         base_url = spec.base_url()
         key = spec.api_key()
@@ -311,12 +290,12 @@ def detect_providers() -> list[AvailableProvider]:
         models = _cached_models(spec.id, base_url, key)
 
         ids = [m["id"] for m in models]
-        # Prefer the context the API actually reports; otherwise look it up in
-        # OpenRouter's catalog (by full vendor/model id, then bare id) for
-        # providers (DeepSeek, MiMo) whose own /models omits the field.
+        # Prefer the context the API reports; fall back to the static table for
+        # providers that omit it.
+        static = STATIC_MODEL_CONTEXT.get(spec.id, {})
         ctx = {}
         for m in models:
-            c = m["context"] or or_ctx.get(f"{spec.id}/{m['id']}") or or_ctx.get(m["id"])
+            c = m["context"] or static.get(canonical_model(spec.id, m["id"]))
             if c:
                 ctx[m["id"]] = c
         available.append(AvailableProvider(spec.id, spec.name, base_url, ids, ctx, effort))

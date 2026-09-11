@@ -44,7 +44,7 @@ from .tools.web import web_tools
 # Providers that require the chain-of-thought to be replayed on tool-call turns
 # (they 400 otherwise). The stored `reasoning` is emitted back as
 # `reasoning_content` for these; for everyone else it's dropped.
-_REASONING_REPLAY_PROVIDERS = ("deepseek", "xiaomi")
+_REASONING_REPLAY_PROVIDERS = ("deepseek",)
 
 log = logging.getLogger("siegclaw.agent")
 
@@ -162,20 +162,14 @@ def fallback_after_failure(provider: str, model: str) -> tuple[str, str, str | N
 
 def reasoning_extra_body(provider: str, think: bool, effort: str | None = None) -> dict[str, Any]:
     """Per-request reasoning toggle + effort. The mechanism differs per provider:
-    - DeepSeek/Xiaomi MiMo: {"thinking": {"type": enabled|disabled}} (OpenAI-compat).
-      DeepSeek also honors reasoning_effort (low/high/max).
-    - OpenRouter: reasoning.enabled (gateway-level); optional reasoning.effort.
+    - DeepSeek: {"thinking": {"type": enabled|disabled}} (OpenAI-compat), and it
+      also honors reasoning_effort (low/high/max).
     - Others (OpenAI): no known toggle; let the model default.
     Shared by the web turn (run_turn) and the Discord turn."""
     if needs_reasoning_replay(provider):
         body: dict[str, Any] = {"thinking": {"type": "enabled" if think else "disabled"}}
         if think and effort and provider == "deepseek":
             body["reasoning_effort"] = effort
-        return body
-    if provider == "openrouter":
-        body = {"reasoning": {"enabled": bool(think)}}
-        if think and effort:
-            body["reasoning"]["effort"] = effort
         return body
     return {}
 
@@ -241,7 +235,7 @@ def _to_api_messages(history: list[dict[str, Any]], provider: str | None = None)
     model reads the document as part of the question, every turn.
 
     For providers that require the chain-of-thought to be replayed on tool-call
-    turns (DeepSeek, Xiaomi MiMo), the stored `reasoning` is emitted back as
+    turns (DeepSeek), the stored `reasoning` is emitted back as
     `reasoning_content`; for everyone else it's dropped."""
     drop = ("images", "reasoning", "model", "audio", "docs")  # non-API display fields
     keep_reasoning = needs_reasoning_replay(provider)
@@ -443,8 +437,8 @@ async def run_turn(
 
             # Reasoning text. Field name differs by provider/engine:
             # - reasoning_content: DeepSeek convention.
-            # - reasoning: OpenRouter's field (flat string per chunk).
-            # - reasoning_details: OpenRouter's structured array fallback.
+            # - reasoning: flat string per chunk (some gateways).
+            # - reasoning_details: structured array fallback.
             reasoning_piece = (
                 getattr(delta, "reasoning_content", None)
                 or getattr(delta, "reasoning", None)
@@ -474,7 +468,7 @@ async def run_turn(
                     slot["function"]["arguments"] += tc.function.arguments
 
         # Persist the assistant message (content and/or tool calls). Reasoning is
-        # stored for the UI; for DeepSeek/MiMo it's also kept on the in-memory
+        # stored for the UI; for DeepSeek it's also kept on the in-memory
         # assistant message (as reasoning_content) so tool-call turns replay it
         # back to the API on the next iteration (else those providers 400).
         if tool_calls:

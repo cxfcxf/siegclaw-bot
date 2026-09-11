@@ -509,7 +509,7 @@ async def owner_or_user(client: discord.Client, target_id: str = "owner"):
 # --------------------------------------------------------------------------- #
 class _PagedSelect(discord.ui.View):
     """An ephemeral dropdown picker. Discord caps a select menu at 25 options,
-    so longer lists get ◀ ▶ page buttons (e.g. OpenRouter's model list)."""
+    so longer lists get ◀ ▶ page buttons (e.g. a long model list)."""
 
     PAGE = 25
 

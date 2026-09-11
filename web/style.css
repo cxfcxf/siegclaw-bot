@@ -288,7 +288,7 @@ body {
 /* Buttons (base) */
 button { font-family: var(--font-body); }
 
-/* Model picker — searchable combobox. OpenRouter exposes hundreds of models,
+/* Model picker — searchable combobox. A provider can expose many models,
    so a plain <select> is unwieldy; typing filters the list live. The dropdown
    opens upward because the control sits near the bottom of the window. */
 .combobox { position: relative; }
