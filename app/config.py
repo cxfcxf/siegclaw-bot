@@ -73,15 +73,13 @@ def _blank_to_none(value: str | None) -> str | None:
 class ProviderSpec:
     id: str
     name: str
-    base_url_env: str | None
+    base_url_env: str
     base_url_default: str
     key_env: str
 
     def base_url(self) -> str:
-        override = getattr(settings, self.base_url_env, "") if self.base_url_env else ""
-        if override:
-            return override.rstrip("/")
-        return self.base_url_default.rstrip("/")
+        override = getattr(settings, self.base_url_env, "")
+        return (override or self.base_url_default).rstrip("/")
 
     def api_key(self) -> str | None:
         return getattr(settings, self.key_env, "") or None
@@ -98,9 +96,12 @@ def get_provider(provider_id: str) -> ProviderSpec | None:
     return next((p for p in KNOWN_PROVIDERS if p.id == provider_id), None)
 
 
-def _models_reachable(base_url: str, api_key: str | None, timeout: float = 4.0) -> list[dict] | None:
+def probe_models(base_url: str, api_key: str | None, timeout: float = 4.0) -> list[dict] | None:
     """Return [{id, context}] if the OpenAI-compatible /models endpoint responds,
-    else None. `context` is the model's max context window when reported."""
+    else None. `context` is the model's max context window when reported.
+
+    Uncached, so the settings UI can use it to validate a base URL + key before
+    they are saved."""
     if not base_url:
         return None
     headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
@@ -115,12 +116,6 @@ def _models_reachable(base_url: str, api_key: str | None, timeout: float = 4.0) 
         ]
     except Exception:
         return None
-
-
-def probe_models(base_url: str, api_key: str | None) -> list[dict] | None:
-    """One-shot, uncached reachability check used by the settings UI to validate
-    a base URL + key before they are saved. None means no usable response."""
-    return _models_reachable(base_url, api_key)
 
 
 @dataclass
@@ -233,7 +228,7 @@ def model_valid_for(provider_id: str, model: str) -> bool:
 def _do_fetch_models(provider_id: str, base_url: str, api_key: str | None) -> list[dict] | None:
     """Fetch the provider's model list and cache it on success (failures are not
     cached, so a transient outage is retried rather than locked in)."""
-    fetched = _models_reachable(base_url, api_key)
+    fetched = probe_models(base_url, api_key)
     if fetched is not None:
         _models_cache[provider_id] = (time.monotonic(), fetched)
     return fetched
@@ -259,12 +254,11 @@ def detect_providers() -> list[AvailableProvider]:
     """List providers with API keys and their cached model catalogs."""
     available: list[AvailableProvider] = []
     for spec in KNOWN_PROVIDERS:
-        base_url = spec.base_url()
         key = spec.api_key()
-        effort = EFFORT_LEVELS.get(spec.id, [])
-
         if not key:
             continue
+        base_url = spec.base_url()
+        effort = EFFORT_LEVELS.get(spec.id, [])
         models = _cached_models(spec.id, base_url, key)
 
         ids = [m["id"] for m in models]

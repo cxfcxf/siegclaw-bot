@@ -27,7 +27,7 @@ import os
 import sqlite3
 import threading
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 
 log = logging.getLogger("siegclaw.settings")
@@ -47,7 +47,6 @@ class Spec:
     label: str
     help: str = ""
     secret: bool = False          # write-only: never returned to a client
-    restart: bool = False         # stored live, but only applied on restart
     choices: tuple[str, ...] = ()
     minimum: float | None = None
     maximum: float | None = None
@@ -148,7 +147,6 @@ SPECS: tuple[Spec, ...] = (
 )
 
 BY_KEY: dict[str, Spec] = {s.key: s for s in SPECS}
-CATEGORIES: tuple[str, ...] = tuple(dict.fromkeys(s.category for s in SPECS))
 
 
 class SettingsError(ValueError):
@@ -243,7 +241,7 @@ def _resolve(spec: Spec, stored: dict[str, Any]) -> Any:
     for source, raw in (("stored", stored.get(spec.key)), ("env", os.getenv(spec.key))):
         if raw is None:
             continue
-        if source == "env" and isinstance(raw, str) and not raw.strip() and spec.default != "":
+        if source == "env" and not raw.strip() and spec.default != "":
             continue  # an empty env var means "unset", not "blank"
         try:
             return coerce(spec, raw)
@@ -272,10 +270,19 @@ def get(key: str) -> Any:
     return _values()[key]
 
 
-def is_stored(key: str) -> bool:
-    """Whether this setting has been overridden through the UI (as opposed to
-    coming from the environment or the built-in default)."""
-    return key in _stored()
+def _write(mutate: Callable[[sqlite3.Connection], None]) -> set[str]:
+    """Run a DB mutation, refresh the cache and announce what actually changed.
+    Holding the lock across the write and the reload keeps a concurrent reader
+    from seeing the old cache after the row is gone."""
+    with _lock:
+        before = dict(_values())
+        with _conn() as conn:
+            mutate(conn)
+        _reload()
+        changed = {k for k, v in _values().items() if before.get(k) != v}
+    if changed:
+        _notify(changed)
+    return changed
 
 
 def set_many(updates: dict[str, Any]) -> set[str]:
@@ -301,41 +308,27 @@ def set_many(updates: dict[str, Any]) -> set[str]:
                 continue
         cleaned[key] = coerce(spec, raw)
 
-    with _lock:
-        before = dict(_values())
-        with _conn() as conn:
-            for key, value in cleaned.items():
-                conn.execute(
-                    "INSERT INTO settings (key, value, updated_at) VALUES (?, ?, strftime('%s','now'))"
-                    " ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at",
-                    (key, json.dumps(value)),
-                )
-            for key in deletes:
-                conn.execute("DELETE FROM settings WHERE key = ?", (key,))
-        _reload()
-        changed = {k for k, v in _values().items() if before.get(k) != v}
+    def mutate(conn: sqlite3.Connection) -> None:
+        for key, value in cleaned.items():
+            conn.execute(
+                "INSERT INTO settings (key, value, updated_at) VALUES (?, ?, strftime('%s','now'))"
+                " ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at",
+                (key, json.dumps(value)),
+            )
+        conn.executemany("DELETE FROM settings WHERE key = ?", [(k,) for k in deletes])
 
-    if changed:
-        _notify(changed)
-    return changed
+    return _write(mutate)
 
 
 def reset(keys: list[str] | None = None) -> set[str]:
     """Drop stored overrides so the environment/default shows through again."""
-    with _lock:
-        before = dict(_values())
-        with _conn() as conn:
-            if keys is None:
-                conn.execute("DELETE FROM settings")
-            else:
-                conn.executemany(
-                    "DELETE FROM settings WHERE key = ?", [(k,) for k in keys]
-                )
-        _reload()
-        changed = {k for k, v in _values().items() if before.get(k) != v}
-    if changed:
-        _notify(changed)
-    return changed
+    def mutate(conn: sqlite3.Connection) -> None:
+        if keys is None:
+            conn.execute("DELETE FROM settings")
+        else:
+            conn.executemany("DELETE FROM settings WHERE key = ?", [(k,) for k in keys])
+
+    return _write(mutate)
 
 
 # --- Change notification ---------------------------------------------------
@@ -368,7 +361,6 @@ def describe() -> list[dict[str, Any]]:
             "label": spec.label,
             "help": spec.help,
             "secret": spec.secret,
-            "restart": spec.restart,
             "overridden": spec.key in stored,
             "choices": list(spec.choices),
             "minimum": spec.minimum,

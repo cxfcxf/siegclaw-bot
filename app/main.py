@@ -29,17 +29,16 @@ from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import docs, research, storage, stt, tts, wiki
+from . import docs, research, settings as settings_store, storage, stt, tts, wiki
 from .agent import build_registry, resolve_for_turn, run_turn
-from . import settings as settings_store
 from .config import (
     DATA_DIR,
     DISCORD_BOT_TOKEN,
     UPLOADS_DIR,
     detect_providers,
     get_provider,
-    provider_serving,
     probe_models,
+    provider_serving,
     resolve_default_model,
     settings,
 )
@@ -171,11 +170,15 @@ class SettingsUpdate(BaseModel):
     values: dict[str, Any]
 
 
+class SettingsReset(BaseModel):
+    keys: list[str] = []
+
+
 @app.get("/api/settings")
 def api_settings():
-    """Spec metadata plus current values, grouped for the UI. Secrets come back
-    as a set/unset flag and never as a value — see settings.describe."""
-    return {"categories": list(settings_store.CATEGORIES), "settings": settings_store.describe()}
+    """Spec metadata plus current values, in category order for the UI. Secrets
+    come back as a set/unset flag and never as a value — see settings.describe."""
+    return {"settings": settings_store.describe()}
 
 
 @app.put("/api/settings")
@@ -192,11 +195,10 @@ def api_settings_update(body: SettingsUpdate):
 
 
 @app.post("/api/settings/reset")
-def api_settings_reset(body: SettingsUpdate | None = None):
+def api_settings_reset(body: SettingsReset | None = None):
     """Drop stored overrides (all, or the named keys) so the values in .env —
     or the built-in defaults — show through again."""
-    keys = list(body.values) if body and body.values else None
-    changed = settings_store.reset(keys)
+    changed = settings_store.reset(body.keys if body and body.keys else None)
     return {"ok": True, "changed": sorted(changed), "settings": settings_store.describe()}
 
 

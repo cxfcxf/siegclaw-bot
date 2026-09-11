@@ -2536,6 +2536,16 @@ const SECRET_UNCHANGED = "__unchanged__";
 let settingsSpecs = [];
 let settingsTab = null;
 
+// Remember what was loaded so the save can submit only what actually
+// changed. Submitting the whole category would store every field at its
+// current value, silently pinning settings the user never touched so they
+// stop tracking .env.
+function initialValue(spec) {
+  if (spec.type === "bool") return String(!!spec.value);
+  if (spec.secret) return "";  // the real value never reaches the browser
+  return String(spec.value ?? "");
+}
+
 function settingsField(spec) {
   const row = el("div", "settings-row");
   const label = el("label", "settings-label");
@@ -2543,35 +2553,28 @@ function settingsField(spec) {
   label.htmlFor = `set-${spec.key}`;
   row.appendChild(label);
 
-  let input;
+  const input = el("input");
   if (spec.type === "bool") {
-    input = el("input");
     input.type = "checkbox";
     input.checked = !!spec.value;
+  } else if (spec.secret) {
+    input.type = "password";
+    // Placeholder carries the only fact we have about a stored key: whether
+    // one exists. Typing replaces it; leaving it blank keeps it.
+    input.placeholder = spec.is_set ? "•••••••• (set — type to replace)" : "not set";
+    input.value = "";
   } else {
-    input = el("input");
-    input.type = spec.secret ? "password" : (spec.type === "str" ? "text" : "number");
+    input.type = spec.type === "str" ? "text" : "number";
     if (spec.type === "float") input.step = "any";
     if (spec.minimum !== null) input.min = spec.minimum;
     if (spec.maximum !== null) input.max = spec.maximum;
-    if (spec.secret) {
-      // Placeholder carries the only fact we have about a stored key: whether
-      // one exists. Typing replaces it; leaving it blank keeps it.
-      input.placeholder = spec.is_set ? "•••••••• (set — type to replace)" : "not set";
-      input.value = "";
-    } else {
-      input.value = spec.value ?? "";
-    }
+    input.value = spec.value ?? "";
   }
   input.id = `set-${spec.key}`;
   input.dataset.key = spec.key;
   input.dataset.type = spec.type;
   input.dataset.secret = spec.secret ? "1" : "";
-  // Remember what was loaded so the save can submit only what actually
-  // changed. Submitting the whole category would store every field at its
-  // current value, silently pinning settings the user never touched so they
-  // stop tracking .env.
-  input.dataset.initial = spec.type === "bool" ? String(!!spec.value) : (spec.secret ? "" : String(spec.value ?? ""));
+  input.dataset.initial = initialValue(spec);
   input.className = "settings-input";
   row.appendChild(input);
 
@@ -2585,7 +2588,6 @@ function settingsField(spec) {
     tag.onclick = () => resetSettings([spec.key]);
     meta.appendChild(tag);
   }
-  if (spec.restart) { const r = el("span", "settings-restart"); r.textContent = "needs restart"; meta.appendChild(r); }
   row.appendChild(meta);
   return row;
 }
@@ -2664,9 +2666,9 @@ async function saveSettings() {
 }
 
 async function resetSettings(keys) {
-  const body = keys ? {values: Object.fromEntries(keys.map((k) => [k, 0]))} : {values: {}};
   const res = await fetch("/api/settings/reset", {
-    method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body),
+    method: "POST", headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({keys: keys || []}),   // [] means "every override"
   });
   const data = await res.json();
   settingsSpecs = data.settings;
@@ -2678,6 +2680,7 @@ async function resetSettings(keys) {
 async function testProviders() {
   settingsMessage("Testing…");
   const results = [];
+  let failed = false;
   for (const spec of settingsSpecs.filter((s) => s.key.endsWith("_BASE_URL"))) {
     const provider = spec.key.replace("_BASE_URL", "").toLowerCase();
     const urlInput = $(`#set-${spec.key}`);
@@ -2693,9 +2696,10 @@ async function testProviders() {
       }),
     });
     const data = await res.json();
+    if (!data.ok) failed = true;
     results.push(`${provider}: ${data.ok ? `${data.count} models` : data.error}`);
   }
-  settingsMessage(results.join(" · "), results.some((r) => !/\d+ models/.test(r)));
+  settingsMessage(results.join(" · "), failed);
 }
 
 $("#show-settings").onclick = async () => {
