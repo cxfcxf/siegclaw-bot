@@ -859,13 +859,14 @@ const PAGES = {
   search: "#search-page",
   wiki: "#wiki-page",
   jobs: "#jobs-page",
+  settings: "#settings-page",
   status: "#status-page",
 };
 let currentPage = null;  // null = chat view
 
 function showPage(name) {
   currentPage = name || null;
-  $("#view-label").textContent = ({search: "Search chats", wiki: "Wiki", jobs: "Scheduled jobs", status: "Status"})[currentPage] || (state.conversationId ? "Conversation" : "New conversation");
+  $("#view-label").textContent = ({search: "Search chats", wiki: "Wiki", jobs: "Scheduled jobs", settings: "Settings", status: "Status"})[currentPage] || (state.conversationId ? "Conversation" : "New conversation");
   if (window.matchMedia("(max-width: 720px)").matches) setSidebarCollapsed(true);
   Object.entries(PAGES).forEach(([k, sel]) => { $(sel).hidden = k !== currentPage; });
   $("#chat").hidden = !!currentPage;
@@ -2518,6 +2519,198 @@ $("#show-status").onclick = async () => {
     $("#status-body").innerHTML = "";
     $("#status-body").appendChild(statusRows([["error", err.message, "bad"]]));
   }
+};
+
+
+// --- Settings ---------------------------------------------------------------
+// Every field is described by the server (type, bounds, category, secret), so
+// the form is generated rather than hand-written: adding a setting to
+// app/settings.py makes it appear here with no change to this file.
+const SETTINGS_LABELS = {
+  providers: "Providers", models: "Models", agent: "Agent",
+  locale: "Locale", research: "Research", discord: "Discord",
+};
+// A secret is never sent to the browser, so an untouched password field submits
+// this sentinel and the server keeps the key it already has.
+const SECRET_UNCHANGED = "__unchanged__";
+let settingsSpecs = [];
+let settingsTab = null;
+
+function settingsField(spec) {
+  const row = el("div", "settings-row");
+  const label = el("label", "settings-label");
+  label.textContent = spec.label;
+  label.htmlFor = `set-${spec.key}`;
+  row.appendChild(label);
+
+  let input;
+  if (spec.type === "bool") {
+    input = el("input");
+    input.type = "checkbox";
+    input.checked = !!spec.value;
+  } else {
+    input = el("input");
+    input.type = spec.secret ? "password" : (spec.type === "str" ? "text" : "number");
+    if (spec.type === "float") input.step = "any";
+    if (spec.minimum !== null) input.min = spec.minimum;
+    if (spec.maximum !== null) input.max = spec.maximum;
+    if (spec.secret) {
+      // Placeholder carries the only fact we have about a stored key: whether
+      // one exists. Typing replaces it; leaving it blank keeps it.
+      input.placeholder = spec.is_set ? "•••••••• (set — type to replace)" : "not set";
+      input.value = "";
+    } else {
+      input.value = spec.value ?? "";
+    }
+  }
+  input.id = `set-${spec.key}`;
+  input.dataset.key = spec.key;
+  input.dataset.type = spec.type;
+  input.dataset.secret = spec.secret ? "1" : "";
+  // Remember what was loaded so the save can submit only what actually
+  // changed. Submitting the whole category would store every field at its
+  // current value, silently pinning settings the user never touched so they
+  // stop tracking .env.
+  input.dataset.initial = spec.type === "bool" ? String(!!spec.value) : (spec.secret ? "" : String(spec.value ?? ""));
+  input.className = "settings-input";
+  row.appendChild(input);
+
+  const meta = el("div", "settings-meta");
+  if (spec.help) { const h = el("span", "hint"); h.textContent = spec.help; meta.appendChild(h); }
+  if (spec.overridden) {
+    const tag = el("button", "settings-reset");
+    tag.type = "button";
+    tag.textContent = "Reset";
+    tag.title = "Drop this override and fall back to .env or the built-in default";
+    tag.onclick = () => resetSettings([spec.key]);
+    meta.appendChild(tag);
+  }
+  if (spec.restart) { const r = el("span", "settings-restart"); r.textContent = "needs restart"; meta.appendChild(r); }
+  row.appendChild(meta);
+  return row;
+}
+
+function renderSettings() {
+  const tabs = $("#settings-tabs");
+  const form = $("#settings-form");
+  tabs.innerHTML = "";
+  form.innerHTML = "";
+  const cats = [...new Set(settingsSpecs.map((s) => s.category))];
+  if (!settingsTab || !cats.includes(settingsTab)) settingsTab = cats[0];
+  cats.forEach((c) => {
+    const b = el("button", "wiki-space-btn" + (c === settingsTab ? " active" : ""));
+    b.type = "button";
+    b.setAttribute("role", "tab");
+    b.textContent = SETTINGS_LABELS[c] || c;
+    b.onclick = () => { settingsTab = c; renderSettings(); };
+    tabs.appendChild(b);
+  });
+  settingsSpecs.filter((s) => s.category === settingsTab).forEach((s) => form.appendChild(settingsField(s)));
+
+  if (settingsTab === "providers") {
+    const test = el("button", "settings-test");
+    test.type = "button";
+    test.textContent = "Test connection";
+    test.title = "Probe each provider's /models with the key and URL currently saved";
+    test.onclick = testProviders;
+    form.appendChild(test);
+  }
+}
+
+function collectSettings() {
+  const out = {};
+  document.querySelectorAll("#settings-form .settings-input").forEach((i) => {
+    if (i.dataset.type === "bool") {
+      if (String(i.checked) !== i.dataset.initial) out[i.dataset.key] = i.checked;
+      return;
+    }
+    // A blank secret means "leave it alone", not "clear it" — clearing is the
+    // Reset button, so a user who never touches the field can't wipe their key.
+    if (i.dataset.secret && !i.value.trim()) return;
+    if (i.value !== i.dataset.initial) out[i.dataset.key] = i.value;
+  });
+  return out;
+}
+
+function settingsMessage(text, bad) {
+  const s = $("#settings-status");
+  s.textContent = text;
+  s.classList.toggle("bad", !!bad);
+}
+
+async function loadSettings() {
+  const res = await fetch("/api/settings");
+  const data = await res.json();
+  settingsSpecs = data.settings;
+  renderSettings();
+}
+
+async function saveSettings() {
+  const values = collectSettings();
+  if (!Object.keys(values).length) { settingsMessage("No changes to save."); return; }
+  settingsMessage("Saving…");
+  const res = await fetch("/api/settings", {
+    method: "PUT",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({values}),
+  });
+  const data = await res.json();
+  if (!res.ok) { settingsMessage(data.detail || "Save failed", true); return; }
+  settingsSpecs = data.settings;
+  renderSettings();
+  settingsMessage(data.changed.length ? `Saved — ${data.changed.length} setting(s) applied.` : "No changes.");
+  // Model defaults and the provider list may have moved under the composer.
+  await loadProviders();
+}
+
+async function resetSettings(keys) {
+  const body = keys ? {values: Object.fromEntries(keys.map((k) => [k, 0]))} : {values: {}};
+  const res = await fetch("/api/settings/reset", {
+    method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body),
+  });
+  const data = await res.json();
+  settingsSpecs = data.settings;
+  renderSettings();
+  settingsMessage(data.changed.length ? "Reset — the .env value (or default) is in effect." : "Nothing to reset.");
+  await loadProviders();
+}
+
+async function testProviders() {
+  settingsMessage("Testing…");
+  const results = [];
+  for (const spec of settingsSpecs.filter((s) => s.key.endsWith("_BASE_URL"))) {
+    const provider = spec.key.replace("_BASE_URL", "").toLowerCase();
+    const urlInput = $(`#set-${spec.key}`);
+    const keyInput = $(`#set-${provider.toUpperCase()}_API_KEY`);
+    const res = await fetch("/api/settings/test-provider", {
+      method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({
+        provider,
+        base_url: urlInput ? urlInput.value : "",
+        // An untouched field means "use the saved key" — the browser doesn't
+        // have it to send.
+        api_key: keyInput && keyInput.value.trim() ? keyInput.value : SECRET_UNCHANGED,
+      }),
+    });
+    const data = await res.json();
+    results.push(`${provider}: ${data.ok ? `${data.count} models` : data.error}`);
+  }
+  settingsMessage(results.join(" · "), results.some((r) => !/\d+ models/.test(r)));
+}
+
+$("#show-settings").onclick = async () => {
+  showPage("settings");
+  settingsMessage("");
+  try { await loadSettings(); }
+  catch (err) { settingsMessage(err.message, true); }
+};
+$("#settings-save").onclick = saveSettings;
+$("#settings-reset-all").onclick = async () => {
+  const ok = await confirmDialog(
+    "Reset every setting? All overrides are dropped and the values from .env (or the built-in defaults) take effect.",
+    "Reset all");
+  if (!ok) return;
+  await resetSettings(null);
 };
 
 // --- Boot -------------------------------------------------------------------

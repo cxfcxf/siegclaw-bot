@@ -117,6 +117,12 @@ def _models_reachable(base_url: str, api_key: str | None, timeout: float = 4.0) 
         return None
 
 
+def probe_models(base_url: str, api_key: str | None) -> list[dict] | None:
+    """One-shot, uncached reachability check used by the settings UI to validate
+    a base URL + key before they are saved. None means no usable response."""
+    return _models_reachable(base_url, api_key)
+
+
 @dataclass
 class AvailableProvider:
     id: str

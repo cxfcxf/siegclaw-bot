@@ -41,6 +41,10 @@
           <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>
           Scheduled jobs
         </button>
+        <button id="show-settings" class="nav-btn" type="button" data-page="settings" title="Settings — providers, models, limits">
+          <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1A1.7 1.7 0 0 0 9 19.4a1.7 1.7 0 0 0-1.9.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.9 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1A1.7 1.7 0 0 0 4.6 9a1.7 1.7 0 0 0-.3-1.9l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.9.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.9-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.9V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>
+          Settings
+        </button>
         <button id="show-status" class="nav-btn" type="button" data-page="status" title="System status — providers, search quota, usage">
           <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12h4l3-8 4 16 3-8h4"/></svg>
           Status
@@ -140,6 +144,21 @@
                 <button id="job-save" type="button" class="primary">Add job</button>
               </span>
             </div>
+          </div>
+        </div>
+      </div>
+
+      <div id="settings-page" class="page" hidden>
+        <div class="page-inner">
+          <h2>Settings</h2>
+          <p class="hint">Saved to the server and applied immediately — no restart. Values still in
+            <code>.env</code> show through until you override them here; <em>Reset</em> puts one back.</p>
+          <div id="settings-tabs" class="wiki-spaces" role="tablist"></div>
+          <form id="settings-form" autocomplete="off"></form>
+          <div class="page-actions settings-actions">
+            <span id="settings-status" class="hint"></span>
+            <button id="settings-reset-all" type="button">Reset all</button>
+            <button id="settings-save" type="button" class="primary">Save changes</button>
           </div>
         </div>
       </div>

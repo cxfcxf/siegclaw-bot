@@ -121,6 +121,41 @@ data/                SQLite DBs + uploads (runtime, gitignored; media lives in
   that conversation to the fallback (persisted — no flapping); new
   conversations pick up the original once it's back.
 
+### Settings
+
+Everything except paths is a **live setting**: changed in the web UI (sidebar →
+Settings), applied from the next read, no restart. Each one is declared once in
+`app/settings.py` — type, default, bounds, category, and whether it is a secret
+— and the UI form is generated from that, so adding a setting there makes it
+appear in the UI with no frontend change.
+
+Values resolve **stored > environment > default**. An existing install keeps
+working untouched: nothing is stored yet, so every read falls through to
+`.env`. Saving in the UI stores an override; *Reset* on a field drops it and the
+`.env` value (or built-in default) shows through again — the escape hatch when a
+value set through the UI turns out to be wrong. Only fields you actually change
+are submitted, so saving one setting never silently pins its neighbours.
+
+API keys are **write-only**: they are never sent to the browser, so the UI shows
+only whether one is set. Leaving a key field blank keeps the stored key; *Reset*
+clears it. **Test connection** probes each provider's `/models` with the saved
+credentials before you commit to them. Changing a key or base URL clears the
+cached model catalog, which would otherwise keep serving the old key's catalog
+for up to a day.
+
+Two things stay environment-only by necessity: **paths** (`DATA_DIR`, `WIKI_DIR`,
+…), because the settings database lives inside `DATA_DIR` and cannot locate
+itself; and `DISCORD_BOT_TOKEN`, because the Discord client is constructed once
+at startup. Both still need a restart and an `.env` edit.
+
+In code, read settings through the live object — never copy one into a module
+constant, or it stops tracking changes:
+
+```python
+from .config import settings
+timeout = settings.BASH_TIMEOUT   # re-read every time
+```
+
 ### Context windows
 
 The context meter needs each model's maximum context. Most providers report it
@@ -312,6 +347,9 @@ top-right corner).
   calls, live activity light, timers); **per-response metrics** (wall time,
   thinking time, tok/s); **stop** mid-turn; the per-reply model tag; a hover
   toolbar with **copy / retry / edit-and-resend / read-aloud**.
+- **Settings page**: providers and API keys, default/fallback models, agent
+  limits, timezone and the Discord context window — generated from the server's
+  spec and applied live (see *Settings*).
 - **Sidebar**: history grouped Today / Yesterday / Previous 7 days / dates;
   a **⋮ menu** on each chat and group header (rename / move to group /
   delete — destructive actions behind an in-app confirm dialog). **Groups**
@@ -342,7 +380,9 @@ top-right corner).
 
 ## Configuration reference
 
-All via `.env` (see `.env.example`) unless noted.
+Everything below can be set in the web UI (Settings), which overrides `.env`.
+`.env` (see `.env.example`) remains the floor and the only way to set paths and
+the Discord token.
 
 | Variable | What it does |
 | --- | --- |

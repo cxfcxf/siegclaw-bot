@@ -10,6 +10,7 @@ import tempfile
 import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import Any
 
 # Make our own loggers (siegclaw.*) visible on stdout alongside uvicorn's, and
 # surface discord.py warnings/errors. Configured here so it survives uvicorn's
@@ -30,12 +31,15 @@ from pydantic import BaseModel
 
 from . import docs, research, storage, stt, tts, wiki
 from .agent import build_registry, resolve_for_turn, run_turn
+from . import settings as settings_store
 from .config import (
     DATA_DIR,
     DISCORD_BOT_TOKEN,
     UPLOADS_DIR,
     detect_providers,
+    get_provider,
     provider_serving,
+    probe_models,
     resolve_default_model,
     settings,
 )
@@ -160,6 +164,61 @@ def api_providers():
             if default else None
         ),
     }
+
+
+# --- Settings --------------------------------------------------------------
+class SettingsUpdate(BaseModel):
+    values: dict[str, Any]
+
+
+@app.get("/api/settings")
+def api_settings():
+    """Spec metadata plus current values, grouped for the UI. Secrets come back
+    as a set/unset flag and never as a value — see settings.describe."""
+    return {"categories": list(settings_store.CATEGORIES), "settings": settings_store.describe()}
+
+
+@app.put("/api/settings")
+def api_settings_update(body: SettingsUpdate):
+    """Apply a batch of settings. All-or-nothing: one invalid value rejects the
+    whole submission, so a half-applied form can't leave the app in a state the
+    user didn't ask for. A secret field submitted as SECRET_UNCHANGED keeps the
+    stored secret, since the UI was never given the real value to send back."""
+    try:
+        changed = settings_store.set_many(body.values)
+    except settings_store.SettingsError as e:
+        raise HTTPException(400, str(e))
+    return {"ok": True, "changed": sorted(changed), "settings": settings_store.describe()}
+
+
+@app.post("/api/settings/reset")
+def api_settings_reset(body: SettingsUpdate | None = None):
+    """Drop stored overrides (all, or the named keys) so the values in .env —
+    or the built-in defaults — show through again."""
+    keys = list(body.values) if body and body.values else None
+    changed = settings_store.reset(keys)
+    return {"ok": True, "changed": sorted(changed), "settings": settings_store.describe()}
+
+
+class ProviderTest(BaseModel):
+    base_url: str
+    api_key: str | None = None
+    provider: str | None = None
+
+
+@app.post("/api/settings/test-provider")
+def api_settings_test_provider(body: ProviderTest):
+    """Probe a provider's /models before the key is saved, so a typo surfaces
+    here instead of as a failed turn later. A blank key with a provider id
+    reuses the stored one, letting the UI re-test without handling the secret."""
+    key = body.api_key
+    if key == settings_store.SECRET_UNCHANGED or (not key and body.provider):
+        spec = get_provider(body.provider or "")
+        key = spec.api_key() if spec else None
+    models = probe_models(body.base_url.strip(), key)
+    if models is None:
+        return {"ok": False, "error": "no response from /models — check the URL and key"}
+    return {"ok": True, "count": len(models), "models": [m["id"] for m in models][:50]}
 
 
 # --- Conversations ---------------------------------------------------------
