@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import httpx
 
-from ..config import CAMOFOX_URL
+from ..config import settings
 from .registry import Tool
 
 # Single shared session for the harness (cookies persist across conversations,
@@ -34,7 +34,7 @@ def _err(msg: str) -> str:
 
 
 def _req(method: str, path: str, **kwargs):
-    return httpx.request(method, f"{CAMOFOX_URL}{path}", timeout=60.0, **kwargs)
+    return httpx.request(method, f"{settings.CAMOFOX_URL}{path}", timeout=60.0, **kwargs)
 
 
 def _snapshot(tab_id: str) -> str:
@@ -63,7 +63,7 @@ def browser_use(
     macro: str | None = None,
     query: str | None = None,
 ) -> str:
-    if not CAMOFOX_URL:
+    if not settings.CAMOFOX_URL:
         return _err("CAMOFOX_URL is not configured.")
 
     try:

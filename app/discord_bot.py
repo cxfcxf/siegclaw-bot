@@ -42,16 +42,13 @@ from .agent import (
     static_system_prompt,
 )
 from .config import (
-    DISCORD_ENABLE_SHELL,
-    DISCORD_OWNER_ID,
-    DISCORD_STREAM_DMS,
-    MAX_AGENT_ITERATIONS,
     MAX_DISCORD_LENGTH,
     UPLOADS_DIR,
     detect_providers,
     effort_for,
     get_provider,
     resolve_default_model,
+    settings,
 )
 from .discord_context import (
     YOUTUBE_RE,
@@ -249,7 +246,7 @@ def build_discord_registry(
     Discord-history tools are omitted."""
     registry = Registry()
     registry.extend(clock_tools())
-    if DISCORD_ENABLE_SHELL:
+    if settings.DISCORD_ENABLE_SHELL:
         registry.extend(builtin_tools())
     registry.extend(web_tools())
     registry.extend(browser_tools())
@@ -325,7 +322,7 @@ async def run_discord_turn(
         return getattr(m, "reasoning_content", None)
 
     fell_back = False  # one call-failure fallback per turn
-    for _ in range(MAX_AGENT_ITERATIONS):
+    for _ in range(settings.MAX_AGENT_ITERATIONS):
         try:
             resp = await client.chat.completions.create(
                 model=model,
@@ -471,12 +468,12 @@ async def resolve_owner_id(client: discord.Client) -> int | None:
     global _owner_id
     if _owner_id is not None:
         return _owner_id
-    if DISCORD_OWNER_ID:
+    if settings.DISCORD_OWNER_ID:
         try:
-            _owner_id = int(DISCORD_OWNER_ID)
+            _owner_id = int(settings.DISCORD_OWNER_ID)
             return _owner_id
         except ValueError:
-            log.error("DISCORD_OWNER_ID=%r is not a user id; ignoring it", DISCORD_OWNER_ID)
+            log.error("DISCORD_OWNER_ID=%r is not a user id; ignoring it", settings.DISCORD_OWNER_ID)
     try:
         info = await client.application_info()
         oid = getattr(info.owner, "id", None)
@@ -798,7 +795,7 @@ def create_client(mcp_manager) -> discord.Client:
             log.error("No DM owner resolved — ALL DMs will be ignored. "
                       "Set DISCORD_OWNER_ID to your Discord user id.")
         else:
-            src = "DISCORD_OWNER_ID" if DISCORD_OWNER_ID else "Discord app owner"
+            src = "DISCORD_OWNER_ID" if settings.DISCORD_OWNER_ID else "Discord app owner"
             log.info("DMs restricted to owner id %s (from %s); channel mentions stay open",
                      owner_id, src)
     on_ready._synced = False
@@ -967,7 +964,7 @@ def create_client(mcp_manager) -> discord.Client:
                             # respect rate limits). Overflow past one Discord
                             # message is handled by the final chunked delivery.
                             now = time.monotonic()
-                            if DISCORD_STREAM_DMS and reply_text.strip() and now - stream_edit_at >= STREAM_EDIT_SECONDS:
+                            if settings.DISCORD_STREAM_DMS and reply_text.strip() and now - stream_edit_at >= STREAM_EDIT_SECONDS:
                                 stream_edit_at = now
                                 preview = reply_text[: MAX_DISCORD_LENGTH - 2] + " ▌"
                                 try:

@@ -33,11 +33,11 @@ from .agent import build_registry, resolve_for_turn, run_turn
 from .config import (
     DATA_DIR,
     DISCORD_BOT_TOKEN,
-    IMAGE_SEARCH_URL,
     UPLOADS_DIR,
     detect_providers,
     provider_serving,
     resolve_default_model,
+    settings,
 )
 from .cronutil import describe as cron_describe, is_valid as cron_is_valid, next_run_after
 from .mcp_client import MCPManager
@@ -432,10 +432,10 @@ async def api_status():
     import httpx
 
     search = None
-    if IMAGE_SEARCH_URL:
+    if settings.IMAGE_SEARCH_URL:
         try:
             async with httpx.AsyncClient() as hc:
-                r = await hc.get(f"{IMAGE_SEARCH_URL}/usage", timeout=4)
+                r = await hc.get(f"{settings.IMAGE_SEARCH_URL}/usage", timeout=4)
                 search = r.json()
         except Exception as e:
             search = {"error": f"{type(e).__name__}: {e}"}

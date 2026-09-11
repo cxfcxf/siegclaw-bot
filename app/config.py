@@ -1,7 +1,14 @@
 """Configuration and provider auto-detection.
 
-Everything is driven by environment variables (see .env.example). A provider is
-"available" (and therefore offered in the web UI) when its API key is set.
+Paths come from the environment (see .env.example) because the settings store
+lives inside one of them. Everything else is a live setting: declared in
+`app.settings`, resolved stored-value > environment > default, and editable at
+runtime from the web UI. Read those through the re-exported ``settings`` object
+(``settings.HARNESS_TZ``) — never copy one into a module constant, or it will
+stop tracking changes.
+
+A provider is "available" (and therefore offered in the web UI) when its API
+key is set, from either source.
 """
 from __future__ import annotations
 
@@ -14,6 +21,9 @@ from pathlib import Path
 
 import httpx
 from dotenv import load_dotenv
+
+from . import settings as settings_store
+from .settings import settings
 
 load_dotenv()
 
@@ -42,63 +52,21 @@ WIKI_DIR.mkdir(parents=True, exist_ok=True)
 WIKI_PUBLIC_DIR.mkdir(parents=True, exist_ok=True)
 UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
 
-# --- Research stack --------------------------------------------------------
-FIRECRAWL_API_URL = os.getenv("FIRECRAWL_API_URL", "").rstrip("/")
-CAMOFOX_URL = os.getenv("CAMOFOX_URL", "").rstrip("/")
-# The search middleware behind Firecrawl (searchmw), hit directly for /images.
-IMAGE_SEARCH_URL = os.getenv("IMAGE_SEARCH_URL", "").rstrip("/")
+# Settings live beside the conversation database, in the data directory above.
+settings_store.init(DATA_DIR / "settings.db")
 
-# --- Locale ----------------------------------------------------------------
-# IANA timezone injected into the system prompt so the model always knows "now".
-HARNESS_TZ = os.getenv("HARNESS_TZ", "America/Los_Angeles")
-
-# --- Limits ----------------------------------------------------------------
-BASH_TIMEOUT = int(os.getenv("BASH_TIMEOUT", "120"))
-# Newest cron-run conversations kept per job (older ones are auto-deleted, so a
-# frequent job can't grow the DB forever). Moving a run out of its "Cron: <job>"
-# group exempts it from pruning.
-CRON_KEEP_RUNS = int(os.getenv("CRON_KEEP_RUNS", "30"))
-MAX_AGENT_ITERATIONS = int(os.getenv("MAX_AGENT_ITERATIONS", "25"))
-
-# --- Discord ---------------------------------------------------------------
-# When a valid token is set, the app connects to Discord on startup (in the same
-# process as the web UI). Leave empty to run web-UI-only.
-DISCORD_BOT_TOKEN = os.getenv("DISCORD_BOT_TOKEN", "").strip()
-# Discord is multi-user; the builtin shell/file tools run in this container, so
-# they're withheld from Discord unless explicitly enabled.
-DISCORD_ENABLE_SHELL = os.getenv("DISCORD_ENABLE_SHELL", "false").lower() in ("1", "true", "yes")
-# DMs are the OWNER surface: they carry the private wiki, read-write. Anyone who
-# shares a server with the bot can DM it (Discord has no owner-only-DM setting),
-# so non-owner DMs are ignored. Empty = resolve the application owner from
-# Discord at runtime; set an id here to override (e.g. a second account).
-DISCORD_OWNER_ID = os.getenv("DISCORD_OWNER_ID", "").strip()
-# Stream DM replies by editing the message in place (~1s per edit — Discord has
-# no real streaming, so this is send-then-overwrite). Off by default: the reply
-# lands as one complete message when the turn finishes.
-DISCORD_STREAM_DMS = os.getenv("DISCORD_STREAM_DMS", "false").lower() in ("1", "true", "yes")
+# Discord's hard per-message limit — a protocol fact, not a preference.
 MAX_DISCORD_LENGTH = 2000
 
-# --- Default model order (shared by every surface) -------------------------
-# Every NEW conversation — web UI, Discord DM, Discord channel mention — starts
-# on this model. The preferred default is tried first; if its provider isn't
-# available, the fallback is used instead. A blank model selects the provider's
-# first listed model. EFFORT applies to DeepSeek.
-DEFAULT_PROVIDER = os.getenv("DEFAULT_PROVIDER", "deepseek").strip()
-DEFAULT_MODEL = os.getenv("DEFAULT_MODEL", "deepseek-flash").strip()
-DEFAULT_EFFORT = os.getenv("DEFAULT_EFFORT", "high").strip() or None
-FALLBACK_PROVIDER = os.getenv("FALLBACK_PROVIDER", "deepseek").strip()
-# DeepSeek's canonical API id serves V4.1 Flash, including vision.
-FALLBACK_MODEL = os.getenv("FALLBACK_MODEL", "deepseek-flash").strip()
-FALLBACK_EFFORT = os.getenv("FALLBACK_EFFORT", "high").strip() or None
+# The Discord client is built once at startup, so its token stays env-only
+# rather than pretending to be live-editable.
+DISCORD_BOT_TOKEN = os.getenv("DISCORD_BOT_TOKEN", "").strip()
 
-# --- Discord context window ------------------------------------------------
-# Hybrid time/count window over live Discord channel history (Discord is the
-# source of truth — these turns are not stored in the SQLite conversation db).
-CONTEXT_MESSAGE_COUNT = int(os.getenv("CONTEXT_MESSAGE_COUNT", "50"))
-CONTEXT_TIME_WINDOW_HOURS = int(os.getenv("CONTEXT_TIME_WINDOW_HOURS", "24"))
-CONTEXT_ACTIVITY_THRESHOLD = int(os.getenv("CONTEXT_ACTIVITY_THRESHOLD", "30"))
-CONTEXT_MAX_MESSAGES = int(os.getenv("CONTEXT_MAX_MESSAGES", "150"))
-CONTEXT_MAX_CHARS = int(os.getenv("CONTEXT_MAX_CHARS", "16000"))
+
+def _blank_to_none(value: str | None) -> str | None:
+    """A blank effort means "let the model decide", which the API expresses as
+    an absent field rather than an empty string."""
+    return value or None
 
 
 @dataclass
@@ -110,13 +78,13 @@ class ProviderSpec:
     key_env: str
 
     def base_url(self) -> str:
-        override = os.getenv(self.base_url_env) if self.base_url_env else None
+        override = getattr(settings, self.base_url_env, "") if self.base_url_env else ""
         if override:
             return override.rstrip("/")
         return self.base_url_default.rstrip("/")
 
     def api_key(self) -> str | None:
-        return os.getenv(self.key_env) or None
+        return getattr(settings, self.key_env, "") or None
 
 
 # Registry of known OpenAI-compatible providers.
@@ -191,8 +159,8 @@ def _context_of(m: dict) -> int | None:
     return None
 
 
-# Cloud model catalogs are cached for a day and refreshed in the background.
-PROVIDER_MODELS_CACHE_TTL = float(os.getenv("PROVIDER_MODELS_CACHE_TTL", str(86400)))
+# Cloud model catalogs are cached (PROVIDER_MODELS_CACHE_TTL) and refreshed in
+# the background.
 _models_cache: dict[str, tuple[float, list[dict]]] = {}
 
 # Stale-while-revalidate: once a cache entry exists, an expired one is served
@@ -218,12 +186,16 @@ def _refresh_async(key: str, work: Callable[[], object]) -> None:
 
     threading.Thread(target=run, daemon=True).start()
 
-# Send-time fallback: if the chosen provider isn't serving, retry this many
-# times (transient blips) before switching the conversation to the fallback
-# model. The switch is persisted on the conversation, so it sticks for that
-# session and won't flap back if the original returns mid-conversation.
-SEND_FALLBACK_RETRIES = int(os.getenv("SEND_FALLBACK_RETRIES", "3"))
-SEND_FALLBACK_RETRY_DELAY = float(os.getenv("SEND_FALLBACK_RETRY_DELAY", "0.75"))
+
+def _on_settings_changed(changed: set[str]) -> None:
+    """Drop cached model catalogs when the credentials or base URL behind them
+    change — otherwise a newly entered key would keep serving the catalog the
+    old one fetched (or no catalog at all), for up to a day."""
+    if any(k.endswith(("_API_KEY", "_BASE_URL")) for k in changed):
+        _models_cache.clear()
+
+
+settings_store.on_change(_on_settings_changed)
 
 
 def provider_serving(provider_id: str) -> bool:
@@ -270,7 +242,7 @@ def _cached_models(provider_id: str, base_url: str, api_key: str | None) -> list
     now = time.monotonic()
     cached = _models_cache.get(provider_id)
     if cached is not None:
-        if (now - cached[0]) >= PROVIDER_MODELS_CACHE_TTL:
+        if (now - cached[0]) >= settings.PROVIDER_MODELS_CACHE_TTL:
             _refresh_async(f"models:{provider_id}", lambda: _do_fetch_models(provider_id, base_url, api_key))
         return cached[1]
     fetched = _do_fetch_models(provider_id, base_url, api_key)
@@ -307,7 +279,7 @@ def resolve_default_model(
 ) -> tuple[str, str, str | None] | None:
     """The model a NEW conversation starts on, for every surface.
 
-    Order: the preferred default (DEFAULT_PROVIDER/MODEL) if that provider is
+    Order: the preferred default (DEFAULT_PROVIDER/MODEL settings) if that provider is
     available right now; otherwise the fallback (FALLBACK_PROVIDER/MODEL/EFFORT);
     last resort, the first detected provider + its first model. A blank model
     means "use whatever the provider lists first". Returns
@@ -319,17 +291,17 @@ def resolve_default_model(
     if providers is None:
         providers = {p.id: p for p in detect_providers()}
 
-    pref = providers.get(DEFAULT_PROVIDER)
+    pref = providers.get(settings.DEFAULT_PROVIDER)
     if pref is not None:
-        model = DEFAULT_MODEL or (pref.models[0] if pref.models else None)
+        model = settings.DEFAULT_MODEL or (pref.models[0] if pref.models else None)
         if model:
-            return pref.id, canonical_model(pref.id, model), DEFAULT_EFFORT
+            return pref.id, canonical_model(pref.id, model), _blank_to_none(settings.DEFAULT_EFFORT)
 
-    fb = providers.get(FALLBACK_PROVIDER)
+    fb = providers.get(settings.FALLBACK_PROVIDER)
     if fb is not None:
-        model = FALLBACK_MODEL or (fb.models[0] if fb.models else None)
+        model = settings.FALLBACK_MODEL or (fb.models[0] if fb.models else None)
         if model:
-            return fb.id, canonical_model(fb.id, model), FALLBACK_EFFORT
+            return fb.id, canonical_model(fb.id, model), _blank_to_none(settings.FALLBACK_EFFORT)
 
     for p in providers.values():
         if p.models:
@@ -342,8 +314,12 @@ def effort_for(provider: str, model: str) -> str | None:
     conversation resumed onto the fallback model keeps its configured effort.
     Matches the default/fallback entries; otherwise None (let the model default)."""
     model = canonical_model(provider, model)
-    if provider == DEFAULT_PROVIDER and (not DEFAULT_MODEL or model == canonical_model(provider, DEFAULT_MODEL)):
-        return DEFAULT_EFFORT
-    if provider == FALLBACK_PROVIDER and model == canonical_model(provider, FALLBACK_MODEL):
-        return FALLBACK_EFFORT
+    default_model = settings.DEFAULT_MODEL
+    if provider == settings.DEFAULT_PROVIDER and (
+        not default_model or model == canonical_model(provider, default_model)
+    ):
+        return _blank_to_none(settings.DEFAULT_EFFORT)
+    fallback_model = settings.FALLBACK_MODEL
+    if provider == settings.FALLBACK_PROVIDER and model == canonical_model(provider, fallback_model):
+        return _blank_to_none(settings.FALLBACK_EFFORT)
     return None

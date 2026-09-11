@@ -10,7 +10,7 @@ from zoneinfo import ZoneInfo
 
 from croniter import croniter
 
-from .config import HARNESS_TZ
+from .config import settings
 
 
 def is_valid(expr: str) -> bool:
@@ -20,7 +20,7 @@ def is_valid(expr: str) -> bool:
 
 def next_run_after(expr: str, after_ts: float | None = None) -> float:
     """Unix timestamp of the next time `expr` fires after `after_ts` (or now)."""
-    tz = ZoneInfo(HARNESS_TZ)
+    tz = ZoneInfo(settings.HARNESS_TZ)
     base = datetime.fromtimestamp(after_ts, tz) if after_ts else datetime.now(tz)
     return croniter(expr, base).get_next(datetime).timestamp()
 

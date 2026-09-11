@@ -20,7 +20,7 @@ from typing import Callable
 from zoneinfo import ZoneInfo
 
 from . import storage, wiki
-from .config import HARNESS_TZ, resolve_default_model
+from .config import resolve_default_model, settings
 from .tools.browser import browser_tools
 from .tools.clock import clock_tools
 from .tools.registry import Registry, Tool
@@ -116,7 +116,7 @@ def start(question: str) -> dict | None:
     if pm is None:
         return None
     provider, model, effort = pm
-    now = datetime.now(ZoneInfo(HARNESS_TZ))
+    now = datetime.now(ZoneInfo(settings.HARNESS_TZ))
     title = f"🔬 {question.strip()}"[:80]
     cid = storage.create_conversation(provider, model, title=title)
     storage.set_conversation_group(cid, RESEARCH_GROUP, system=True)

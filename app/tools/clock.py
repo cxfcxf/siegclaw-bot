@@ -11,13 +11,13 @@ from __future__ import annotations
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-from ..config import HARNESS_TZ
+from ..config import settings
 from .registry import Tool
 
 
 def _now_stamp() -> str:
     try:
-        dt = datetime.now(ZoneInfo(HARNESS_TZ))
+        dt = datetime.now(ZoneInfo(settings.HARNESS_TZ))
     except Exception:
         dt = datetime.now().astimezone()
     return dt.strftime("%A, %B %-d, %Y, %-I:%M:%S %p %Z")
@@ -25,7 +25,7 @@ def _now_stamp() -> str:
 
 def clock_tools() -> list[Tool]:
     def current_time() -> str:
-        return f"The current date and time is {_now_stamp()} ({HARNESS_TZ})."
+        return f"The current date and time is {_now_stamp()} ({settings.HARNESS_TZ})."
 
     return [
         Tool(

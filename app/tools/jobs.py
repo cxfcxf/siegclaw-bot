@@ -10,7 +10,7 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 from .. import storage
-from ..config import HARNESS_TZ
+from ..config import settings
 from ..cronutil import describe, is_valid, next_run_after
 from .registry import Tool
 
@@ -18,7 +18,7 @@ from .registry import Tool
 def _fmt(ts: float | None) -> str:
     if not ts:
         return "—"
-    return datetime.fromtimestamp(ts, ZoneInfo(HARNESS_TZ)).strftime("%Y-%m-%d %H:%M")
+    return datetime.fromtimestamp(ts, ZoneInfo(settings.HARNESS_TZ)).strftime("%Y-%m-%d %H:%M")
 
 
 def _schedule_job(name: str, prompt: str, cron: str = "", at: str = "", target_channel_id: str = "") -> str:
@@ -31,19 +31,19 @@ def _schedule_job(name: str, prompt: str, cron: str = "", at: str = "", target_c
         next_run = next_run_after(cron)
     else:
         try:
-            dt = datetime.strptime(at, "%Y-%m-%d %H:%M").replace(tzinfo=ZoneInfo(HARNESS_TZ))
+            dt = datetime.strptime(at, "%Y-%m-%d %H:%M").replace(tzinfo=ZoneInfo(settings.HARNESS_TZ))
         except ValueError:
-            return f"Error: `at` must be 'YYYY-MM-DD HH:MM' (in {HARNESS_TZ}), got {at!r}."
+            return f"Error: `at` must be 'YYYY-MM-DD HH:MM' (in {settings.HARNESS_TZ}), got {at!r}."
         next_run = dt.timestamp()
-        if next_run <= datetime.now(ZoneInfo(HARNESS_TZ)).timestamp():
-            return f"Error: {at} ({HARNESS_TZ}) is in the past."
+        if next_run <= datetime.now(ZoneInfo(settings.HARNESS_TZ)).timestamp():
+            return f"Error: {at} ({settings.HARNESS_TZ}) is in the past."
     tid = (target_channel_id or "").strip()
     target_type, target_id = ("channel", tid) if tid else ("dm", "owner")
     jid = storage.create_job(name.strip() or "Job", prompt, cron, target_type, target_id, next_run=next_run)
     when = describe(cron) if cron else "once"
     dest = f"channel {target_id}" if tid else "a DM to the owner"
     return (
-        f"Scheduled '{name}' (id {jid}): runs {when}, next at {_fmt(next_run)} {HARNESS_TZ}; "
+        f"Scheduled '{name}' (id {jid}): runs {when}, next at {_fmt(next_run)} {settings.HARNESS_TZ}; "
         f"result goes to {dest}."
     )
 
@@ -60,7 +60,7 @@ def _list_jobs() -> str:
             f"- {j['name']} (id {j['id']}): {when}, {state}, next run {_fmt(j['next_run'])}, "
             f"last run {_fmt(j['last_run'])} ({j['last_status'] or 'never'}) — prompt: {j['prompt'][:120]}"
         )
-    return f"Scheduled jobs (times in {HARNESS_TZ}):\n" + "\n".join(lines)
+    return f"Scheduled jobs (times in {settings.HARNESS_TZ}):\n" + "\n".join(lines)
 
 
 def _cancel_job(job_id: str) -> str:
@@ -77,7 +77,7 @@ def job_tools() -> list[Tool]:
             "schedule_job",
             "Schedule a prompt to run later and deliver the result over Discord — use for reminders "
             "('remind me…') and recurring tasks ('every morning…'). Give `cron` (5-field, evaluated in "
-            f"{HARNESS_TZ}) for recurring jobs, OR `at` ('YYYY-MM-DD HH:MM' {HARNESS_TZ}) to run once. "
+            f"{settings.HARNESS_TZ}) for recurring jobs, OR `at` ('YYYY-MM-DD HH:MM' {settings.HARNESS_TZ}) to run once. "
             "Call current_time first to resolve relative times like 'tomorrow'. The prompt runs later as "
             "a fresh agent turn with research tools and no conversation context, so make it self-contained "
             "(a plain reminder: 'Remind the user to …'). Delivery defaults to a Discord DM to the owner.",

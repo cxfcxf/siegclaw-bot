@@ -9,7 +9,7 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
-from ..config import BASH_TIMEOUT, WORKSPACE_DIR
+from ..config import WORKSPACE_DIR, settings
 from .registry import Tool
 
 MAX_OUTPUT = 30_000  # chars returned to the model
@@ -87,7 +87,7 @@ def list_dir(path: str = ".") -> str:
 
 
 def bash(command: str, timeout: int | None = None) -> str:
-    timeout = timeout or BASH_TIMEOUT
+    timeout = timeout or settings.BASH_TIMEOUT
     try:
         proc = subprocess.run(
             command,

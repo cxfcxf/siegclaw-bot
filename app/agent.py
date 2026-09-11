@@ -20,16 +20,13 @@ from zoneinfo import ZoneInfo
 
 from . import docs, storage, wiki
 from .config import (
-    HARNESS_TZ,
-    MAX_AGENT_ITERATIONS,
-    SEND_FALLBACK_RETRIES,
-    SEND_FALLBACK_RETRY_DELAY,
     UPLOADS_DIR,
     canonical_model,
     detect_providers,
     model_valid_for,
     provider_serving,
     resolve_default_model,
+    settings,
 )
 from .providers import client_for
 from .research import RESEARCH_MODE_PREAMBLE, research_tools, set_origin as set_research_origin
@@ -81,13 +78,13 @@ def conversation_time_block(started_at: float | None = None) -> str:
     created_at; None means use now() (single-shot surfaces: channel, cron). For
     the precise time of day, to the second, the model calls `current_time`."""
     try:
-        tz = ZoneInfo(HARNESS_TZ)
+        tz = ZoneInfo(settings.HARNESS_TZ)
         dt = datetime.fromtimestamp(started_at, tz) if started_at else datetime.now(tz)
     except Exception:
         dt = datetime.now().astimezone()
     stamp = dt.strftime("%A, %B %-d, %Y")
     return (
-        f"This conversation started on {stamp} ({HARNESS_TZ}). Treat that as the "
+        f"This conversation started on {stamp} ({settings.HARNESS_TZ}). Treat that as the "
         "current date — you already know it, so do not search the web just to "
         "determine today's date or year. Only the date is provided here (kept "
         "stable so the prompt can be cached); for the precise time of day, to the "
@@ -131,12 +128,12 @@ async def resolve_for_turn(
     # Fast path: model is valid for the provider -> just confirm it's serving,
     # retrying a few times in case the provider blipped.
     if model_valid_for(provider, model):
-        last_try = max(SEND_FALLBACK_RETRIES - 1, 0)
-        for attempt in range(SEND_FALLBACK_RETRIES):
+        last_try = max(settings.SEND_FALLBACK_RETRIES - 1, 0)
+        for attempt in range(settings.SEND_FALLBACK_RETRIES):
             if provider_serving(provider):
                 return provider, model, effort
             if attempt < last_try:
-                await asyncio.sleep(SEND_FALLBACK_RETRY_DELAY)
+                await asyncio.sleep(settings.SEND_FALLBACK_RETRY_DELAY)
     # Provider down after retries, or model wrong for it -> switch to the
     # default (fallback) model and persist it for the session.
     fb = resolve_default_model()
@@ -347,7 +344,7 @@ async def run_turn(
     last_prompt_tokens = 0  # prompt tokens of the final model call (context usage)
     turn_prompt_tokens = 0  # prompt tokens summed over every call (billed total)
 
-    iteration_cap = max_iterations or MAX_AGENT_ITERATIONS
+    iteration_cap = max_iterations or settings.MAX_AGENT_ITERATIONS
     fell_back = False  # one call-failure fallback per turn
     for _i in range(iteration_cap):
         # On the final allowed step, don't let the loop dead-end with no answer:

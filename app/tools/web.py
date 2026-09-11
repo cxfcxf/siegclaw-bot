@@ -14,7 +14,7 @@ import time
 
 import httpx
 
-from ..config import FIRECRAWL_API_URL, IMAGE_SEARCH_URL
+from ..config import settings
 from .registry import Tool
 
 MAX_OUTPUT = 30_000  # cap chars returned to the model per tool call
@@ -31,11 +31,11 @@ def _truncate(text: str, limit: int = MAX_OUTPUT) -> str:
 
 
 def web_search(query: str, limit: int = 5) -> str:
-    if not FIRECRAWL_API_URL:
+    if not settings.FIRECRAWL_API_URL:
         return "Error: FIRECRAWL_API_URL is not configured."
     try:
         resp = httpx.post(
-            f"{FIRECRAWL_API_URL}/v1/search",
+            f"{settings.FIRECRAWL_API_URL}/v1/search",
             json={"query": query, "limit": max(1, min(limit, 10))},
             timeout=45.0,
         )
@@ -52,11 +52,11 @@ def web_search(query: str, limit: int = 5) -> str:
 
 
 def image_search(query: str, count: int = 4) -> str:
-    if not IMAGE_SEARCH_URL:
+    if not settings.IMAGE_SEARCH_URL:
         return "Error: IMAGE_SEARCH_URL is not configured."
     try:
         resp = httpx.get(
-            f"{IMAGE_SEARCH_URL}/images",
+            f"{settings.IMAGE_SEARCH_URL}/images",
             params={"q": query, "count": max(1, min(count, 10))},
             timeout=30.0,
         )
@@ -77,11 +77,11 @@ def image_search(query: str, count: int = 4) -> str:
 
 
 def web_scrape(url: str) -> str:
-    if not FIRECRAWL_API_URL:
+    if not settings.FIRECRAWL_API_URL:
         return "Error: FIRECRAWL_API_URL is not configured."
     try:
         resp = httpx.post(
-            f"{FIRECRAWL_API_URL}/v1/scrape",
+            f"{settings.FIRECRAWL_API_URL}/v1/scrape",
             json={"url": url, "formats": ["markdown"]},
             timeout=90.0,
         )
@@ -100,13 +100,13 @@ def web_scrape(url: str) -> str:
 
 def web_map(url: str, limit: int = 100, search: str | None = None) -> str:
     """List all reachable URLs on a site (Firecrawl /v1/map)."""
-    if not FIRECRAWL_API_URL:
+    if not settings.FIRECRAWL_API_URL:
         return "Error: FIRECRAWL_API_URL is not configured."
     body = {"url": url, "limit": max(1, min(limit, 500))}
     if search:
         body["search"] = search
     try:
-        resp = httpx.post(f"{FIRECRAWL_API_URL}/v1/map", json=body, timeout=60.0)
+        resp = httpx.post(f"{settings.FIRECRAWL_API_URL}/v1/map", json=body, timeout=60.0)
         resp.raise_for_status()
         payload = resp.json()
     except Exception as exc:
@@ -133,11 +133,11 @@ def web_crawl(url: str, limit: int = 10, max_wait: int = 90) -> str:
     elapse. Best for 'get me everything under this section' — for one page use
     web_scrape.
     """
-    if not FIRECRAWL_API_URL:
+    if not settings.FIRECRAWL_API_URL:
         return "Error: FIRECRAWL_API_URL is not configured."
     try:
         resp = httpx.post(
-            f"{FIRECRAWL_API_URL}/v1/crawl",
+            f"{settings.FIRECRAWL_API_URL}/v1/crawl",
             json={"url": url, "limit": max(1, min(limit, 50))},
             timeout=30.0,
         )
@@ -150,7 +150,7 @@ def web_crawl(url: str, limit: int = 10, max_wait: int = 90) -> str:
         status = None
         while time.time() < deadline:
             time.sleep(2)
-            s = httpx.get(f"{FIRECRAWL_API_URL}/v1/crawl/{job_id}", timeout=30.0)
+            s = httpx.get(f"{settings.FIRECRAWL_API_URL}/v1/crawl/{job_id}", timeout=30.0)
             s.raise_for_status()
             status = s.json()
             if status.get("status") in ("completed", "failed", "cancelled"):

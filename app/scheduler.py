@@ -18,7 +18,7 @@ import discord
 
 from . import storage, wiki
 from .agent import run_turn
-from .config import CRON_KEEP_RUNS, HARNESS_TZ, resolve_default_model
+from .config import resolve_default_model, settings
 from .cronutil import next_run_after
 from .discord_bot import build_discord_registry, owner_or_user, send_chunked
 
@@ -123,12 +123,12 @@ class Scheduler:
         # The "Cron:" marker lives on the group; runs inside it carry the
         # date + time so every run is distinguishable regardless of cadence.
         grp = f"Cron: {job['name']}"
-        now = datetime.now(ZoneInfo(HARNESS_TZ))
+        now = datetime.now(ZoneInfo(settings.HARNESS_TZ))
         title = f"{now.strftime('%b %-d %H:%M')} — {job['name']}"
         cid = storage.create_conversation(provider, model, title=title)
         storage.set_conversation_group(cid, grp, system=True)
         # Cap retained runs so a minutely job can't grow the DB forever.
-        storage.prune_group(grp, CRON_KEEP_RUNS)
+        storage.prune_group(grp, settings.CRON_KEEP_RUNS)
 
         result = ""
         turn_error: str | None = None

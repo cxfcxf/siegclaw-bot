@@ -20,19 +20,12 @@ from zoneinfo import ZoneInfo
 import discord
 import httpx
 
-from .config import (
-    CONTEXT_ACTIVITY_THRESHOLD,
-    CONTEXT_MAX_CHARS,
-    CONTEXT_MAX_MESSAGES,
-    CONTEXT_MESSAGE_COUNT,
-    CONTEXT_TIME_WINDOW_HOURS,
-    HARNESS_TZ,
-)
+from .config import settings
 
 log = logging.getLogger("siegclaw.context")
 
 try:
-    TZ = ZoneInfo(HARNESS_TZ)
+    TZ = ZoneInfo(settings.HARNESS_TZ)
 except Exception:
     TZ = ZoneInfo("America/Los_Angeles")
 
@@ -80,23 +73,23 @@ async def fetch_context(
 
     Returns (formatted_prompt, raw_messages).
     """
-    time_window = timedelta(hours=CONTEXT_TIME_WINDOW_HOURS)
+    time_window = timedelta(hours=settings.CONTEXT_TIME_WINDOW_HOURS)
     cutoff = datetime.now(timezone.utc) - time_window
 
     fetched = []  # newest first
-    async for msg in channel.history(limit=CONTEXT_MAX_MESSAGES):
+    async for msg in channel.history(limit=settings.CONTEXT_MAX_MESSAGES):
         fetched.append(msg)
 
-    recent = fetched[:CONTEXT_MESSAGE_COUNT]
+    recent = fetched[:settings.CONTEXT_MESSAGE_COUNT]
 
     # Busy channel: the count window is dense, so expand to the full time
     # window. Always newest-first, so the most recent conversation is kept
     # even when the window holds more messages than the limit.
-    if len(recent) >= CONTEXT_ACTIVITY_THRESHOLD and recent and recent[-1].created_at > cutoff:
+    if len(recent) >= settings.CONTEXT_ACTIVITY_THRESHOLD and recent and recent[-1].created_at > cutoff:
         messages = [m for m in fetched if m.created_at >= cutoff]
         log.info(
             "Active channel %s: using %d messages (%dh window)",
-            channel.id, len(messages), CONTEXT_TIME_WINDOW_HOURS,
+            channel.id, len(messages), settings.CONTEXT_TIME_WINDOW_HOURS,
         )
     else:
         messages = recent
@@ -119,8 +112,8 @@ def _format_messages(
             continue
         lines.append(format_line(msg))
     text = "\n".join(lines)
-    if len(text) > CONTEXT_MAX_CHARS:
-        text = "[... earlier messages truncated ...]\n" + text[-CONTEXT_MAX_CHARS:]
+    if len(text) > settings.CONTEXT_MAX_CHARS:
+        text = "[... earlier messages truncated ...]\n" + text[-settings.CONTEXT_MAX_CHARS:]
     return text
 
 
