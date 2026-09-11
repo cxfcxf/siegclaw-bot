@@ -13,3 +13,4 @@ wiki-public/*
 venv/
 *.egg-info/
 .claude/settings.local.json
+uv.lock
