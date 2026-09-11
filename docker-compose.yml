@@ -14,7 +14,7 @@ x-noproxy: &noproxy
 services:
   siegclaw-bot:
     build: .
-    # Host 8800 -> container 8080. (Host :8080 is taken by llama.cpp.)
+    # Host 8800 -> container 8080.
     ports:
       - "8800:8080"
     extra_hosts:

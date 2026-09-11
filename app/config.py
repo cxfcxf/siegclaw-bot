@@ -1,8 +1,7 @@
 """Configuration and provider auto-detection.
 
 Everything is driven by environment variables (see .env.example). A provider is
-"available" (and therefore offered in the web UI) when its API key is set, or,
-for keyless local engines, when its OpenAI-compatible /models endpoint responds.
+"available" (and therefore offered in the web UI) when its API key is set.
 """
 from __future__ import annotations
 
@@ -61,10 +60,6 @@ BASH_TIMEOUT = int(os.getenv("BASH_TIMEOUT", "120"))
 CRON_KEEP_RUNS = int(os.getenv("CRON_KEEP_RUNS", "30"))
 MAX_AGENT_ITERATIONS = int(os.getenv("MAX_AGENT_ITERATIONS", "25"))
 
-# Chat-template kwarg that toggles model reasoning per request (model-dependent;
-# e.g. "enable_thinking" for this gemma/Qwen-style template).
-THINK_KWARG = os.getenv("THINK_KWARG", "enable_thinking")
-
 # --- Discord ---------------------------------------------------------------
 # When a valid token is set, the app connects to Discord on startup (in the same
 # process as the web UI). Leave empty to run web-UI-only.
@@ -86,15 +81,14 @@ MAX_DISCORD_LENGTH = 2000
 # --- Default model order (shared by every surface) -------------------------
 # Every NEW conversation — web UI, Discord DM, Discord channel mention — starts
 # on this model. The preferred default is tried first; if its provider isn't
-# available right now (e.g. the local llama.cpp server is down), the fallback is
-# used instead. DEFAULT_MODEL blank means "whatever the provider serves first"
-# (handy for llama.cpp, which serves one model). EFFORT is the reasoning effort
-# for providers that support it (DeepSeek/OpenRouter); ignored elsewhere.
-DEFAULT_PROVIDER = os.getenv("DEFAULT_PROVIDER", "llamacpp").strip()
-DEFAULT_MODEL = os.getenv("DEFAULT_MODEL", "").strip()
-DEFAULT_EFFORT = os.getenv("DEFAULT_EFFORT", "").strip() or None
+# available, the fallback is used instead. A blank model selects the provider's
+# first listed model. EFFORT applies to DeepSeek/OpenRouter.
+DEFAULT_PROVIDER = os.getenv("DEFAULT_PROVIDER", "deepseek").strip()
+DEFAULT_MODEL = os.getenv("DEFAULT_MODEL", "deepseek-flash").strip()
+DEFAULT_EFFORT = os.getenv("DEFAULT_EFFORT", "high").strip() or None
 FALLBACK_PROVIDER = os.getenv("FALLBACK_PROVIDER", "deepseek").strip()
-FALLBACK_MODEL = os.getenv("FALLBACK_MODEL", "deepseek-v4-flash").strip()
+# DeepSeek's canonical API id serves V4.1 Flash, including vision.
+FALLBACK_MODEL = os.getenv("FALLBACK_MODEL", "deepseek-flash").strip()
 FALLBACK_EFFORT = os.getenv("FALLBACK_EFFORT", "high").strip() or None
 
 # --- Discord context window ------------------------------------------------
@@ -113,7 +107,7 @@ class ProviderSpec:
     name: str
     base_url_env: str | None
     base_url_default: str
-    key_env: str | None  # None => keyless (local engine)
+    key_env: str
 
     def base_url(self) -> str:
         override = os.getenv(self.base_url_env) if self.base_url_env else None
@@ -122,9 +116,7 @@ class ProviderSpec:
         return self.base_url_default.rstrip("/")
 
     def api_key(self) -> str | None:
-        if self.key_env:
-            return os.getenv(self.key_env) or None
-        return None
+        return os.getenv(self.key_env) or None
 
 
 # Registry of known OpenAI-compatible providers.
@@ -133,7 +125,6 @@ KNOWN_PROVIDERS: list[ProviderSpec] = [
     ProviderSpec("openrouter", "OpenRouter", "OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1", "OPENROUTER_API_KEY"),
     ProviderSpec("deepseek", "DeepSeek", "DEEPSEEK_BASE_URL", "https://api.deepseek.com/v1", "DEEPSEEK_API_KEY"),
     ProviderSpec("xiaomi", "Xiaomi MiMo", "XIAOMI_BASE_URL", "https://api.xiaomimimo.com/v1", "XIAOMI_API_KEY"),
-    ProviderSpec("llamacpp", "llama.cpp (local)", "LLAMACPP_BASE_URL", "http://localhost:8080/v1", None),
 ]
 
 
@@ -171,9 +162,9 @@ class AvailableProvider:
 
 
 # Reasoning-effort levels a provider accepts when thinking is on. Absent =>
-# on/off only. (DeepSeek: high/max; low/medium map to high, xhigh to max.)
+# on/off only. DeepSeek V4.1 Flash supports low/high/max.
 EFFORT_LEVELS: dict[str, list[str]] = {
-    "deepseek": ["high", "max"],
+    "deepseek": ["low", "high", "max"],
 }
 
 def _openrouter_context_index() -> dict[str, int]:
@@ -205,8 +196,8 @@ def _openrouter_context_index() -> dict[str, int]:
 def _context_of(m: dict) -> int | None:
     """Pull a max-context-window value out of a /models entry across providers.
 
-    Field name/shape varies: llama.cpp exposes it under meta.n_ctx, OpenRouter as
-    a top-level context_length, others (e.g. LM Studio, various gateways) use context_window.
+    Field name/shape varies: OpenRouter uses context_length; gateways may use
+    context_window or nested metadata.
     """
     for key in ("context_length", "context_window", "max_context_length"):
         v = m.get(key)
@@ -220,20 +211,9 @@ def _context_of(m: dict) -> int | None:
     return None
 
 
-# Provider detection, two-tier for speed:
-# - Keyless local engines (llama.cpp) are probed via a real HTTP GET /models on
-#   a SHORT cache (PROVIDER_LIVENESS_CACHE_TTL). A TCP connect isn't enough — a
-#   proxy/port-forward (or the server process with no model loaded) happily
-#   accepts TCP but never answers the request, so we require an actual HTTP
-#   response to consider it up. The probe is cached briefly so repeated refreshes
-#   stay fast while still noticing an outage within seconds.
-# - The (large, rarely-changing) model lists of keyed cloud providers are fetched
-#   at most once per PROVIDER_MODELS_CACHE_TTL (a day) via _cached_models.
+# Cloud model catalogs are cached for a day and refreshed in the background.
 PROVIDER_MODELS_CACHE_TTL = float(os.getenv("PROVIDER_MODELS_CACHE_TTL", str(86400)))
-PROVIDER_LIVENESS_CACHE_TTL = float(os.getenv("PROVIDER_LIVENESS_CACHE_TTL", "10"))
-_LIVENESS_TIMEOUT = float(os.getenv("PROVIDER_LIVENESS_TIMEOUT", "2"))
 _models_cache: dict[str, tuple[float, list[dict]]] = {}
-_liveness_cache: dict[str, tuple[float, list[dict] | None]] = {}
 
 # Stale-while-revalidate: once a cache entry exists, an expired one is served
 # immediately while a daemon thread refreshes it in the background, so a slow or
@@ -267,68 +247,29 @@ SEND_FALLBACK_RETRY_DELAY = float(os.getenv("SEND_FALLBACK_RETRY_DELAY", "0.75")
 
 
 def provider_serving(provider_id: str) -> bool:
-    """True if the provider can serve a request right now — used for send-time
-    fallback. Keyed (cloud) providers count as serving when their key is set
-    (they're effectively always up). Keyless local engines get a fresh, UNCACHED
-    HTTP /models probe — the only check that sees through a port-forward or a
-    server with no model loaded (a TCP connect would falsely succeed). The fresh
-    result is written back into the liveness cache, so once a stopped engine is
-    caught here, detect_providers/resolve_default_model immediately stop
-    offering it instead of serving the stale "up" entry until a background
-    refresh happens to run."""
+    """Whether the provider has credentials; completion failures trigger fallback."""
     spec = get_provider(provider_id)
-    if spec is None:
-        return False
-    if spec.key_env:
-        return bool(spec.api_key())
-    return _do_probe_keyless(provider_id, spec.base_url()) is not None
+    return spec is not None and bool(spec.api_key())
+
+
+def canonical_model(provider_id: str, model: str) -> str:
+    """Resolve retired Flash aliases that DeepSeek no longer lists in /models."""
+    if provider_id == "deepseek" and model in (
+        "deepseek-v4-flash", "deepseek-v4-flash-vision-exp",
+    ):
+        return "deepseek-flash"
+    return model
 
 
 def model_valid_for(provider_id: str, model: str) -> bool:
-    """True if `model` is plausibly usable on `provider`. Keyless local engines
-    accept anything (blank = "whatever's loaded"; a custom id is the server's
-    call). Keyed cloud providers must use a name from their known model list — a
-    blank or foreign name (e.g. a llama.cpp model id sent to DeepSeek) is rejected
-    so we fall back instead of 400-ing and persisting a bad provider/model pair.
-    An empty/unknown list is treated as "can't validate" (allow)."""
+    """Validate against the provider catalog, allowing an unavailable catalog."""
     spec = get_provider(provider_id)
     if spec is None:
         return False
-    if not spec.key_env:
-        return True
     if not model:
         return False
     known = next((p.models for p in detect_providers() if p.id == provider_id), None)
-    return not known or model in known
-
-
-def _do_probe_keyless(provider_id: str, base_url: str) -> list[dict] | None:
-    """Perform the actual liveness probe and store the result in the cache."""
-    result = _models_reachable(base_url, None, timeout=_LIVENESS_TIMEOUT)
-    _liveness_cache[provider_id] = (time.monotonic(), result)
-    return result
-
-
-def _probe_keyless(provider_id: str, base_url: str) -> list[dict] | None:
-    """Short-TTL-cached HTTP probe of a keyless local engine's /models endpoint.
-    Returns the model list when the server is actually serving, or None when
-    it's down. This IS the liveness check for keyless engines: a TCP connect
-    can't be trusted here — a port-forward (or the server process with no model
-    loaded) will accept TCP but never answer the request. Requiring a real HTTP
-    /models response catches both.
-
-    A cold cache probes synchronously so the first detection is accurate; an
-    expired entry is served stale and refreshed in the background, so a down or
-    slow engine never makes /api/providers pay the probe timeout on the request
-    path. (Send-time correctness is unaffected: provider_serving() always probes
-    fresh and uncached.)"""
-    now = time.monotonic()
-    cached = _liveness_cache.get(provider_id)
-    if cached is not None:
-        if (now - cached[0]) >= PROVIDER_LIVENESS_CACHE_TTL:
-            _refresh_async(f"live:{provider_id}", lambda: _do_probe_keyless(provider_id, base_url))
-        return cached[1]
-    return _do_probe_keyless(provider_id, base_url)
+    return not known or canonical_model(provider_id, model) in known
 
 
 def _do_fetch_models(provider_id: str, base_url: str, api_key: str | None) -> list[dict] | None:
@@ -357,15 +298,7 @@ def _cached_models(provider_id: str, base_url: str, api_key: str | None) -> list
 
 
 def detect_providers() -> list[AvailableProvider]:
-    """Detect which providers are usable right now.
-
-    - Keyed (cloud) providers: included when the API key is set; models come
-      from the day-long model cache (_cached_models). Cloud providers are
-      effectively always up when keyed, so they aren't probed.
-    - Keyless local engines: included only when the short-TTL HTTP /models probe
-      (_probe_keyless) answers — that probe IS the liveness check, and (unlike a
-      TCP ping) it sees through port-forwards / a server with no model loaded.
-    """
+    """List providers with API keys and their cached model catalogs."""
     available: list[AvailableProvider] = []
     or_ctx = _openrouter_context_index()  # context source for APIs that omit it
     for spec in KNOWN_PROVIDERS:
@@ -373,14 +306,9 @@ def detect_providers() -> list[AvailableProvider]:
         key = spec.api_key()
         effort = EFFORT_LEVELS.get(spec.id, [])
 
-        if spec.key_env:  # cloud / keyed provider
-            if not key:
-                continue
-            models = _cached_models(spec.id, base_url, key)
-        else:  # keyless local engine — only if the HTTP /models probe answers
-            models = _probe_keyless(spec.id, base_url)
-            if models is None:
-                continue
+        if not key:
+            continue
+        models = _cached_models(spec.id, base_url, key)
 
         ids = [m["id"] for m in models]
         # Prefer the context the API actually reports; otherwise look it up in
@@ -416,13 +344,13 @@ def resolve_default_model(
     if pref is not None:
         model = DEFAULT_MODEL or (pref.models[0] if pref.models else None)
         if model:
-            return pref.id, model, DEFAULT_EFFORT
+            return pref.id, canonical_model(pref.id, model), DEFAULT_EFFORT
 
     fb = providers.get(FALLBACK_PROVIDER)
     if fb is not None:
         model = FALLBACK_MODEL or (fb.models[0] if fb.models else None)
         if model:
-            return fb.id, model, FALLBACK_EFFORT
+            return fb.id, canonical_model(fb.id, model), FALLBACK_EFFORT
 
     for p in providers.values():
         if p.models:
@@ -434,8 +362,9 @@ def effort_for(provider: str, model: str) -> str | None:
     """The reasoning effort to use for an already-chosen (provider, model) — so a
     conversation resumed onto the fallback model keeps its configured effort.
     Matches the default/fallback entries; otherwise None (let the model default)."""
-    if provider == DEFAULT_PROVIDER and (not DEFAULT_MODEL or model == DEFAULT_MODEL):
+    model = canonical_model(provider, model)
+    if provider == DEFAULT_PROVIDER and (not DEFAULT_MODEL or model == canonical_model(provider, DEFAULT_MODEL)):
         return DEFAULT_EFFORT
-    if provider == FALLBACK_PROVIDER and model == FALLBACK_MODEL:
+    if provider == FALLBACK_PROVIDER and model == canonical_model(provider, FALLBACK_MODEL):
         return FALLBACK_EFFORT
     return None

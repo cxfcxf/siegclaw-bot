@@ -5,7 +5,7 @@ single-user **web UI** (vanilla HTML/CSS/JS over FastAPI + SSE) and a
 multi-user **Discord bot** (DMs, @mentions, replies) — the Discord client
 connects on startup iff `DISCORD_BOT_TOKEN` is set. Both surfaces share the
 same agent core: a streaming tool-call loop against any OpenAI-compatible
-provider (cloud or local), with web/browser/file tools, MCP servers, and an
+cloud provider, with web/browser/file tools, MCP servers, and an
 **LLM-Wiki** — the model's entire durable knowledge (system prompt, memory,
 lessons) as markdown pages it reads and rewrites itself.
 
@@ -14,6 +14,7 @@ lessons) as markdown pages it reads and rewrites itself.
 Docker — single container, web UI on <http://localhost:8800>:
 
 ```bash
+cp .env.example .env      # set DEEPSEEK_API_KEY before starting
 docker compose up --build -d
 ```
 
@@ -28,9 +29,33 @@ python -m uvicorn app.main:app --port 8080
 ```
 
 Providers appear automatically when usable: a cloud provider when its key is
-set (`OPENAI_API_KEY`, `OPENROUTER_API_KEY`, `DEEPSEEK_API_KEY`, …), local
-llama.cpp when its `/v1/models` endpoint responds (no key). If a provider
+set (`OPENAI_API_KEY`, `OPENROUTER_API_KEY`, `DEEPSEEK_API_KEY`, …). If a provider
 doesn't list models, type a model id — the model field is a free-text combobox.
+
+DeepSeek uses `deepseek-flash`, the canonical API id for **V4.1 Flash** and the
+default primary and fallback model, with `high` reasoning effort. It supports
+JPEG, PNG, GIF, and WebP image inputs through
+the existing web attachments and Discord image paths; local images are sent as
+base64 `image_url` blocks in user messages. Thinking supports `low`, `high`, and
+`max` effort. See DeepSeek's [model docs](https://api-docs.deepseek.com/) and
+[vision guide](https://api-docs.deepseek.com/guides/vision/).
+
+For an existing installation, update these entries in `.env` (keep your API key):
+
+```dotenv
+DEFAULT_PROVIDER=deepseek
+DEFAULT_MODEL=deepseek-flash
+DEFAULT_EFFORT=high
+FALLBACK_PROVIDER=deepseek
+FALLBACK_MODEL=deepseek-flash
+FALLBACK_EFFORT=high
+```
+
+Then rebuild with `docker compose up -d --build`. The llama.cpp adapter has been
+removed; delete obsolete `LLAMACPP_BASE_URL`, `THINK_KWARG`, and
+`PROVIDER_LIVENESS_*` settings. Old llama.cpp selections resolve to the configured
+default on the next turn. Legacy DeepSeek Flash model IDs are normalized to
+`deepseek-flash` when a conversation is used.
 
 ## Code map
 
@@ -38,7 +63,7 @@ doesn't list models, type a model id — the model field is a free-text combobox
 app/
   main.py            FastAPI: /api/* + SSE chat + static UI; starts the Discord bot
   agent.py           streaming tool-call loop (web + Discord DM); wiki-based system prompt
-  config.py          provider registry + env detection, liveness probe, default→fallback model resolution
+  config.py          provider registry + env detection, default→fallback model resolution
   providers.py       OpenAI-compatible (async) client factory
   discord_bot.py     Discord client + on_message; DM slash commands; channel/cron use the non-streaming loop
   discord_context.py Discord history window + image/YouTube helpers
@@ -75,8 +100,8 @@ data/                SQLite DBs + uploads (runtime, gitignored; media lives in
   cache never invalidates. Anything fresher comes from tools (`current_time`,
   `read_wiki_page`, `search_wiki`); only an actual wiki edit busts the cache —
   the price of learning, paid once per edit.
-- **Thinking is provider-aware**: llama.cpp via `chat_template_kwargs`
-  (`THINK_KWARG`), DeepSeek/MiMo via `thinking.type` (+ `reasoning_effort`),
+- **Thinking is provider-aware**: DeepSeek/MiMo via `thinking.type`
+  (DeepSeek also accepts `reasoning_effort`),
   OpenRouter via `reasoning.enabled`. Reasoning is read back from whichever
   field the provider emits (`reasoning_content` / `reasoning` /
   `reasoning_details`) and shown in the collapsible process trace.
@@ -94,8 +119,7 @@ data/                SQLite DBs + uploads (runtime, gitignored; media lives in
 - **Send-time fallback** (`agent.py:resolve_for_turn`): if a conversation's
   provider stops serving mid-life, the turn retries then permanently switches
   that conversation to the fallback (persisted — no flapping); new
-  conversations pick up the original once it's back. Liveness for keyless
-  local engines is a real HTTP `/models` probe, not a TCP connect.
+  conversations pick up the original once it's back.
 
 ### Discord
 
@@ -312,9 +336,11 @@ All via `.env` (see `.env.example`) unless noted.
 | Variable | What it does |
 | --- | --- |
 | `OPENAI_API_KEY` / `OPENROUTER_API_KEY` / `DEEPSEEK_API_KEY` … | Enable a cloud provider |
-| `DEFAULT_PROVIDER` / `DEFAULT_MODEL` | Model for every new conversation (blank model = whatever a local engine serves) |
+| `DEFAULT_PROVIDER` / `DEFAULT_MODEL` | Model for every new conversation (blank model = first model in the provider catalog) |
+| `DEFAULT_EFFORT` | Default reasoning effort (`high`; DeepSeek supports `low`, `high`, `max`) |
 | `FALLBACK_PROVIDER` / `FALLBACK_MODEL` / `FALLBACK_EFFORT` | Used when the default provider is down |
-| `SEND_FALLBACK_RETRIES` / `SEND_FALLBACK_RETRY_DELAY` / `PROVIDER_LIVENESS_CACHE_TTL` | Send-time fallback tuning |
+| `PROVIDER_MODELS_CACHE_TTL` | Model catalog cache lifetime in seconds (default 86400) |
+| `SEND_FALLBACK_RETRIES` / `SEND_FALLBACK_RETRY_DELAY` | Send-time fallback tuning |
 | `DISCORD_BOT_TOKEN` | Run the Discord bot (omit for web UI only) |
 | `DISCORD_ENABLE_SHELL` | Allow shell/file tools from Discord (default off) |
 | `DISCORD_OWNER_ID` | User id allowed to DM the bot (default: the Discord application owner) |
@@ -331,11 +357,9 @@ All via `.env` (see `.env.example`) unless noted.
 | `FIRECRAWL_API_URL` | Firecrawl backend for web tools |
 | `IMAGE_SEARCH_URL` | searchmw middleware for `image_search` (its `/images` endpoint) |
 | `CAMOFOX_URL` | Stealth-browser backend for `browser_use` |
-| `THINK_KWARG` | llama.cpp chat-template kwarg for the thinking toggle |
 
 ## Notes
 
 - The web UI is **single-user and local**; `bash`/file tools run arbitrary
   commands in `WORKSPACE_DIR`. Don't expose it to untrusted networks.
-- Tool-calling reliability depends on the model — strong cloud models and
-  tool-tuned local models work best.
+- Tool-calling reliability depends on the model — models trained for tool use work best.

@@ -335,7 +335,7 @@ async def run_discord_turn(
             )
         except Exception as e:
             # The completion call failed on a provider the preflight probe
-            # called serving (e.g. llama.cpp up with no model loaded). Switch
+            # considered available. Switch
             # to the fallback model once per turn and retry in place.
             fb = None if fell_back else fallback_after_failure(provider, model)
             if fb is None:
@@ -947,7 +947,7 @@ def create_client(mcp_manager) -> discord.Client:
                     # report back here (DM), not just note the web conversation.
                     research.set_surface("dm")
                     # Send-time fallback: if the conversation's provider isn't
-                    # serving (e.g. llama.cpp was stopped), retry a few times
+                    # available, retry a few times
                     # then switch this DM to the fallback model for the session.
                     provider, model, effort = await resolve_for_turn(dm_cid, provider, model, effort)
                     image_paths = _save_discord_images(await download_images(message, ref_msg))

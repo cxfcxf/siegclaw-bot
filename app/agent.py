@@ -24,8 +24,8 @@ from .config import (
     MAX_AGENT_ITERATIONS,
     SEND_FALLBACK_RETRIES,
     SEND_FALLBACK_RETRY_DELAY,
-    THINK_KWARG,
     UPLOADS_DIR,
+    canonical_model,
     detect_providers,
     model_valid_for,
     provider_serving,
@@ -117,18 +117,17 @@ async def resolve_for_turn(
     """Pick the (provider, model, effort) to actually run this turn with, with
     retry-then-fallback.
 
-    Two reasons to fall back: the provider isn't currently serving (e.g. the
-    local engine was stopped — see config.provider_serving), or the model isn't
-    valid for that provider (e.g. a llama.cpp model id left on a conversation
-    that got switched to a cloud provider). Retries cover transient blips; once
-    it falls back, the switch is PERSISTED on the conversation so the rest of
-    the session stays on the fallback — it won't flap back if the original
-    returns mid-conversation. A brand-new conversation resolves the original
-    again via the default (which picks it once it's back up).
+    Fall back if the provider is unavailable or the selected model is invalid.
+    Persist the replacement on the conversation for subsequent turns.
 
     Returns the (provider, model, effort) to run with — unchanged only if the
     requested provider is serving AND the model is valid for it (or no different
     fallback exists)."""
+    canonical = canonical_model(provider, model)
+    if canonical != model:
+        model = canonical
+        if conversation_id:
+            storage.update_conversation_model(conversation_id, provider, model)
     # Fast path: model is valid for the provider -> just confirm it's serving,
     # retrying a few times in case the provider blipped.
     if model_valid_for(provider, model):
@@ -151,12 +150,8 @@ async def resolve_for_turn(
 
 def fallback_after_failure(provider: str, model: str) -> tuple[str, str, str | None] | None:
     """A different (provider, model, effort) to retry on after `provider` failed
-    an ACTUAL completion call. This covers the case the send-time preflight
-    can't: a provider whose /models probe answers but whose completions fail
-    (e.g. llama.cpp running with no model loaded). The failing provider is
-    excluded outright before re-resolving the default, so the liveness cache
-    (which believes it's up) can't hand it straight back. Returns None when
-    nothing different is available."""
+    an actual completion call. Exclude the failing provider before resolving
+    the default again. Returns None when nothing different is available."""
     providers = {p.id: p for p in detect_providers()}
     providers.pop(provider, None)
     fb = resolve_default_model(providers)
@@ -167,14 +162,11 @@ def fallback_after_failure(provider: str, model: str) -> tuple[str, str, str | N
 
 def reasoning_extra_body(provider: str, think: bool, effort: str | None = None) -> dict[str, Any]:
     """Per-request reasoning toggle + effort. The mechanism differs per provider:
-    - llama.cpp: chat_template_kwargs flag (server-side), on/off only.
     - DeepSeek/Xiaomi MiMo: {"thinking": {"type": enabled|disabled}} (OpenAI-compat).
-      DeepSeek also honors reasoning_effort (high/max).
+      DeepSeek also honors reasoning_effort (low/high/max).
     - OpenRouter: reasoning.enabled (gateway-level); optional reasoning.effort.
     - Others (OpenAI): no known toggle; let the model default.
     Shared by the web turn (run_turn) and the Discord turn."""
-    if provider == "llamacpp":
-        return {"chat_template_kwargs": {THINK_KWARG: think}}
     if needs_reasoning_replay(provider):
         body: dict[str, Any] = {"thinking": {"type": "enabled" if think else "disabled"}}
         if think and effort and provider == "deepseek":
@@ -395,7 +387,7 @@ async def run_turn(
             stream = await _create()
         except Exception as exc:
             # The completion call itself failed on a provider the preflight
-            # probe called serving (e.g. llama.cpp up with no model loaded).
+            # preflight considered available.
             # Switch to the fallback model once per turn and retry in place;
             # persist the switch so the rest of the session sticks to it.
             fb = None if fell_back else fallback_after_failure(provider, model)
@@ -450,7 +442,7 @@ async def run_turn(
                 finish_reason = choice.finish_reason
 
             # Reasoning text. Field name differs by provider/engine:
-            # - reasoning_content: DeepSeek/llama.cpp convention.
+            # - reasoning_content: DeepSeek convention.
             # - reasoning: OpenRouter's field (flat string per chunk).
             # - reasoning_details: OpenRouter's structured array fallback.
             reasoning_piece = (
