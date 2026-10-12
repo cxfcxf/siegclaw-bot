@@ -4,12 +4,18 @@ Exposes the full Firecrawl surface: web search, single-page scrape, site map,
 full crawl (blocking), and LLM-backed structured extract. All hit
 FIRECRAWL_API_URL.
 
+`web_scrape` falls back to the CamoFox stealth browser (CAMOFOX_URL) when
+Firecrawl times out, errors, comes back empty or gets an error page: Firecrawl's
+Playwright waits for the page's `load` event, which ad-heavy sites (Yahoo
+Finance, AP) never fire, and it gets bot-blocked where CamoFox does not.
+
 `image_search` hits the search middleware directly (IMAGE_SEARCH_URL — the
 searchmw service that also backs Firecrawl's web search), which pools Brave's
 image API and Tavily's include_images behind 429-driven failover.
 """
 from __future__ import annotations
 
+import json
 import time
 
 import httpx
@@ -18,6 +24,7 @@ from ..config import settings
 from .registry import Tool
 
 MAX_OUTPUT = 30_000  # cap chars returned to the model per tool call
+FIRECRAWL_TIMEOUT_MS = 15_000  # web_scrape's Firecrawl budget before the CamoFox fallback
 
 
 def _err(stage: str, exc: Exception) -> str:
@@ -76,26 +83,94 @@ def image_search(query: str, count: int = 4) -> str:
     return "\n".join(lines)
 
 
-def web_scrape(url: str) -> str:
-    if not settings.FIRECRAWL_API_URL:
-        return "Error: FIRECRAWL_API_URL is not configured."
+def _page(url: str, title: str, body: str) -> str:
+    header = f"# {title}\n({url})\n\n" if title else f"({url})\n\n"
+    return header + (_truncate(body) or "(no content extracted)")
+
+
+def _firecrawl_scrape(url: str) -> tuple[str | None, str]:
+    """(page, "") on a usable result, else (None, why it wasn't usable)."""
     try:
         resp = httpx.post(
             f"{settings.FIRECRAWL_API_URL}/v1/scrape",
-            json={"url": url, "formats": ["markdown"]},
-            timeout=90.0,
+            # Firecrawl's own per-page budget. Kept short: a page it can't
+            # render by then is one CamoFox usually renders in seconds.
+            json={"url": url, "formats": ["markdown"], "timeout": FIRECRAWL_TIMEOUT_MS},
+            timeout=FIRECRAWL_TIMEOUT_MS / 1000 + 30,
         )
         resp.raise_for_status()
         payload = resp.json()
     except Exception as exc:
-        return _err("web_scrape", exc)
+        return None, f"{type(exc).__name__}: {exc}"
     if not payload.get("success"):
-        return f"Scrape failed: {payload.get('error', 'unknown error')}"
+        return None, str(payload.get("error", "unknown error"))[:200]
     data = payload.get("data", {})
-    md = data.get("markdown", "")
-    title = data.get("metadata", {}).get("title", "")
-    header = f"# {title}\n({url})\n\n" if title else f"({url})\n\n"
-    return header + (_truncate(md) or "(no content extracted)")
+    meta = data.get("metadata", {})
+    status = meta.get("statusCode") or 200
+    md = (data.get("markdown") or "").strip()
+    if status >= 400:
+        return None, f"site returned HTTP {status}"
+    if not md:
+        return None, "no content extracted"
+    return _page(url, meta.get("title", ""), md), ""
+
+
+# CamoFox user for scrape fallbacks — separate from browser_use's tabs.
+_CAMOFOX_USER = "scrape"
+
+
+def _camofox_scrape(url: str) -> tuple[str | None, str]:
+    """Render the page in CamoFox and read its visible text."""
+    base = settings.CAMOFOX_URL
+    tab_id = None
+    try:
+        r = httpx.post(
+            f"{base}/tabs",
+            json={"userId": _CAMOFOX_USER, "sessionKey": _CAMOFOX_USER, "url": url},
+            timeout=60.0,
+        )
+        r.raise_for_status()
+        tab_id = r.json().get("tabId")
+        if not tab_id:
+            return None, "no tab opened"
+        r = httpx.post(
+            f"{base}/tabs/{tab_id}/evaluate",
+            json={
+                "userId": _CAMOFOX_USER,
+                "expression": "JSON.stringify([document.title, document.body ? document.body.innerText : ''])",
+            },
+            timeout=30.0,
+        )
+        r.raise_for_status()
+        title, text = json.loads(r.json().get("result") or '["", ""]')
+    except Exception as exc:
+        return None, f"{type(exc).__name__}: {exc}"
+    finally:
+        if tab_id:
+            try:
+                httpx.delete(f"{base}/tabs/{tab_id}", params={"userId": _CAMOFOX_USER}, timeout=10.0)
+            except Exception:
+                pass
+    text = (text or "").strip()
+    if not text:
+        return None, "no content extracted"
+    return _page(url, title, text), ""
+
+
+def web_scrape(url: str) -> str:
+    if not settings.FIRECRAWL_API_URL and not settings.CAMOFOX_URL:
+        return "Error: neither FIRECRAWL_API_URL nor CAMOFOX_URL is configured."
+    why = "FIRECRAWL_API_URL is not configured"
+    if settings.FIRECRAWL_API_URL:
+        page, why = _firecrawl_scrape(url)
+        if page:
+            return page
+    if not settings.CAMOFOX_URL:
+        return f"Scrape failed: {why}"
+    page, camo_why = _camofox_scrape(url)
+    if page:
+        return page
+    return f"Scrape failed: Firecrawl ({why}); CamoFox ({camo_why})"
 
 
 def web_map(url: str, limit: int = 100, search: str | None = None) -> str:
