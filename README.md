@@ -5,7 +5,7 @@ single-user **web UI** (vanilla HTML/CSS/JS over FastAPI + SSE) and a
 multi-user **Discord bot** (DMs, @mentions, replies) — the Discord client
 connects on startup iff `DISCORD_BOT_TOKEN` is set. Both surfaces share the
 same agent core: a streaming tool-call loop against any OpenAI-compatible
-cloud provider, with web/browser/file tools, MCP servers, and an
+endpoint, with web/browser/file tools, MCP servers, and an
 **LLM-Wiki** — the model's entire durable knowledge (system prompt, memory,
 lessons) as markdown pages it reads and rewrites itself.
 
@@ -17,8 +17,8 @@ Docker — single container, web UI on <http://localhost:8800>:
 docker compose up --build -d
 ```
 
-Then open the web UI, go to **Settings → Providers**, paste a DeepSeek API key
-and save — there is no config file to edit. Add the Discord bot token under
+Then open the web UI, go to **Settings → Providers**, paste an OpenRouter API key
+(or point the base URL at another endpoint) and save — there is no config file to edit. Add the Discord bot token under
 **Settings → Discord** and restart if you want the bot.
 
 *OrbStack note: if a build fails on DNS, add `--build-arg HTTP_PROXY=""`.*
@@ -33,27 +33,35 @@ python -m uvicorn app.main:app --port 8080
 Configuration is entered in the UI and stored in `data/settings.db`; see
 *Settings*.
 
-Providers appear automatically when usable: a cloud provider when its key is
-set (`OPENAI_API_KEY`, `DEEPSEEK_API_KEY`). DeepSeek is the only provider wired
-up by default; OpenAI works if you point a key at it. If a provider doesn't list
-models, type a model id — the model field is a free-text combobox.
+Models come from one OpenAI-compatible endpoint: `LLM_BASE_URL` plus an
+optional `LLM_API_KEY`. The default is OpenRouter (`https://openrouter.ai/api/v1`),
+which reaches every model with one key, but OpenAI or a local server such as
+llama.cpp (`http://host:port/v1`, no key) works the same way. The default model
+is `anthropic/claude-haiku-5.5` at `high` effort; change it under
+**Settings → Models**, where the field suggests the endpoint's models as you
+type. `MODEL_FILTER` (e.g. `anthropic/, openai/gpt-6`) narrows every picker to
+matching ids — OpenRouter lists hundreds. If the endpoint doesn't list models,
+type a model id — the model fields are free-text comboboxes.
 
-DeepSeek uses `deepseek-flash`, the canonical API id for **V4.1 Flash** and the
-default primary and fallback model, with `high` reasoning effort. It supports
-JPEG, PNG, GIF, and WebP image inputs through
-the existing web attachments and Discord image paths; local images are sent as
-base64 `image_url` blocks in user messages. Thinking supports `low`, `high`, and
-`max` effort. See DeepSeek's [model docs](https://api-docs.deepseek.com/) and
-[vision guide](https://api-docs.deepseek.com/guides/vision/).
+The OpenRouter-specific request fields below are sent only when the base URL is
+OpenRouter; any other endpoint gets OpenAI's standard `reasoning_effort`.
+OpenRouter requests carry the conversation id as `session_id`, so each
+conversation sticks to one upstream host and keeps its prompt cache warm.
+Claude models only cache on request, so `anthropic/*` models also get a
+top-level `cache_control`; other models cache automatically. To force particular hosts
+(say, Google Vertex for Claude), list them in `OPENROUTER_PROVIDERS`, e.g.
+`google-vertex/global`; requests then never route elsewhere.
 
-For an existing installation, the defaults above are already what a new
-conversation uses, so there is nothing to set. The llama.cpp, OpenRouter and
-Xiaomi MiMo adapters have all been removed; any `LLAMACPP_BASE_URL`,
-`THINK_KWARG`, `PROVIDER_LIVENESS_*`, `OPENROUTER_API_KEY` or `XIAOMI_API_KEY`
-left in an old `.env` is simply ignored — no setting matches them. Selections on
-a removed provider resolve to the configured default on the next turn, and
-legacy DeepSeek Flash model IDs are normalized to `deepseek-flash` when a
-conversation is used.
+Images (web attachments and Discord) are sent as base64 `image_url` blocks in
+user messages, so any vision-capable model reads them.
+
+The per-vendor DeepSeek, OpenAI, llama.cpp and Xiaomi MiMo settings have been
+replaced by the single endpoint; any `DEEPSEEK_*`, `OPENAI_*`,
+`OPENROUTER_API_KEY`/`OPENROUTER_BASE_URL`, `LLAMACPP_BASE_URL`, `THINK_KWARG`,
+`PROVIDER_LIVENESS_*`, `XIAOMI_API_KEY`, `DEFAULT_PROVIDER` or
+`FALLBACK_*` or `SEND_FALLBACK_*` left in an old `.env` or database is simply ignored — no
+setting matches them. Conversations stored under an old provider resolve to the
+default model on their next turn.
 
 If you are coming from a `.env`-based install, see *Settings* for the one-time
 import that carries your keys and tuning across.
@@ -63,11 +71,11 @@ import that carries your keys and tuning across.
 ```
 app/
   main.py            FastAPI: /api/* + SSE chat + static UI; starts the Discord bot
-  agent.py           streaming tool-call loop (web + Discord DM); wiki-based system prompt
-  config.py          paths, provider registry, default→fallback model resolution
+  agent.py           the shared agent loop (every surface) + run_turn's storage wrapper; wiki-based system prompt
+  config.py          paths, the endpoint, model catalog + default resolution
   settings.py        the settings registry + live store (stored > env > default)
   providers.py       OpenAI-compatible (async) client factory
-  discord_bot.py     Discord client + on_message; DM slash commands; channel/cron use the non-streaming loop
+  discord_bot.py     Discord client + on_message; DM slash commands; channel turns wrap the shared loop
   discord_context.py Discord history window + image/YouTube helpers
   scheduler.py       cron job runner (headless agent turn → Discord delivery)
   cronutil.py        cron-expression parsing / next-run (in HARNESS_TZ)
@@ -77,7 +85,7 @@ app/
   docs.py            document attachments: PDF/text extraction for chat uploads
   storage.py         SQLite conversations (web UI + Discord DMs share one pool)
   mcp_client.py      connects mcp.json servers (stdio or HTTP)
-  tools/             registry, builtin (fs/bash), web (Firecrawl), browser (CamoFox), clock
+  tools/             registry, builtin (fs/bash), web (Firecrawl → CamoFox fallback), browser (CamoFox), clock, delegate (sub-agent)
 web/                 vanilla HTML/CSS/JS frontend
 wiki/                the LLM-Wiki (private space). Only home.md (the stock system prompt)
                      is committed; every other page is personal runtime data the model
@@ -95,34 +103,57 @@ data/                SQLite DBs + uploads (runtime, gitignored; media lives in
 
 ### Agent core
 
-- `agent.py:run_turn` is the streaming loop used by the web UI **and** Discord
-  DMs — prompt construction, storage, and reasoning capture are identical.
-  Channel @mentions and cron jobs use the non-streaming
-  `discord_bot.py:run_discord_turn`.
+- **One loop for every surface**: `agent.py:agent_loop` streams a completion,
+  runs the tool calls it asks for, appends the results and repeats until the
+  model answers without tools (on the last allowed step the tools are removed so
+  it must answer). `run_turn` wraps it with storage for the web UI, Discord DMs,
+  cron jobs and deep research; `discord_bot.py:run_discord_turn` wraps it for
+  channel mentions, which store nothing.
+- **Parallel tool calls**: read-only tools (`agent.READ_ONLY_TOOLS` — search,
+  scrape, map, crawl, wiki reads, `delegate`, …) asked for in the same step run
+  concurrently; anything that changes state (shell, browser, wiki writes, jobs,
+  MCP) runs alone, in order. Each result reaches the UI the moment its tool
+  finishes, while the conversation records them in the order the model asked. A
+  read-only call repeated with identical arguments in one turn is answered with
+  a pointer to the earlier result instead of running again.
+- **Old tool results are cleared**: before each model call, once the tool
+  results still in context pass `CONTEXT_CLEAR_TRIGGER` characters, all but the
+  newest `CONTEXT_KEEP_TOOL_RESULTS` are replaced by a one-line stub (the stored
+  chat keeps them). The clearing point only ever moves forward, in jumps, so
+  the prompt cache survives between jumps.
+- **Sub-agents**: the `delegate` tool hands a self-contained reading task to a
+  helper running the same loop with only web + clock tools, on the default
+  model and effort (`SUBAGENT_MAX_ITERATIONS` caps its rounds). Only its short,
+  sourced answer returns, so a dozen scraped pages cost the caller a few
+  paragraphs. Offered on every surface, deep research included.
 - **Cache-friendly system prompt**: the prefix (wiki home page + day-frozen
   date + wiki index) is byte-identical across turns so the provider's prompt
   cache never invalidates. Anything fresher comes from tools (`current_time`,
   `read_wiki_page`, `search_wiki`); only an actual wiki edit busts the cache —
   the price of learning, paid once per edit.
-- **Thinking is provider-aware**: DeepSeek via `thinking.type`
-  (it also accepts `reasoning_effort`). Reasoning is read back from whichever
+- **Thinking is provider-aware**: OpenRouter via its unified
+  `reasoning: {enabled, effort}`. On tool-call turns the streamed
+  `reasoning_details` are replayed so Claude keeps its signed thinking blocks.
+  Reasoning is read back from whichever
   field the provider emits (`reasoning_content` / `reasoning` /
   `reasoning_details`) and shown in the collapsible process trace.
 
-### Models & fallback
+### Models & retries
 
-- Every **new** conversation (web, DM, channel) starts on
-  `DEFAULT_PROVIDER`/`DEFAULT_MODEL`; if that provider isn't reachable it
-  starts on `FALLBACK_PROVIDER`/`FALLBACK_MODEL` (+ `FALLBACK_EFFORT`).
+- Every **new** conversation (web, DM, channel) starts on `DEFAULT_MODEL`
+  (+ `DEFAULT_EFFORT`).
 - A conversation's stored model is **provenance, not preference**: every turn
   — new or resumed, web or DM — starts on the freshly resolved default, and
   each reply is tagged with the model that produced it (the web UI's
   `▸ MODEL · provider/model` label). An explicit pick (web picker or
   `/model`) overrides for that session.
-- **Send-time fallback** (`agent.py:resolve_for_turn`): if a conversation's
-  provider stops serving mid-life, the turn retries then permanently switches
-  that conversation to the fallback (persisted — no flapping); new
-  conversations pick up the original once it's back.
+- **No fallback model**: a model that fails shows the API's error. Network
+  errors, timeouts, rate limits and 5xx are retried on the *same* model
+  (`agent.py:with_retries`, `SEND_RETRIES` times, waiting `SEND_RETRY_DELAY` ×
+  attempt); a 4xx such as a bad key or unknown model is shown at once. The
+  OpenAI SDK's own retries are off so the two don't multiply.
+- A conversation stored under a retired provider moves to the default model
+  on its next turn (`agent.py:resolve_for_turn`).
 
 ### Settings
 
@@ -177,12 +208,8 @@ timeout = settings.BASH_TIMEOUT   # re-read every time
 
 The context meter needs each model's maximum context. Most providers report it
 on `/models` as `context_length` (or `context_window` / nested `meta`), and
-`config._context_of` reads whichever shape turns up. DeepSeek is not one of
-them — its `/models` returns only `id`/`object`/`owned_by` — so its published
-figures live in `config.STATIC_MODEL_CONTEXT` (both models: 1M). A value the
-API actually reports always wins over that table; the table is only consulted
-when the catalog omits the field. Add an entry there when a new provider is
-similarly quiet, and the meter works with no other changes.
+`config._context_of` reads whichever shape turns up. A model whose catalog
+entry omits it simply shows no meter.
 
 ### Discord
 
@@ -341,7 +368,10 @@ conversation's upload dir like any media.
 - **Scheduling**: `schedule_job`, `list_scheduled_jobs`, `cancel_scheduled_job`
   — owner surfaces only (they ride with the private wiki; see *Scheduled jobs*).
 - **Web**: Firecrawl (`web_search`, `web_scrape`, `web_map`, `web_crawl`) via
-  `FIRECRAWL_API_URL`; `image_search` via `IMAGE_SEARCH_URL` (the searchmw
+  `FIRECRAWL_API_URL`. `web_scrape` falls back to CamoFox (`CAMOFOX_URL`) when
+  Firecrawl times out (its Playwright waits for a `load` event ad-heavy sites
+  like Yahoo Finance and AP never fire; it gets 15 s), errors, returns nothing
+  or hits an HTTP error page, and then returns the page's visible text; `image_search` via `IMAGE_SEARCH_URL` (the searchmw
   middleware's `/images` — Brave image API + Tavily with 429 failover) returns
   direct image URLs the model embeds in replies (Discord auto-embeds bare
   URLs; the web UI renders markdown images); `browser_use` drives a stealth
@@ -361,11 +391,12 @@ top-right corner).
   auto-expanding input with a fullscreen toggle; a **context meter** (used
   vs. the model's max context — see *Context windows*).
 - **Responses**: collapsible **process trace** (reasoning + nested tool
-  calls, live activity light, timers); **per-response metrics** (wall time,
+  calls, live activity light, timers — with parallel tools the header counts
+  down what's still running, e.g. "3 tools running · web_scrape ×3"); **per-response metrics** (wall time,
   thinking time, tok/s); **stop** mid-turn; the per-reply model tag; a hover
   toolbar with **copy / retry / edit-and-resend / read-aloud**.
-- **Settings page**: the entire server configuration — providers and API keys,
-  default/fallback models, agent limits, timezone, Discord (token, context
+- **Settings page**: the entire server configuration — the endpoint and its key,
+  the default model and model filter, agent limits, timezone, Discord (token, context
   window), voice/document caps — generated from the server's spec and applied
   live (see *Settings*).
 - **Sidebar**: history grouped Today / Yesterday / Previous 7 days / dates;
@@ -404,12 +435,15 @@ only the path variables at the end are read from the environment.
 
 | Variable | What it does |
 | --- | --- |
-| `OPENAI_API_KEY` / `DEEPSEEK_API_KEY` | Enable a cloud provider |
-| `DEFAULT_PROVIDER` / `DEFAULT_MODEL` | Model for every new conversation (blank model = first model in the provider catalog) |
-| `DEFAULT_EFFORT` | Default reasoning effort (`high`; DeepSeek supports `low`, `high`, `max`) |
-| `FALLBACK_PROVIDER` / `FALLBACK_MODEL` / `FALLBACK_EFFORT` | Used when the default provider is down |
+| `LLM_BASE_URL` / `LLM_API_KEY` | The OpenAI-compatible endpoint (default OpenRouter); the key is optional |
+| `OPENROUTER_PROVIDERS` | OpenRouter only: comma-separated upstream hosts to force (e.g. `google-vertex/global`) |
+| `DEFAULT_MODEL` | Model for every new conversation (blank = first model in the endpoint's catalog) |
+| `DEFAULT_EFFORT` | Default reasoning effort (`high`; OpenRouter accepts `low`, `medium`, `high`, `xhigh`, `max`, others `low`–`high`) |
+| `MODEL_FILTER` | Comma-separated substrings; only matching model ids are listed in the pickers (blank = all) |
 | `PROVIDER_MODELS_CACHE_TTL` | Model catalog cache lifetime in seconds (default 86400) |
-| `SEND_FALLBACK_RETRIES` / `SEND_FALLBACK_RETRY_DELAY` | Send-time fallback tuning |
+| `SEND_RETRIES` / `SEND_RETRY_DELAY` | Same-model retries on transient errors, and the base wait between them |
+| `CONTEXT_CLEAR_TRIGGER` / `CONTEXT_KEEP_TOOL_RESULTS` | Clear older tool results once those in context exceed this many chars, keeping the newest N |
+| `SUBAGENT_MAX_ITERATIONS` | Tool budget for one `delegate` task (the helper uses the default model and effort) |
 | `DISCORD_BOT_TOKEN` | Run the Discord bot (blank for web UI only; needs a restart) |
 | `DISCORD_ENABLE_SHELL` | Allow shell/file tools from Discord (default off) |
 | `DISCORD_OWNER_ID` | User id allowed to DM the bot (default: the Discord application owner) |

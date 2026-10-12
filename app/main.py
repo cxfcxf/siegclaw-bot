@@ -615,9 +615,8 @@ async def api_chat(body: ChatRequest):
     async def event_stream():
         # First event carries the (possibly new) conversation id.
         yield _sse({"type": "conversation", "id": cid})
-        # Send-time fallback: if the chosen provider isn't serving, retry a few
-        # times then switch this conversation to the fallback model (persisted,
-        # so it sticks for the session). Tell the client when it changed.
+        # A conversation on a retired provider moves to the default model
+        # (persisted); tell the client when that happened.
         provider, model, effort = await resolve_for_turn(cid, body.provider, body.model, body.effort)
         if provider != body.provider or model != body.model:
             yield _sse({"type": "model", "provider": provider, "model": model, "effort": effort})

@@ -22,6 +22,7 @@ from . import storage, wiki
 from .config import resolve_default_model, settings
 from .tools.browser import browser_tools
 from .tools.clock import clock_tools
+from .tools.delegate import delegate_tools
 from .tools.registry import Registry, Tool
 from .tools.web import web_tools
 
@@ -98,6 +99,7 @@ def _research_registry() -> Registry:
     registry = Registry()
     registry.extend(clock_tools())
     registry.extend(web_tools())
+    registry.extend(delegate_tools())
     registry.extend(browser_tools())
     registry.extend(wiki.wiki_tools(writable=False, space=wiki.PRIVATE))
     return registry

@@ -34,8 +34,7 @@ from . import docs as docs_mod
 from .agent import (
     build_registry,
     conversation_time_block,
-    fallback_after_failure,
-    needs_reasoning_replay,
+    agent_loop,
     reasoning_extra_body,
     resolve_for_turn,
     run_turn,
@@ -63,6 +62,7 @@ from .providers import client_for
 from .tools.browser import browser_tools
 from .tools.builtin import builtin_tools
 from .tools.clock import clock_tools
+from .tools.delegate import delegate_tools
 from .tools.jobs import job_tools
 from .tools.registry import Registry, Tool
 from .tools.web import web_tools
@@ -96,13 +96,6 @@ When someone asks about things said in the channel ("what do you think of X's ra
 - Use Discord markdown formatting when helpful.
 """
 
-
-# Tools whose result never changes for identical arguments within one reply —
-# repeating them just burns iterations.
-_IDEMPOTENT_TOOLS = {
-    "web_search", "image_search", "web_scrape", "web_map", "web_crawl",
-    "search_wiki", "read_wiki_page", "fetch_user_messages", "fetch_channel_history",
-}
 
 # Short human-readable status lines shown live in Discord while a tool runs.
 _TOOL_STATUS = {
@@ -249,6 +242,7 @@ def build_discord_registry(
     if settings.DISCORD_ENABLE_SHELL:
         registry.extend(builtin_tools())
     registry.extend(web_tools())
+    registry.extend(delegate_tools())
     registry.extend(browser_tools())
     registry.extend(wiki.wiki_tools(writable=wiki_writable, space=wiki_space))
     # Scheduling is an OWNER capability, so it rides with the private wiki and is
@@ -279,7 +273,7 @@ def discord_system_prompt() -> str:
 
 
 # --------------------------------------------------------------------------- #
-# Non-streaming tool loop
+# Channel turn
 # --------------------------------------------------------------------------- #
 async def run_discord_turn(
     provider: str,
@@ -290,133 +284,28 @@ async def run_discord_turn(
     think: bool = True,
     effort: str | None = None,
     status_fn=None,
-    conversation_id: str | None = None,
 ) -> str:
-    """Drive the model + tools to a final text answer for Discord (no streaming).
-
-    When `conversation_id` is given (the DM path), every assistant message and
-    tool result is also appended to that stored conversation so the shared
-    history stays valid for the next turn (and shows up in the web UI)."""
-    client = client_for(provider)
-    extra_body = reasoning_extra_body(provider, think, effort)
-    schemas = registry.schemas()
-    seen_calls: set[tuple[str, str]] = set()
-    replay_reasoning = needs_reasoning_replay(provider)
-    spent = {"prompt": 0, "completion": 0}  # summed over all calls; recorded at return
-
-    def _track(resp) -> None:
-        u = getattr(resp, "usage", None)
-        if u:
-            spent["prompt"] += getattr(u, "prompt_tokens", 0) or 0
-            spent["completion"] += getattr(u, "completion_tokens", 0) or 0
-
-    async def persist(fn, *a, **kw):
-        if conversation_id:
+    """Drive the shared agent loop to a final text answer for a channel
+    mention. Nothing is stored — channel history lives in Discord — so the
+    only side channel is `status_fn(name, args)`, the live tool status line."""
+    extra_body = reasoning_extra_body(provider, think, effort, model=model)
+    async for event in agent_loop(
+        client_for(provider), provider, model, messages, registry,
+        extra_body=extra_body,
+    ):
+        et = event["type"]
+        if et == "tool_call" and status_fn:
             try:
-                await asyncio.to_thread(fn, conversation_id, *a, **kw)
+                await status_fn(event["name"], json.loads(event["arguments"] or "{}"))
             except Exception as e:
-                log.warning("DM persist failed: %s", e)
-
-    def _reasoning_of(m) -> str | None:
-        # Non-streaming responses expose the chain-of-thought as reasoning_content.
-        return getattr(m, "reasoning_content", None)
-
-    fell_back = False  # one call-failure fallback per turn
-    for _ in range(settings.MAX_AGENT_ITERATIONS):
-        try:
-            resp = await client.chat.completions.create(
-                model=model,
-                messages=messages,
-                tools=schemas or None,
-                extra_body=extra_body,
-            )
-        except Exception as e:
-            # The completion call failed on a provider the preflight probe
-            # considered available. Switch
-            # to the fallback model once per turn and retry in place.
-            fb = None if fell_back else fallback_after_failure(provider, model)
-            if fb is None:
-                raise
-            fell_back = True
-            log.warning(
-                "Completion call on %s/%s failed (%s); retrying on %s/%s",
-                provider, model, type(e).__name__, fb[0], fb[1],
-            )
-            provider, model, effort = fb
-            client = client_for(provider)
-            replay_reasoning = needs_reasoning_replay(provider)
-            extra_body = reasoning_extra_body(provider, think, effort)
-            if conversation_id:
-                storage.update_conversation_model(conversation_id, provider, model)
-            resp = await client.chat.completions.create(
-                model=model,
-                messages=messages,
-                tools=schemas or None,
-                extra_body=extra_body,
-            )
-        _track(resp)
-        msg = resp.choices[0].message
-        # Always read + persist the reasoning so DM turns (shared with the web
-        # UI) show their thinking block there — Discord itself only surfaces tool
-        # status lines, never reasoning. `replay_reasoning` only governs whether
-        # it's ALSO reattached to the in-memory assistant message for providers
-        # that 400 without the chain-of-thought replayed on tool-call turns.
-        reasoning_text = _reasoning_of(msg)
-        if not msg.tool_calls:
-            await persist(storage.add_message, "assistant", content=msg.content or "", reasoning=reasoning_text)
-            storage.add_token_usage(spent["prompt"], spent["completion"])
-            return msg.content or ""
-
-        assistant_dump = msg.model_dump(exclude_none=True)
-        if replay_reasoning and reasoning_text:
-            assistant_dump["reasoning_content"] = reasoning_text
-        messages.append(assistant_dump)
-        await persist(
-            storage.add_message, "assistant",
-            content=assistant_dump.get("content"),
-            tool_calls=assistant_dump.get("tool_calls"),
-            reasoning=reasoning_text,
-        )
-
-        for tc in msg.tool_calls:
-            name = tc.function.name
-            raw_args = tc.function.arguments or "{}"
-            try:
-                args = json.loads(raw_args)
-            except json.JSONDecodeError as e:
-                content = f"Invalid tool arguments (not valid JSON): {e}"
-                messages.append({"role": "tool", "tool_call_id": tc.id, "content": content})
-                await persist(storage.add_message, "tool", content=content, tool_call_id=tc.id, name=name)
-                continue
-
-            call_key = (name, raw_args)
-            if name in _IDEMPOTENT_TOOLS and call_key in seen_calls:
-                log.info("Tool %s skipped (duplicate call)", name)
-                content = "You already made this exact tool call — its result is above. Use that result, or change the arguments."
-                messages.append({"role": "tool", "tool_call_id": tc.id, "content": content})
-                await persist(storage.add_message, "tool", content=content, tool_call_id=tc.id, name=name)
-                continue
-            seen_calls.add(call_key)
-
-            if status_fn:
-                try:
-                    await status_fn(name, args)
-                except Exception as e:
-                    log.debug("Status update failed: %s", e)
-
-            result = await registry.call(name, args)
-            log.info("Tool %s(%s) → %d chars", name, list(args.keys()), len(result))
-            messages.append({"role": "tool", "tool_call_id": tc.id, "content": result})
-            await persist(storage.add_message, "tool", content=result, tool_call_id=tc.id, name=name)
-
-    # Max iterations hit — force a final answer with no tools.
-    messages.append({"role": "user", "content": "You have reached the maximum number of tool calls. Based on everything gathered so far, give your best answer now."})
-    resp = await client.chat.completions.create(model=model, messages=messages, extra_body=extra_body)
-    _track(resp)
-    final = resp.choices[0].message
-    await persist(storage.add_message, "assistant", content=final.content or "", reasoning=_reasoning_of(final))
-    storage.add_token_usage(spent["prompt"], spent["completion"])
-    return final.content or ""
+                log.debug("Status update failed: %s", e)
+        elif et == "usage":
+            storage.add_token_usage(event["prompt_tokens"], event["completion_tokens"])
+        elif et == "error":
+            raise RuntimeError(event["message"])
+        elif et == "done":
+            return event["text"]
+    return ""
 
 
 # --------------------------------------------------------------------------- #
@@ -840,8 +729,8 @@ def create_client(mcp_manager) -> discord.Client:
                 log.info("Ignoring DM from non-owner %s (%s)", message.author, user_id)
                 return
 
-        # Resolve provider + model. Everything uses the freshly resolved default
-        # (local engine if it's up, else the fallback) — a conversation's stored
+        # Resolve provider + model. Everything uses the freshly resolved
+        # default (DEFAULT_MODEL) — a conversation's stored
         # model is provenance, not a preference, so resumed DMs don't drag you
         # back to whatever ran last time (matches the web UI). The one exception:
         # an explicit /model pick, which pins the DM conversation until the bot
@@ -943,9 +832,7 @@ def create_client(mcp_manager) -> discord.Client:
                     # A deep_research launched from this turn should deliver its
                     # report back here (DM), not just note the web conversation.
                     research.set_surface("dm")
-                    # Send-time fallback: if the conversation's provider isn't
-                    # available, retry a few times
-                    # then switch this DM to the fallback model for the session.
+                    # A DM stored under a retired provider moves to the default.
                     provider, model, effort = await resolve_for_turn(dm_cid, provider, model, effort)
                     image_paths = _save_discord_images(await download_images(message, ref_msg))
 
@@ -992,10 +879,8 @@ def create_client(mcp_manager) -> discord.Client:
                     # Channel mention: live Discord history is the source of truth
                     # (not persisted). Build the timestamped transcript + question,
                     # then drive the non-streaming tool loop to a single reply.
-                    # Same send-time fallback as the DM path: fresh-probe the
-                    # chosen provider (retrying transient blips) and switch to
-                    # the fallback model if it's down. No conversation to
-                    # persist the switch on — channel turns are stateless.
+                    # Same retired-provider check as the DM path; channel turns
+                    # are stateless, so there is nothing to persist.
                     provider, model, effort = await resolve_for_turn(None, provider, model, effort)
                     registry = build_discord_registry(
                         message.channel, client.user.id, mcp_manager.tools

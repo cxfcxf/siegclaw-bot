@@ -119,7 +119,7 @@ async function loadProviders() {
   const psel = $("#provider");
   psel.innerHTML = "";
   if (!state.providers.length) {
-    psel.innerHTML = '<option>No providers (set keys in .env)</option>';
+    psel.innerHTML = '<option>No endpoint (set a base URL in Settings)</option>';
     $("#model").value = "";
     $("#model").disabled = true;
     renderCtxMeter();
@@ -935,9 +935,8 @@ async function openConversation(id) {
   $("#view-label").textContent = "Conversation";
   // Resumed chats always start on the current default model, not the model the
   // chat last used (that stays logged server-side, it's just not restored) —
-  // e.g. when the local engine comes up, old chats should pick it up too.
-  // loadProviders() re-detects availability, so the default is fresh: local
-  // engine if it's up, the fallback otherwise.
+  // e.g. after DEFAULT_MODEL changes, old chats pick it up too.
+  // loadProviders() re-reads the default, so it is always fresh.
   const [data] = await Promise.all([
     fetch(`/api/conversations/${id}`).then((r) => r.json()),
     loadProviders(),
@@ -1834,6 +1833,17 @@ async function send(providedText, providedImages, providedDocs) {
   let streamBackgrounded = false;
 
   const toolBlocks = {};
+  // Tools still running this turn (id → name). Read-only tools run in
+  // parallel, so the trace header follows this set, not the latest event.
+  const runningTools = new Map();
+  const showRunningTools = (label) => {
+    if (!runningTools.size) { setTraceTool(false); return; }
+    if (runningTools.size === 1) { setTraceTool(true, label || `${[...runningTools.values()][0]}…`); return; }
+    const counts = {};
+    runningTools.forEach((n) => { counts[n] = (counts[n] || 0) + 1; });
+    const names = Object.entries(counts).map(([n, k]) => (k > 1 ? `${n} ×${k}` : n)).join(", ");
+    setTraceTool(true, `${runningTools.size} tools running · ${names}`);
+  };
   let assistantBubble = null;
   let assistantText = "";
   let thinkingBlock = null;
@@ -1988,11 +1998,11 @@ async function send(providedText, providedImages, providedDocs) {
 
     switch (ev.type) {
       case "model":
-        // Server switched the conversation to a fallback model (the chosen
-        // provider wasn't serving). Sync the picker so it reflects reality.
+        // Server moved a conversation off a retired provider onto the default
+        // model. Sync the picker so it reflects reality.
         applyModelSelection(ev.provider, ev.model, ev.effort);
         turnModel = `${ev.provider}/${ev.model}`;
-        setStatus(`↳ fell back to ${turnModel}`);
+        setStatus(`↳ switched to ${turnModel}`);
         break;
       case "reasoning":
         thinkTick(true);
@@ -2030,7 +2040,8 @@ async function send(providedText, providedImages, providedDocs) {
           $("#research-toggle").setAttribute("aria-pressed", "false");
         }
         toolBlocks[ev.id] = addToolBlock(ev.name, ev.arguments || "");
-        setTraceTool(true, `${ev.name} · ${truncate(ev.arguments || "", 48)}`);
+        runningTools.set(ev.id, ev.name);
+        showRunningTools(`${ev.name} · ${truncate(ev.arguments || "", 48)}`);
         assistantBubble = null; assistantText = "";  // text after a tool is a new bubble
         break;
       case "tool_result": {
@@ -2040,11 +2051,13 @@ async function send(providedText, providedImages, providedDocs) {
           b.dur.classList.remove("spinner");
           b.dur.textContent = fmtDur(performance.now() - b.started);
         }
-        setTraceTool(false);
+        runningTools.delete(ev.id);
+        showRunningTools();
         break;
       }
       case "error":
         endThinking();
+        runningTools.clear();
         setTraceTool(false);
         setTraceLive(false);
         setStatus("⚠ " + ev.message);
@@ -2060,6 +2073,7 @@ async function send(providedText, providedImages, providedDocs) {
         if (ev.tokens) completionTokens = ev.tokens;
         if (ev.prompt_tokens) state.promptTokens = ev.prompt_tokens;
         endThinking();
+        runningTools.clear();
         setTraceTool(false);
         setTraceLive(false);
         setStatus("");
@@ -2577,6 +2591,20 @@ function settingsField(spec) {
   input.dataset.initial = initialValue(spec);
   input.className = "settings-input";
   row.appendChild(input);
+  if (spec.key === "DEFAULT_MODEL") {
+    // Suggest the endpoint's models (already narrowed by MODEL_FILTER); the
+    // browser filters them as you type, and any free-typed id still saves.
+    const list = el("datalist");
+    list.id = "set-model-options";
+    state.providers.flatMap((p) => p.models).forEach((m) => {
+      const o = el("option");
+      o.value = m;
+      list.appendChild(o);
+    });
+    input.setAttribute("list", list.id);
+    input.placeholder = "Type to search models…";
+    row.appendChild(list);
+  }
 
   const meta = el("div", "settings-meta");
   if (spec.help) { const h = el("span", "hint"); h.textContent = spec.help; meta.appendChild(h); }
@@ -2619,7 +2647,7 @@ function renderSettings() {
     const test = el("button", "settings-test");
     test.type = "button";
     test.textContent = "Test connection";
-    test.title = "Probe each provider's /models with the key and URL currently saved";
+    test.title = "Probe the endpoint's /models with the key and URL currently saved";
     test.onclick = testProviders;
     form.appendChild(test);
   }
@@ -2665,10 +2693,11 @@ async function saveSettings() {
   const data = await res.json();
   if (!res.ok) { settingsMessage(data.detail || "Save failed", true); return; }
   settingsSpecs = data.settings;
+  // Model defaults and the provider list may have moved under the composer —
+  // and the model suggestions here (a new filter, key or URL) with them.
+  await loadProviders();
   renderSettings();
   settingsMessage(data.changed.length ? `Saved — ${data.changed.length} setting(s) applied.` : "No changes.");
-  // Model defaults and the provider list may have moved under the composer.
-  await loadProviders();
 }
 
 async function resetSettings(keys) {
@@ -2711,7 +2740,8 @@ async function testProviders() {
 $("#show-settings").onclick = async () => {
   showPage("settings");
   settingsMessage("");
-  try { await loadSettings(); }
+  // Providers first: the Default model field suggests the endpoint's models.
+  try { await loadProviders(); await loadSettings(); }
   catch (err) { settingsMessage(err.message, true); }
 };
 $("#settings-save").onclick = saveSettings;

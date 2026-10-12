@@ -83,28 +83,35 @@ def _b(key, default, category, label, help="", **kw) -> Spec:
 # locates. Those stay environment-only. DISCORD_BOT_TOKEN is likewise env-only —
 # the client is constructed once at startup from it.
 SPECS: tuple[Spec, ...] = (
-    # --- Providers (credentials are secret; base URLs are not) -------------
-    _s("OPENAI_API_KEY", "", "providers", "OpenAI API key", secret=True),
-    _s("OPENAI_BASE_URL", "https://api.openai.com/v1", "providers", "OpenAI base URL",
-       "Override for Azure or a proxy."),
-    _s("DEEPSEEK_API_KEY", "", "providers", "DeepSeek API key", secret=True),
-    _s("DEEPSEEK_BASE_URL", "https://api.deepseek.com/v1", "providers", "DeepSeek base URL"),
+    # --- Endpoint (any OpenAI-compatible API) -----------------------------
+    _s("LLM_API_KEY", "", "providers", "API key",
+       "Key for the endpoint below. Leave blank for a local server that takes"
+       " none.", secret=True),
+    _s("LLM_BASE_URL", "https://openrouter.ai/api/v1", "providers", "Base URL",
+       "Any OpenAI-compatible API: OpenRouter, OpenAI, or a local server such as"
+       " llama.cpp (http://host:port/v1)."),
+    _s("OPENROUTER_PROVIDERS", "", "providers", "OpenRouter hosts",
+       "Only used when the base URL is OpenRouter. Comma-separated upstream"
+       " hosts to force, in order (e.g. google-vertex/global); requests never"
+       " leave this list. Blank lets OpenRouter route."),
 
-    # --- Default model order ----------------------------------------------
-    _s("DEFAULT_PROVIDER", "deepseek", "models", "Default provider",
-       "Every new conversation — web, DM, channel — starts here."),
-    _s("DEFAULT_MODEL", "deepseek-flash", "models", "Default model",
-       "Blank selects whatever the provider lists first."),
+    # --- Default model -----------------------------------------------------
+    _s("DEFAULT_MODEL", "anthropic/claude-haiku-5.5", "models", "Default model",
+       "Every new conversation — web, DM, channel — starts here. Blank selects"
+       " whatever the endpoint lists first."),
     _s("DEFAULT_EFFORT", "high", "models", "Default reasoning effort",
-       "DeepSeek accepts low, high or max. Blank lets the model decide."),
-    _s("FALLBACK_PROVIDER", "deepseek", "models", "Fallback provider",
-       "Used when the default provider has no credentials or stops serving."),
-    _s("FALLBACK_MODEL", "deepseek-flash", "models", "Fallback model"),
-    _s("FALLBACK_EFFORT", "high", "models", "Fallback reasoning effort"),
-    _i("SEND_FALLBACK_RETRIES", 3, "models", "Send retries before fallback",
-       "Transient blips are retried this many times before the conversation is"
-       " switched to the fallback model.", minimum=0, maximum=20),
-    _f("SEND_FALLBACK_RETRY_DELAY", 0.75, "models", "Delay between retries (s)",
+       "OpenRouter accepts low, medium, high, xhigh or max; other servers low,"
+       " medium or high. Blank lets the model decide."),
+    _s("MODEL_FILTER", "", "models", "Model filter",
+       "Comma-separated text to match model ids against (e.g. anthropic/,"
+       " openai/gpt-6, deepseek/); only matching models are listed in the"
+       " pickers. Blank lists everything the endpoint offers."),
+    _i("SEND_RETRIES", 3, "models", "Retries on a failed call",
+       "Network errors, timeouts, rate limits and server errors are retried on"
+       " the same model this many times before the error is shown. Errors like"
+       " a bad key or unknown model are shown at once.", minimum=0, maximum=20),
+    _f("SEND_RETRY_DELAY", 1.0, "models", "Retry delay (s)",
+       "Wait before the first retry; each later retry waits that much longer.",
        minimum=0, maximum=30),
     _f("PROVIDER_MODELS_CACHE_TTL", 86400.0, "models", "Model catalog cache (s)",
        "How long a provider's /models list is reused before a background"
@@ -115,6 +122,16 @@ SPECS: tuple[Spec, ...] = (
     _i("MAX_AGENT_ITERATIONS", 25, "agent", "Max agent iterations",
        "Tool-call rounds allowed in a single turn before it is cut off.",
        minimum=1, maximum=200),
+    _i("CONTEXT_CLEAR_TRIGGER", 100_000, "agent", "Clear old tool results after (chars)",
+       "Once the tool results still in a conversation exceed this many"
+       " characters, older ones are replaced by a short stub before the next"
+       " model call (the stored chat keeps them). 0 never clears.",
+       minimum=0),
+    _i("CONTEXT_KEEP_TOOL_RESULTS", 4, "agent", "Tool results kept when clearing",
+       "The newest results that always stay in full.", minimum=0, maximum=100),
+    _i("SUBAGENT_MAX_ITERATIONS", 12, "agent", "Sub-agent iterations",
+       "Tool-call rounds one `delegate` task may use. The helper runs on the"
+       " default model and effort.", minimum=1, maximum=100),
     _i("BASH_TIMEOUT", 120, "agent", "Shell tool timeout (s)", minimum=1, maximum=3600),
     _i("CRON_KEEP_RUNS", 30, "agent", "Cron runs kept per job",
        "Older cron-run conversations are pruned so a frequent job cannot grow"

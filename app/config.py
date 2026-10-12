@@ -10,8 +10,10 @@ never copy one into a module constant, or it will stop tracking changes.
 There is no .env file and no dotenv loader: on first run the store imports
 whatever the environment holds, and after that the database is the only source.
 
-A provider is "available" (and therefore offered in the web UI) when its API
-key is set.
+Models come from a single OpenAI-compatible endpoint (LLM_BASE_URL, with an
+optional LLM_API_KEY): OpenRouter by default, but any server speaking the same
+API works — a local llama.cpp included. It is offered in the web UI whenever a
+base URL is set.
 """
 from __future__ import annotations
 
@@ -21,6 +23,7 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
+from urllib.parse import urlparse
 
 import httpx
 
@@ -70,28 +73,35 @@ def _blank_to_none(value: str | None) -> str | None:
 @dataclass
 class ProviderSpec:
     id: str
-    name: str
-    base_url_env: str
-    base_url_default: str
-    key_env: str
 
     def base_url(self) -> str:
-        override = getattr(settings, self.base_url_env, "")
-        return (override or self.base_url_default).rstrip("/")
+        return settings.LLM_BASE_URL.strip().rstrip("/")
 
     def api_key(self) -> str | None:
-        return getattr(settings, self.key_env, "") or None
+        return settings.LLM_API_KEY or None
+
+    def name(self) -> str:
+        """Display name: "OpenRouter" for OpenRouter, else the endpoint's host
+        (e.g. "localhost:8080" for a local llama.cpp)."""
+        if is_openrouter(self.base_url()):
+            return "OpenRouter"
+        return urlparse(self.base_url()).netloc or self.base_url()
 
 
-# Registry of known OpenAI-compatible providers.
-KNOWN_PROVIDERS: list[ProviderSpec] = [
-    ProviderSpec("openai", "OpenAI", "OPENAI_BASE_URL", "https://api.openai.com/v1", "OPENAI_API_KEY"),
-    ProviderSpec("deepseek", "DeepSeek", "DEEPSEEK_BASE_URL", "https://api.deepseek.com/v1", "DEEPSEEK_API_KEY"),
-]
+# The one endpoint. Its id is what conversations store as their provider.
+PROVIDER_ID = "llm"
+PROVIDER = ProviderSpec(PROVIDER_ID)
 
 
 def get_provider(provider_id: str) -> ProviderSpec | None:
-    return next((p for p in KNOWN_PROVIDERS if p.id == provider_id), None)
+    return PROVIDER if provider_id == PROVIDER_ID else None
+
+
+def is_openrouter(base_url: str) -> bool:
+    """Whether the endpoint is OpenRouter, whose request extensions (unified
+    reasoning, cache_control, sticky sessions, host routing) apply only there."""
+    host = urlparse(base_url).hostname or ""
+    return host == "openrouter.ai" or host.endswith(".openrouter.ai")
 
 
 def probe_models(base_url: str, api_key: str | None, timeout: float = 4.0) -> list[dict] | None:
@@ -126,19 +136,11 @@ class AvailableProvider:
     effort_levels: list[str] = field(default_factory=list)
 
 
-# Reasoning-effort levels a provider accepts when thinking is on. Absent =>
-# on/off only. DeepSeek V4.1 Flash supports low/high/max.
-EFFORT_LEVELS: dict[str, list[str]] = {
-    "deepseek": ["low", "high", "max"],
-}
-
-# Context windows for models whose provider's /models omits the field —
-# DeepSeek returns only id/object/owned_by, so its published figures are kept
-# here. A value the API actually reports always wins over this table.
-STATIC_MODEL_CONTEXT: dict[str, dict[str, int]] = {
-    "deepseek": {"deepseek-flash": 1_000_000, "deepseek-v4-pro": 1_000_000},
-}
-
+# Reasoning-effort levels offered when thinking is on. OpenRouter normalizes
+# effort across models (a level a model lacks maps to its nearest one); other
+# servers get OpenAI's standard low/medium/high.
+OPENROUTER_EFFORT_LEVELS = ["low", "medium", "high", "xhigh", "max"]
+STANDARD_EFFORT_LEVELS = ["low", "medium", "high"]
 
 def _context_of(m: dict) -> int | None:
     """Pull a max-context-window value out of a /models entry across providers.
@@ -198,29 +200,10 @@ settings_store.on_change(_on_settings_changed)
 
 
 def provider_serving(provider_id: str) -> bool:
-    """Whether the provider has credentials; completion failures trigger fallback."""
+    """Whether the endpoint is configured; completion failures trigger fallback.
+    The key is optional — a local server usually takes none."""
     spec = get_provider(provider_id)
-    return spec is not None and bool(spec.api_key())
-
-
-def canonical_model(provider_id: str, model: str) -> str:
-    """Resolve retired Flash aliases that DeepSeek no longer lists in /models."""
-    if provider_id == "deepseek" and model in (
-        "deepseek-v4-flash", "deepseek-v4-flash-vision-exp",
-    ):
-        return "deepseek-flash"
-    return model
-
-
-def model_valid_for(provider_id: str, model: str) -> bool:
-    """Validate against the provider catalog, allowing an unavailable catalog."""
-    spec = get_provider(provider_id)
-    if spec is None:
-        return False
-    if not model:
-        return False
-    known = next((p.models for p in detect_providers() if p.id == provider_id), None)
-    return not known or canonical_model(provider_id, model) in known
+    return spec is not None and bool(spec.base_url())
 
 
 def _do_fetch_models(provider_id: str, base_url: str, api_key: str | None) -> list[dict] | None:
@@ -248,76 +231,57 @@ def _cached_models(provider_id: str, base_url: str, api_key: str | None) -> list
     return fetched if fetched is not None else []
 
 
-def detect_providers() -> list[AvailableProvider]:
-    """List providers with API keys and their cached model catalogs."""
-    available: list[AvailableProvider] = []
-    for spec in KNOWN_PROVIDERS:
-        key = spec.api_key()
-        if not key:
-            continue
-        base_url = spec.base_url()
-        effort = EFFORT_LEVELS.get(spec.id, [])
-        models = _cached_models(spec.id, base_url, key)
+def model_matches_filter(model_id: str) -> bool:
+    """MODEL_FILTER is comma-separated, case-insensitive substrings; a model is
+    listed when any one matches. Blank lists every model."""
+    terms = [t.strip().lower() for t in settings.MODEL_FILTER.split(",") if t.strip()]
+    return not terms or any(t in model_id.lower() for t in terms)
 
-        ids = [m["id"] for m in models]
-        # Prefer the context the API reports; fall back to the static table for
-        # providers that omit it.
-        static = STATIC_MODEL_CONTEXT.get(spec.id, {})
-        ctx = {}
-        for m in models:
-            c = m["context"] or static.get(canonical_model(spec.id, m["id"]))
-            if c:
-                ctx[m["id"]] = c
-        available.append(AvailableProvider(spec.id, spec.name, base_url, ids, ctx, effort))
-    return available
+
+def detect_providers() -> list[AvailableProvider]:
+    """The configured endpoint and its cached model catalog, narrowed by
+    MODEL_FILTER — a one-element list, or empty when no base URL is set."""
+    base_url = PROVIDER.base_url()
+    if not base_url:
+        return []
+    effort = OPENROUTER_EFFORT_LEVELS if is_openrouter(base_url) else STANDARD_EFFORT_LEVELS
+    models = [
+        m for m in _cached_models(PROVIDER_ID, base_url, PROVIDER.api_key())
+        if model_matches_filter(m["id"])
+    ]
+    ids = [m["id"] for m in models]
+    ctx = {m["id"]: m["context"] for m in models if m["context"]}
+    return [AvailableProvider(PROVIDER_ID, PROVIDER.name(), base_url, ids, ctx, effort)]
 
 
 def resolve_default_model(
     providers: dict[str, AvailableProvider] | None = None,
 ) -> tuple[str, str, str | None] | None:
-    """The model a NEW conversation starts on, for every surface.
-
-    Order: the preferred default (DEFAULT_PROVIDER/MODEL settings) if that provider is
-    available right now; otherwise the fallback (FALLBACK_PROVIDER/MODEL/EFFORT);
-    last resort, the first detected provider + its first model. A blank model
-    means "use whatever the provider lists first". Returns
-    (provider_id, model, effort) or None if nothing usable is available.
+    """The model a NEW conversation starts on, for every surface: DEFAULT_MODEL
+    at DEFAULT_EFFORT, where a blank model means "whatever the endpoint lists
+    first". Returns (provider_id, model, effort), or None when the endpoint is
+    unconfigured or nothing usable is listed.
 
     Pass an already-detected provider map to avoid a second detection pass (the
     /api/providers endpoint detects once and shares it).
     """
     if providers is None:
         providers = {p.id: p for p in detect_providers()}
+    p = providers.get(PROVIDER_ID)
+    if p is None:
+        return None
+    model = settings.DEFAULT_MODEL or (p.models[0] if p.models else None)
+    if not model:
+        return None
+    return PROVIDER_ID, model, _blank_to_none(settings.DEFAULT_EFFORT)
 
-    pref = providers.get(settings.DEFAULT_PROVIDER)
-    if pref is not None:
-        model = settings.DEFAULT_MODEL or (pref.models[0] if pref.models else None)
-        if model:
-            return pref.id, canonical_model(pref.id, model), _blank_to_none(settings.DEFAULT_EFFORT)
-
-    fb = providers.get(settings.FALLBACK_PROVIDER)
-    if fb is not None:
-        model = settings.FALLBACK_MODEL or (fb.models[0] if fb.models else None)
-        if model:
-            return fb.id, canonical_model(fb.id, model), _blank_to_none(settings.FALLBACK_EFFORT)
-
-    for p in providers.values():
-        if p.models:
-            return p.id, p.models[0], None
-    return None
 
 
 def effort_for(provider: str, model: str) -> str | None:
-    """The reasoning effort to use for an already-chosen (provider, model) — so a
-    conversation resumed onto the fallback model keeps its configured effort.
-    Matches the default/fallback entries; otherwise None (let the model default)."""
-    model = canonical_model(provider, model)
-    default_model = settings.DEFAULT_MODEL
-    if provider == settings.DEFAULT_PROVIDER and (
-        not default_model or model == canonical_model(provider, default_model)
-    ):
+    """The reasoning effort to use for an already-chosen (provider, model):
+    DEFAULT_EFFORT for the default model, otherwise None (let the model decide)."""
+    if provider != PROVIDER_ID:
+        return None
+    if not settings.DEFAULT_MODEL or model == settings.DEFAULT_MODEL:
         return _blank_to_none(settings.DEFAULT_EFFORT)
-    fallback_model = settings.FALLBACK_MODEL
-    if provider == settings.FALLBACK_PROVIDER and model == canonical_model(provider, fallback_model):
-        return _blank_to_none(settings.FALLBACK_EFFORT)
     return None
