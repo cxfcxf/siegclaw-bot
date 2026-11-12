@@ -13,6 +13,7 @@ import json
 import logging
 import mimetypes
 import re
+import time
 from datetime import datetime
 from collections.abc import Awaitable, Callable
 from pathlib import Path
@@ -91,8 +92,9 @@ def conversation_time_block(started_at: float | None = None) -> str:
 def static_system_prompt(*extra: str, space: str = wiki.PRIVATE) -> str:
     """The system prompt: the home page of ONE wiki space (the model's own root
     page) + any caller-supplied sections (surface preamble, day-level time) +
-    that space's index. Stable within a conversation unless a wiki page changes
-    — a page write busts the prompt cache once, the price of learning.
+    that space's index. It changes whenever a wiki page's name or summary does,
+    so run_turn freezes the result per conversation rather than rebuilding it
+    every turn.
 
     `space` decides which corpus the turn can see at all. Owner surfaces pass
     PRIVATE (the default); Discord channels pass PUBLIC, so neither the owner's
@@ -340,18 +342,30 @@ async def run_turn(
     # retry-from-here (which needs to rewind by id on the server).
     yield {"type": "user_message", "id": user_msg_id}
 
-    # Static system prefix (wiki home + conversation-fixed day-level time +
-    # wiki index) — stable across turns so it (and all prior turns) stay in
-    # the prompt cache. The model pulls specifics via tool calls that happen
-    # after the cached prefix (`read_wiki_page`, `search_wiki`, `current_time`),
-    # so routine turns never bust it; only an actual wiki edit does.
-    convo = storage.get_conversation(conversation_id)
-    started_at = convo.get("created_at") if convo else None
-    time_block = conversation_time_block(started_at)
-    # Optional surface preamble (e.g. the cron job context) slots in before the
-    # time block, mirroring discord_system_prompt's ordering.
-    extra = ([preamble] if preamble else []) + [time_block]
-    sys_content = await asyncio.to_thread(static_system_prompt, *extra)
+    # System prefix (wiki home + conversation-fixed day-level time + wiki
+    # index), frozen per conversation: it is built once, stored, and replayed
+    # byte-identical on later turns so it (and all prior turns) stay in the
+    # prompt cache. A wiki write therefore does NOT reach this conversation's
+    # prompt — the model already has what it wrote in its history, and reads
+    # anything else via `read_wiki_page` / `search_wiki`. The prompt is rebuilt
+    # from the current wiki once the conversation has sat idle past
+    # SYSTEM_PROMPT_REFRESH_IDLE (the cache is gone by then, so it costs
+    # nothing), or when the surface preamble isn't the one it was frozen with.
+    convo = storage.get_conversation(conversation_id) or {}
+    sys_content = convo.get("system_prompt")
+    idle = time.time() - (convo.get("system_prompt_at") or 0)
+    if (
+        not sys_content
+        or idle >= settings.SYSTEM_PROMPT_REFRESH_IDLE
+        or (preamble or "") not in sys_content
+    ):
+        # Optional surface preamble (e.g. the cron job context) slots in before
+        # the time block, mirroring discord_system_prompt's ordering.
+        extra = ([preamble] if preamble else []) + [
+            conversation_time_block(convo.get("created_at"))
+        ]
+        sys_content = await asyncio.to_thread(static_system_prompt, *extra)
+        storage.set_system_prompt(conversation_id, sys_content)
     messages: list[dict[str, Any]] = [{"role": "system", "content": sys_content}]
     messages.extend(_to_api_messages(storage.get_messages(conversation_id)))
     # Research mode rides at the END of the prompt (right after the user's
@@ -386,6 +400,8 @@ async def run_turn(
         if et == "usage":
             # Billed on every exit — a dead-ended turn still spent tokens.
             storage.add_token_usage(event["prompt_tokens"], event["completion_tokens"])
+            # The cache was last refreshed by this turn's final model call.
+            storage.set_system_prompt(conversation_id)
             if event["last_prompt_tokens"]:
                 storage.set_prompt_tokens(conversation_id, event["last_prompt_tokens"])
             continue

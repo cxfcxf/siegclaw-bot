@@ -89,6 +89,12 @@ def init_db() -> None:
         ccols = [r["name"] for r in conn.execute("PRAGMA table_info(conversations)").fetchall()]
         if "prompt_tokens" not in ccols:
             conn.execute("ALTER TABLE conversations ADD COLUMN prompt_tokens INTEGER")
+        # system_prompt: the system prompt this conversation is running with,
+        # frozen so a mid-conversation wiki write doesn't change the cached
+        # prefix; system_prompt_at is when a model call last used it.
+        if "system_prompt" not in ccols:
+            conn.execute("ALTER TABLE conversations ADD COLUMN system_prompt TEXT")
+            conn.execute("ALTER TABLE conversations ADD COLUMN system_prompt_at REAL")
         # grp: optional user-assigned group name for organizing the sidebar /
         # /resume picker (NULL = ungrouped). "grp" because GROUP is an SQL keyword.
         if "grp" not in ccols:
@@ -411,6 +417,21 @@ def touch_conversation(cid: str, provider: str | None = None, model: str | None 
             )
         else:
             conn.execute("UPDATE conversations SET updated_at=? WHERE id=?", (time.time(), cid))
+
+
+def set_system_prompt(cid: str, text: str | None = None) -> None:
+    """Freeze `text` as the conversation's system prompt, or (text=None) just
+    record that a model call used the one already frozen."""
+    with _conn() as conn:
+        if text is None:
+            conn.execute(
+                "UPDATE conversations SET system_prompt_at=? WHERE id=?", (time.time(), cid)
+            )
+        else:
+            conn.execute(
+                "UPDATE conversations SET system_prompt=?, system_prompt_at=? WHERE id=?",
+                (text, time.time(), cid),
+            )
 
 
 def set_prompt_tokens(cid: str, tokens: int) -> None:

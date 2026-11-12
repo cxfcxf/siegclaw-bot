@@ -302,7 +302,7 @@ def wiki_tools(writable: bool, space: str = PRIVATE) -> list[Tool]:
         existed = _page_path(name_slug, space).exists()
         write_page(name_slug, summary, content, space=space)
         verb = "Updated" if existed else "Created"
-        return f"{verb} wiki page '{name_slug}' ({len(content)} chars). It's in the index from the next message."
+        return f"{verb} wiki page '{name_slug}' ({len(content)} chars). It's saved and readable now; the index in your prompt catches up later."
 
     tools.append(Tool(
         "write_wiki_page",

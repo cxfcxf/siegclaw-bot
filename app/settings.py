@@ -129,6 +129,12 @@ SPECS: tuple[Spec, ...] = (
        minimum=0),
     _i("CONTEXT_KEEP_TOOL_RESULTS", 4, "agent", "Tool results kept when clearing",
        "The newest results that always stay in full.", minimum=0, maximum=100),
+    _i("SYSTEM_PROMPT_REFRESH_IDLE", 300, "agent", "Refresh system prompt after idle (s)",
+       "A conversation keeps the system prompt (wiki home + index) it started"
+       " with, so wiki edits made along the way don't invalidate the prompt"
+       " cache. Once it has been idle this long the cache has expired anyway,"
+       " and the next turn picks up the current wiki. 0 rebuilds every turn.",
+       minimum=0),
     _i("SUBAGENT_MAX_ITERATIONS", 12, "agent", "Sub-agent iterations",
        "Tool-call rounds one `delegate` task may use. The helper runs on the"
        " default model and effort.", minimum=1, maximum=100),
