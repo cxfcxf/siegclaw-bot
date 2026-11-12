@@ -134,6 +134,40 @@ def _retryable(exc: Exception) -> bool:
     return isinstance(exc, openai.APIError)
 
 
+def describe_error(exc: Exception, *, public: bool = False) -> str:
+    """One line a person can act on, for showing a failed turn in the chat.
+
+    An API error is reduced to the endpoint's own message plus the HTTP status
+    ("Key limit exceeded (monthly limit). … (HTTP 403)") rather than the SDK's
+    repr of the whole response body. `public` is for replies other people can
+    read (Discord channels): the message is cut before its first link, since
+    endpoints put account-specific URLs and figures after it."""
+    if isinstance(exc, openai.APIStatusError):
+        body = exc.body if isinstance(exc.body, dict) else {}
+        body = body.get("error") if isinstance(body.get("error"), dict) else body
+        text = str(body.get("message") or exc.message or "").strip()
+        suffix = f" (HTTP {exc.status_code})"
+    elif isinstance(exc, openai.APITimeoutError):
+        text, suffix = "The model endpoint timed out.", ""
+    elif isinstance(exc, openai.APIConnectionError):
+        text, suffix = f"Couldn't reach the model endpoint: {exc}", ""
+    elif isinstance(exc, openai.APIError):
+        text, suffix = str(exc.message or exc), ""
+    else:
+        text, suffix = f"{type(exc).__name__}: {exc}", ""
+    text = " ".join(text.split())
+    if public and (m := re.search(r"https?://", text)):
+        head = text[: m.start()]
+        cut = max(head.rfind(". "), head.rfind("; "))
+        text = head[: cut + 1] if cut > 0 else ""
+    text = text[:400].rstrip() or type(exc).__name__
+    return text + suffix
+
+
+class TurnError(Exception):
+    """A turn that ended in an `error` event; str() is the message to show."""
+
+
 async def with_retries(call: Callable[[], Awaitable[T]]) -> T:
     """Run a completion call, retrying the same model up to SEND_RETRIES times
     (waiting SEND_RETRY_DELAY × attempt between tries) before the last error
@@ -579,7 +613,11 @@ async def agent_loop(
             stream = await with_retries(_create)
         except Exception as exc:
             yield usage()
-            yield {"type": "error", "message": f"{type(exc).__name__}: {exc}"}
+            log.error("Completion call failed: %s: %s", type(exc).__name__, exc)
+            yield {
+                "type": "error", "message": describe_error(exc),
+                "public_message": describe_error(exc, public=True),
+            }
             return
 
         content_buf = ""
@@ -588,56 +626,67 @@ async def agent_loop(
         tool_calls: list[dict[str, Any]] = []
         finish_reason = None
 
-        async for chunk in stream:
-            # The usage chunk arrives last and carries no choices — read it first.
-            u = getattr(chunk, "usage", None)
-            if u:
-                if getattr(u, "completion_tokens", None):
-                    total_tokens += u.completion_tokens
-                pt = getattr(u, "prompt_tokens", None)
-                if pt:
-                    last_prompt_tokens = pt
-                    turn_prompt_tokens += pt
-            if not chunk.choices:
-                continue
-            choice = chunk.choices[0]
-            delta = choice.delta
-            if choice.finish_reason:
-                finish_reason = choice.finish_reason
+        try:
+            async for chunk in stream:
+                # The usage chunk arrives last and carries no choices — read it first.
+                u = getattr(chunk, "usage", None)
+                if u:
+                    if getattr(u, "completion_tokens", None):
+                        total_tokens += u.completion_tokens
+                    pt = getattr(u, "prompt_tokens", None)
+                    if pt:
+                        last_prompt_tokens = pt
+                        turn_prompt_tokens += pt
+                if not chunk.choices:
+                    continue
+                choice = chunk.choices[0]
+                delta = choice.delta
+                if choice.finish_reason:
+                    finish_reason = choice.finish_reason
 
-            # Reasoning text. Field name differs by provider/engine:
-            # - reasoning_content: DeepSeek-style servers.
-            # - reasoning: flat string per chunk (some gateways).
-            # - reasoning_details: structured array fallback.
-            reasoning_piece = (
-                getattr(delta, "reasoning_content", None)
-                or getattr(delta, "reasoning", None)
-            )
-            details = getattr(delta, "reasoning_details", None) or []
-            _merge_reasoning_details(reasoning_details, details)
-            if not reasoning_piece:
-                for rd in details:
-                    reasoning_piece = (reasoning_piece or "") + (
-                        getattr(rd, "text", None) or getattr(rd, "summary", None) or ""
-                    )
-            if reasoning_piece:
-                reasoning_buf += reasoning_piece
-                yield {"type": "reasoning", "text": reasoning_piece}
+                # Reasoning text. Field name differs by provider/engine:
+                # - reasoning_content: DeepSeek-style servers.
+                # - reasoning: flat string per chunk (some gateways).
+                # - reasoning_details: structured array fallback.
+                reasoning_piece = (
+                    getattr(delta, "reasoning_content", None)
+                    or getattr(delta, "reasoning", None)
+                )
+                details = getattr(delta, "reasoning_details", None) or []
+                _merge_reasoning_details(reasoning_details, details)
+                if not reasoning_piece:
+                    for rd in details:
+                        reasoning_piece = (reasoning_piece or "") + (
+                            getattr(rd, "text", None) or getattr(rd, "summary", None) or ""
+                        )
+                if reasoning_piece:
+                    reasoning_buf += reasoning_piece
+                    yield {"type": "reasoning", "text": reasoning_piece}
 
-            if getattr(delta, "content", None):
-                content_buf += delta.content
-                yield {"type": "token", "text": delta.content}
+                if getattr(delta, "content", None):
+                    content_buf += delta.content
+                    yield {"type": "token", "text": delta.content}
 
-            for tc in getattr(delta, "tool_calls", None) or []:
-                while len(tool_calls) <= tc.index:
-                    tool_calls.append(_new_tool_call())
-                slot = tool_calls[tc.index]
-                if tc.id:
-                    slot["id"] = tc.id
-                if tc.function and tc.function.name:
-                    slot["function"]["name"] = tc.function.name
-                if tc.function and tc.function.arguments:
-                    slot["function"]["arguments"] += tc.function.arguments
+                for tc in getattr(delta, "tool_calls", None) or []:
+                    while len(tool_calls) <= tc.index:
+                        tool_calls.append(_new_tool_call())
+                    slot = tool_calls[tc.index]
+                    if tc.id:
+                        slot["id"] = tc.id
+                    if tc.function and tc.function.name:
+                        slot["function"]["name"] = tc.function.name
+                    if tc.function and tc.function.arguments:
+                        slot["function"]["arguments"] += tc.function.arguments
+        except openai.APIError as exc:
+            # The endpoint failed mid-stream (it reports some errors, e.g. an
+            # upstream outage, only after the response has started).
+            log.error("Completion stream failed: %s: %s", type(exc).__name__, exc)
+            yield usage()
+            yield {
+                "type": "error", "message": describe_error(exc),
+                "public_message": describe_error(exc, public=True),
+            }
+            return
 
         # Persist the assistant message (content and/or tool calls). Reasoning is
         # stored for the UI; its structured blocks are also kept on the

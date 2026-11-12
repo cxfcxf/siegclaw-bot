@@ -32,6 +32,8 @@ from discord import app_commands
 from . import research, storage, stt, wiki
 from . import docs as docs_mod
 from .agent import (
+    TurnError,
+    describe_error,
     build_registry,
     conversation_time_block,
     agent_loop,
@@ -302,7 +304,8 @@ async def run_discord_turn(
         elif et == "usage":
             storage.add_token_usage(event["prompt_tokens"], event["completion_tokens"])
         elif et == "error":
-            raise RuntimeError(event["message"])
+            # Channel replies are public: use the redacted wording when present.
+            raise TurnError(event.get("public_message") or event["message"])
         elif et == "done":
             return event["text"]
     return ""
@@ -871,7 +874,7 @@ def create_client(mcp_manager) -> discord.Client:
                             except Exception:
                                 pass
                         elif et == "error":
-                            raise RuntimeError(event.get("message", "turn error"))
+                            raise TurnError(event.get("message", "turn error"))
                     if not reply_text:
                         raise ValueError("Empty response")
                     turn_failed = False
@@ -911,7 +914,15 @@ def create_client(mcp_manager) -> discord.Client:
                     turn_failed = False
             except Exception as e:
                 log.error("Discord turn failed: %s", e)
-                reply_text = f"Sorry, I couldn't generate a response ({type(e).__name__}). Please try again."
+                # Say why. A DM goes only to the owner and gets the full
+                # reason; a channel reply is public, so it gets the redacted one.
+                if isinstance(e, TurnError):
+                    reason = str(e)
+                elif isinstance(e, ValueError) and str(e) == "Empty response":
+                    reason = "the model returned an empty reply"
+                else:
+                    reason = describe_error(e, public=not is_dm)
+                reply_text = f"Sorry, I couldn't generate a response: {reason}"
                 turn_failed = True
 
         # Deliver. If a DM was streaming into a live message, finish it in
