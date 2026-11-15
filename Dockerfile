@@ -31,5 +31,10 @@ USER app
 COPY --chown=app:app app ./app
 COPY --chown=app:app web ./web
 
+# The commit this image was built from, shown on the status page. Declared
+# last so a new sha only invalidates this layer. Local builds say "dev".
+ARG GIT_SHA=dev
+ENV GIT_SHA=${GIT_SHA}
+
 EXPOSE 8080
 CMD ["python", "-m", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8080"]

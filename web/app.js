@@ -2518,6 +2518,7 @@ function renderStatus(data) {
     [tokLabel, tp || tc ? `${humanCount(tp)} in · ${humanCount(tc)} out` : "counting starts now", ""],
     ["Conversations", `${data.stats.conversations} chats · ${data.stats.messages} messages`, ""],
     ["Database", humanBytes(data.storage.db_bytes), ""],
+    ["Version", data.version || "dev", ""],
     ["Uploads", humanBytes(data.storage.uploads_bytes), ""],
   ]));
   body.appendChild(sys);

@@ -541,6 +541,8 @@ async def api_status():
             "user": str(client.user) if client is not None and client.user else None,
         },
         "jobs": [_job_view(j) for j in storage.list_jobs()],
+        # Short commit sha the image was built from ("dev" for a local build).
+        "version": os.getenv("GIT_SHA", "dev")[:7],
     }
 
 

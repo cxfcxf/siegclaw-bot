@@ -32,6 +32,8 @@ jobs:
           # The deployment target is x86_64. Local development on other
           # architectures builds its own image with `docker compose up --build`.
           platforms: linux/amd64
+          build-args: |
+            GIT_SHA=${{ github.sha }}
           push: true
           tags: |
             ghcr.io/${{ github.repository }}:latest

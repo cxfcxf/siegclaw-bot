@@ -77,7 +77,7 @@ A server runs [`deploy/docker-compose.yml`](deploy/docker-compose.yml) instead
 of a checkout: the bot from the published image, and an `updater` (Docker's
 own CLI image) that pulls `latest` every five minutes and recreates the bot
 when it has moved. So shipping a change is `git push`; it is live within about
-ten minutes. All state stays in the `data/`, `wiki/`, `wiki-public/` and
+ten minutes, and the status page's **Version** row shows the commit running. All state stays in the `data/`, `wiki/`, `wiki-public/` and
 `workspace/` folders beside the compose file.
 
 To roll back, set the image tag in that compose file to an earlier commit sha,
