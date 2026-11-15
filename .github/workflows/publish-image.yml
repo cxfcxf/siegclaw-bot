@@ -1,5 +1,5 @@
 # Builds the image on every push to main and publishes it to GitHub's
-# container registry. The deployment (deploy/docker-compose.yml) pulls
+# container registry. The deployment (deploy/compose.yaml) pulls
 # `latest`; the per-commit tag is there to roll back to.
 name: Publish image
 

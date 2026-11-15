@@ -73,7 +73,7 @@ Every push to `main` builds the image on GitHub Actions
 `ghcr.io/cxfcxf/siegclaw-bot:latest`, plus a tag per commit sha. Pushes that
 only touch markdown or `deploy/` don't rebuild.
 
-A server runs [`deploy/docker-compose.yml`](deploy/docker-compose.yml) instead
+A server runs [`deploy/compose.yaml`](deploy/compose.yaml) instead
 of a checkout: just the bot, from the published image. Nothing updates it
 automatically. To ship a change, `git push`, wait for the workflow to finish,
 then on the server:

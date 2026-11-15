@@ -1,7 +1,7 @@
 # Runs the published image — no source checkout needed.
 #
 #   mkdir siegclaw-bot && cd siegclaw-bot      # any folder; data lives beside this file
-#   curl -O https://raw.githubusercontent.com/cxfcxf/siegclaw-bot/main/deploy/docker-compose.yml
+#   curl -O https://raw.githubusercontent.com/cxfcxf/siegclaw-bot/main/deploy/compose.yaml
 #   docker compose up -d
 #
 # To update to the newest image:
@@ -13,6 +13,7 @@
 services:
   siegclaw-bot:
     image: ghcr.io/cxfcxf/siegclaw-bot:latest
+    container_name: siegclaw-bot
     ports:
       - "8800:8080"
     extra_hosts:
