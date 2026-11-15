@@ -18,12 +18,15 @@ WORKDIR /app
 
 # Install Python deps first for layer caching. Memory is the LLM-Wiki (plain
 # markdown files), so this image needs no torch/chromadb/vector store.
+# av is pinned below 19: faster-whisper (through 1.2.1) opens audio with
+# av.open(..., metadata_errors="ignore"), an argument PyAV 19 removed, so every
+# transcription fails with a TypeError. Lift the pin once faster-whisper drops it.
 COPY pyproject.toml ./
 RUN pip install --no-cache-dir \
         "fastapi>=0.110" "uvicorn[standard]>=0.27" "openai>=1.30" \
         "httpx>=0.27" "pyyaml>=6.0" "mcp>=1.0" \
         "python-multipart>=0.0.9" "discord.py>=2.3,<3" "croniter>=2.0" \
-        "faster-whisper>=1.0" "edge-tts>=6.1" "pypdf>=4.0"
+        "faster-whisper>=1.0" "av<19" "edge-tts>=6.1" "pypdf>=4.0"
 
 USER app
 
