@@ -68,26 +68,92 @@ import that carries your keys and tuning across.
 
 ## Deploying
 
-Every push to `main` builds the image on GitHub Actions
-(`.github/workflows/publish-image.yml`) and publishes it as
-`ghcr.io/cxfcxf/siegclaw-bot:latest`, plus a tag per commit sha. Pushes that
-only touch markdown or `deploy/` don't rebuild.
+The live bot runs on a home NAS (UGREEN DXP2800, x86_64, Debian-based UGOS)
+as one container. The development checkout — where code is edited and pushed
+from — is a separate machine and does not run the live bot. This section is
+the whole procedure; follow it rather than improvising a different one.
 
-A server runs [`deploy/compose.yaml`](deploy/compose.yaml) instead
-of a checkout: just the bot, from the published image. Nothing updates it
-automatically. To ship a change, `git push`, wait for the workflow to finish,
-then on the server:
+### How the pieces fit
 
-```bash
-docker compose pull && docker compose up -d
-```
+| Piece | Where | Role |
+|---|---|---|
+| Source | this repo, branch `main` | The only place code changes are made |
+| Image build | `.github/workflows/publish-image.yml` | On every push to `main`, builds for `linux/amd64` and publishes `ghcr.io/cxfcxf/siegclaw-bot:latest` plus a tag per full commit sha. The package is public, so pulling needs no login |
+| Server definition | [`deploy/compose.yaml`](deploy/compose.yaml) | The compose file the server runs: the bot from the published image, nothing else |
+| Server folder | `/volume1/docker/siegclaw-bot` (the NAS's SSD) | Holds a copy of that `compose.yaml` and the four state folders. No source code, no git |
+| State | `data/`, `wiki/`, `wiki-public/`, `workspace/` in the server folder | SQLite databases (chats, settings and API keys), search call counts, uploads, the wikis. The image holds only code, so replacing it never touches state |
 
-The status page's **Version** row shows the commit running. All state stays in
-the `data/`, `wiki/`, `wiki-public/` and `workspace/` folders beside the
-compose file.
+The root `docker-compose.yml` is for development only: it builds from the
+checkout (`docker compose up --build -d`). The server never uses it.
 
-To roll back, set the image tag in that compose file to an earlier commit sha
-and run `docker compose up -d`.
+### Shipping a code change
+
+1. Commit and push to `main`.
+2. Wait for the **Publish image** workflow to succeed (about a minute):
+   `gh run watch`, or the repo's Actions tab. Pushes that only touch markdown
+   or `deploy/` are skipped on purpose — there is nothing new to deploy.
+3. Update the container on the server. Either press update on the
+   `siegclaw-bot` container in the UGOS Docker app, or in a shell there:
+
+   ```bash
+   cd /volume1/docker/siegclaw-bot
+   docker compose pull && docker compose up -d
+   ```
+
+4. Confirm: the web UI's status page has a **Version** row (also `version` in
+   `GET /api/status`) showing the short sha of the commit that is running. It
+   should equal `git rev-parse --short HEAD`. Check on the same page that
+   Discord shows connected and the provider is serving.
+
+Nothing on the server updates by itself, and that is deliberate: do not add
+an auto-updater (Watchtower or similar). An update restarts the bot, which
+drops it from Discord for a few seconds and cuts off a reply in progress, so
+it happens when someone chooses.
+
+### Changing the server's compose file
+
+Edit `deploy/compose.yaml` here, push, then copy it over
+`/volume1/docker/siegclaw-bot/compose.yaml` on the server and run
+`docker compose up -d` there. The repo's copy is the source of truth; keep the
+two identical.
+
+### Rolling back
+
+In the server's `compose.yaml`, replace `latest` with the full sha of an
+earlier commit (every push has its own tag), then `docker compose up -d`.
+Put `latest` back once `main` is fixed.
+
+### Working on the server
+
+- Access is SSH with a password, which the owner types. An agent must not
+  enter that password or the `sudo` password; ask the owner to open a shared
+  connection (`ssh -M -S ~/.ssh/nas.sock -o ControlPersist=8h -fN <user>@<nas>`)
+  and run commands over it with `ssh -S ~/.ssh/nas.sock <user>@<nas> '…'`.
+  Anything needing `sudo` is the owner's to run.
+- The login user is in the `docker` group, so Docker needs no `sudo`.
+- That user has no home directory and one cannot be created. Docker's CLI
+  wants one, so start every session with
+  `export DOCKER_CONFIG=/tmp/docker-cli HOME=/tmp/docker-cli`.
+  The "Could not chdir to home directory" line printed at login is harmless.
+- `rsync` over SSH is restricted on UGOS. Copy files with a tar stream:
+  `tar -cf - <files> | ssh … 'tar -xf - -C <dir>'`.
+- The NAS runs other compose projects from sibling folders under
+  `/volume1/docker` (media server, VPN). They are not part of this project:
+  never stop, restart, update or prune them, and never run host-wide cleanup
+  such as `docker system prune`.
+- Keep `data/` on the local SSD volume. SQLite's locking is unreliable on
+  network shares.
+
+### Things that must stay true
+
+- **One live bot.** Two instances with the same Discord token both answer
+  every message. Before starting the bot anywhere else with the live
+  `data/`, stop the one on the server.
+- **Configuration is in `data/settings.db`,** edited in the web UI. There is
+  no `.env` on the server and none should be added.
+- **Moving to a new server:** stop the old bot first, copy the four state
+  folders, drop in `deploy/compose.yaml`, `docker compose up -d`. SQLite files
+  must be copied while the bot is stopped.
 
 ## Code map
 
