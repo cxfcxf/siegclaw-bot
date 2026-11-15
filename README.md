@@ -66,6 +66,23 @@ default model on their next turn.
 If you are coming from a `.env`-based install, see *Settings* for the one-time
 import that carries your keys and tuning across.
 
+## Deploying
+
+Every push to `main` builds the image on GitHub Actions
+(`.github/workflows/publish-image.yml`) and publishes it as
+`ghcr.io/cxfcxf/siegclaw-bot:latest`, plus a tag per commit sha. Pushes that
+only touch markdown or `deploy/` don't rebuild.
+
+A server runs [`deploy/docker-compose.yml`](deploy/docker-compose.yml) instead
+of a checkout: the bot from the published image, and an `updater` (Docker's
+own CLI image) that pulls `latest` every five minutes and recreates the bot
+when it has moved. So shipping a change is `git push`; it is live within about
+ten minutes. All state stays in the `data/`, `wiki/`, `wiki-public/` and
+`workspace/` folders beside the compose file.
+
+To roll back, set the image tag in that compose file to an earlier commit sha,
+`docker compose stop updater`, then `docker compose up -d siegclaw-bot`.
+
 ## Code map
 
 ```
