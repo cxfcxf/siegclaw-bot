@@ -32,7 +32,6 @@ from .config import (
 )
 from .providers import client_for
 from .research import RESEARCH_MODE_PREAMBLE, research_tools, set_origin as set_research_origin
-from .tools.browser import browser_tools
 from .tools.builtin import builtin_tools
 from .tools.clock import clock_tools
 from .tools.delegate import delegate_tools
@@ -56,7 +55,6 @@ def build_registry(mcp_tools: list | None = None) -> Registry:
     registry.extend(builtin_tools())
     registry.extend(web_tools())
     registry.extend(delegate_tools())
-    registry.extend(browser_tools())
     registry.extend(wiki.wiki_tools(writable=True, space=wiki.PRIVATE))
     registry.extend(job_tools())
     registry.extend(research_tools())
@@ -453,7 +451,7 @@ async def run_turn(
 # Tools that only read. They are safe to run concurrently, and calling one again
 # with identical arguments within a turn can only return what is already in the
 # context, so a repeat is answered from the earlier result instead. Anything not
-# listed (shell, browser, wiki writes, jobs, MCP) runs one call at a time, in
+# listed (shell, wiki writes, jobs, MCP) runs one call at a time, in
 # the order the model asked.
 READ_ONLY_TOOLS = frozenset({
     "web_search", "image_search", "web_scrape", "web_map", "web_crawl",

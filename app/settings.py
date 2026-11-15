@@ -149,10 +149,30 @@ SPECS: tuple[Spec, ...] = (
        allow_blank=False),
 
     # --- Research stack ----------------------------------------------------
-    _s("FIRECRAWL_API_URL", "", "research", "Firecrawl URL"),
-    _s("CAMOFOX_URL", "", "research", "Camofox URL"),
-    _s("IMAGE_SEARCH_URL", "", "research", "Image search URL",
-       "The search middleware behind Firecrawl, hit directly for /images."),
+    _s("FIRECRAWL_API_URL", "", "research", "Firecrawl URL",
+       "Scrape, map and crawl backend: https://api.firecrawl.dev for"
+       " Firecrawl's cloud, or a self-hosted instance."),
+    _s("FIRECRAWL_API_KEY", "", "research", "Firecrawl API key",
+       "Needed for Firecrawl's cloud. Leave blank for a self-hosted instance.",
+       secret=True),
+    _s("CAMOFOX_URL", "", "research", "Camofox URL",
+       "Optional stealth browser that web_scrape falls back to when Firecrawl"
+       " can't read a page."),
+    _s("BRAVE_API_KEYS", "", "research", "Brave Search API keys",
+       "One key, or several separated by commas. web_search and image_search"
+       " pool every Brave and Tavily key, moving to the next when one runs out.",
+       secret=True),
+    _s("TAVILY_API_KEYS", "", "research", "Tavily API keys",
+       "One key, or several separated by commas.", secret=True),
+    _s("SEARCH_PROVIDER_ORDER", "brave,tavily", "research", "Search provider order",
+       "Which provider's keys are tried first; the rest are the fallback."),
+    _i("BRAVE_MONTHLY_LIMIT", 0, "research", "Brave monthly allowance",
+       "Brave has no usage API, so the status page compares the bot's own call"
+       " count against this. 0 shows the count alone.", minimum=0),
+    _i("SEARCH_CACHE_TTL", 900, "research", "Search cache (s)",
+       "A repeated identical query within this window is answered from memory."
+       " Time-sensitive queries (today, latest, price, the current year, …)"
+       " always go live. 0 disables the cache.", minimum=0),
 
     # --- Discord -----------------------------------------------------------
     _s("DISCORD_BOT_TOKEN", "", "discord", "Bot token",

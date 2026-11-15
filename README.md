@@ -5,7 +5,7 @@ single-user **web UI** (vanilla HTML/CSS/JS over FastAPI + SSE) and a
 multi-user **Discord bot** (DMs, @mentions, replies) — the Discord client
 connects on startup iff `DISCORD_BOT_TOKEN` is set. Both surfaces share the
 same agent core: a streaming tool-call loop against any OpenAI-compatible
-endpoint, with web/browser/file tools, MCP servers, and an
+endpoint, with web/file tools, MCP servers, and an
 **LLM-Wiki** — the model's entire durable knowledge (system prompt, memory,
 lessons) as markdown pages it reads and rewrites itself.
 
@@ -82,10 +82,11 @@ app/
   wiki.py            the LLM-Wiki: two spaces (private + Discord-channel public),
                      page storage, prompt index, read/search/write tools
   research.py        deep_research tool: background cited-report runs
+  search.py          web/image search over pooled Brave + Tavily keys (failover, cache, quota counts)
   docs.py            document attachments: PDF/text extraction for chat uploads
   storage.py         SQLite conversations (web UI + Discord DMs share one pool)
   mcp_client.py      connects mcp.json servers (stdio or HTTP)
-  tools/             registry, builtin (fs/bash), web (Firecrawl → CamoFox fallback), browser (CamoFox), clock, delegate (sub-agent)
+  tools/             registry, builtin (fs/bash), web (search + Firecrawl → CamoFox scrape), clock, delegate (sub-agent)
 web/                 vanilla HTML/CSS/JS frontend
 wiki/                the LLM-Wiki (private space). Only home.md (the stock system prompt)
                      is committed; every other page is personal runtime data the model
@@ -111,7 +112,7 @@ data/                SQLite DBs + uploads (runtime, gitignored; media lives in
   channel mentions, which store nothing.
 - **Parallel tool calls**: read-only tools (`agent.READ_ONLY_TOOLS` — search,
   scrape, map, crawl, wiki reads, `delegate`, …) asked for in the same step run
-  concurrently; anything that changes state (shell, browser, wiki writes, jobs,
+  concurrently; anything that changes state (shell, wiki writes, jobs,
   MCP) runs alone, in order. Each result reaches the UI the moment its tool
   finishes, while the conversation records them in the order the model asked. A
   read-only call repeated with identical arguments in one turn is answered with
@@ -344,7 +345,7 @@ briefings). Research mode auto-disarms once the run launches (and in DMs on
 `/new` and `/resume` — session boundaries reset to normal chat; `/model`
 doesn't); asking for
 "deep research on …" in plain words also works without arming. Research runs
-get read-only tools (web/browser/wiki — no shell, no wiki writes).
+get read-only tools (web/wiki — no shell, no wiki writes).
 
 ### Document attachments
 
@@ -367,15 +368,20 @@ conversation's upload dir like any media.
   the LLM-Wiki section.
 - **Scheduling**: `schedule_job`, `list_scheduled_jobs`, `cancel_scheduled_job`
   — owner surfaces only (they ride with the private wiki; see *Scheduled jobs*).
-- **Web**: Firecrawl (`web_search`, `web_scrape`, `web_map`, `web_crawl`) via
-  `FIRECRAWL_API_URL`. `web_scrape` falls back to CamoFox (`CAMOFOX_URL`) when
-  Firecrawl times out (its Playwright waits for a `load` event ad-heavy sites
-  like Yahoo Finance and AP never fire; it gets 15 s), errors, returns nothing
-  or hits an HTTP error page, and then returns the page's visible text; `image_search` via `IMAGE_SEARCH_URL` (the searchmw
-  middleware's `/images` — Brave image API + Tavily with 429 failover) returns
+- **Web**: `web_search` and `image_search` run in-process (`app/search.py`)
+  over the pooled `BRAVE_API_KEYS` and `TAVILY_API_KEYS` — tried in
+  `SEARCH_PROVIDER_ORDER`, with a key sidelined on a 429/quota error and the
+  next one used — so searching costs no Firecrawl credits; with no search key
+  set, `web_search` falls back to Firecrawl's `/v1/search`. Identical queries
+  are cached for `SEARCH_CACHE_TTL` seconds unless they look time-sensitive. `image_search` returns
   direct image URLs the model embeds in replies (Discord auto-embeds bare
-  URLs; the web UI renders markdown images); `browser_use` drives a stealth
-  CamoFox browser (`CAMOFOX_URL`) for JS-rendered or bot-blocked pages.
+  URLs; the web UI renders markdown images). `web_scrape`, `web_map` and
+  `web_crawl` go to Firecrawl (`FIRECRAWL_API_URL`) — the cloud at
+  `https://api.firecrawl.dev` with `FIRECRAWL_API_KEY`, or a self-hosted
+  instance with no key. `web_scrape` gives Firecrawl 15 s and, if a CamoFox
+  stealth browser is configured (`CAMOFOX_URL`), falls back to it when
+  Firecrawl times out, errors, returns nothing or hits an HTTP error page,
+  returning the page's visible text.
 - **MCP**: declare servers in `mcp.json`; tools are exposed as
   `mcp__<server>__<tool>`.
 
@@ -408,7 +414,7 @@ top-right corner).
   **search** (title matches + FTS5 full-text over message bodies, highlighted
   snippets). Tabs for the **wiki** (browse/edit pages, `home` = the system
   prompt), **cron** (scheduled jobs), **settings**, and **status** (provider health,
-  search-API quota via searchmw, per-model reply counts, storage footprint,
+  search-API quota, per-model reply counts, storage footprint,
   Discord/scheduler state).
 
 ### Voice & audio
@@ -459,9 +465,13 @@ only the path variables at the end are read from the environment.
 | `WIKI_PUBLIC_DIR` † | Discord-channel wiki directory, public space (default `./wiki-public`) |
 | `DATA_DIR` † | SQLite DBs and uploads (default `./data`) |
 | `MCP_CONFIG_PATH` † | MCP server definitions (default `./mcp.json`) |
-| `FIRECRAWL_API_URL` | Firecrawl backend for web tools |
-| `IMAGE_SEARCH_URL` | searchmw middleware for `image_search` (its `/images` endpoint) |
-| `CAMOFOX_URL` | Stealth-browser backend for `browser_use` |
+| `FIRECRAWL_API_URL` | Firecrawl backend for scrape/map/crawl (`https://api.firecrawl.dev` or self-hosted) |
+| `FIRECRAWL_API_KEY` | Firecrawl cloud API key (secret; blank when self-hosted) |
+| `BRAVE_API_KEYS`, `TAVILY_API_KEYS` | Search keys for `web_search` / `image_search` (secret; comma-separated to pool several) |
+| `SEARCH_PROVIDER_ORDER` | Which search provider is tried first (default `brave,tavily`) |
+| `BRAVE_MONTHLY_LIMIT` | Brave's monthly allowance, for the status page's remaining-quota row (0 = show the count only) |
+| `SEARCH_CACHE_TTL` | Seconds an identical search is answered from memory (default 900; 0 disables) |
+| `CAMOFOX_URL` | Optional stealth browser `web_scrape` falls back to |
 
 † Read from the process environment (compose's `environment:` block), not the
 settings store — the store's database lives inside `DATA_DIR`.

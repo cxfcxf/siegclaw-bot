@@ -1,17 +1,17 @@
-"""Web tools backed by the self-hosted Firecrawl instance.
+"""Web tools: search over pooled Brave/Tavily keys, pages through Firecrawl.
 
-Exposes the full Firecrawl surface: web search, single-page scrape, site map,
-full crawl (blocking), and LLM-backed structured extract. All hit
-FIRECRAWL_API_URL.
+`web_search` and `image_search` run in-process (see `app.search`): they pool
+the Brave and Tavily keys from settings behind 429-driven failover. Search
+never touches Firecrawl, so it costs no Firecrawl credits; only when no search
+key is configured does `web_search` fall back to Firecrawl's own /v1/search.
 
-`web_scrape` falls back to the CamoFox stealth browser (CAMOFOX_URL) when
-Firecrawl times out, errors, comes back empty or gets an error page: Firecrawl's
-Playwright waits for the page's `load` event, which ad-heavy sites (Yahoo
-Finance, AP) never fire, and it gets bot-blocked where CamoFox does not.
+`web_scrape`, `web_map` and `web_crawl` hit FIRECRAWL_API_URL — Firecrawl's
+cloud (https://api.firecrawl.dev, with FIRECRAWL_API_KEY) or a self-hosted
+instance (no key).
 
-`image_search` hits the search middleware directly (IMAGE_SEARCH_URL — the
-searchmw service that also backs Firecrawl's web search), which pools Brave's
-image API and Tavily's include_images behind 429-driven failover.
+`web_scrape` falls back to the CamoFox stealth browser (CAMOFOX_URL), when one
+is configured, if Firecrawl times out, errors, comes back empty or gets an
+error page.
 """
 from __future__ import annotations
 
@@ -20,6 +20,7 @@ import time
 
 import httpx
 
+from .. import search
 from ..config import settings
 from .registry import Tool
 
@@ -37,38 +38,47 @@ def _truncate(text: str, limit: int = MAX_OUTPUT) -> str:
     return text
 
 
+def _firecrawl_headers() -> dict[str, str]:
+    """Bearer auth for Firecrawl's cloud; a self-hosted instance takes no key."""
+    key = settings.FIRECRAWL_API_KEY
+    return {"Authorization": f"Bearer {key}"} if key else {}
+
+
 def web_search(query: str, limit: int = 5) -> str:
-    if not settings.FIRECRAWL_API_URL:
-        return "Error: FIRECRAWL_API_URL is not configured."
+    limit = max(1, min(limit, 10))
     try:
-        resp = httpx.post(
-            f"{settings.FIRECRAWL_API_URL}/v1/search",
-            json={"query": query, "limit": max(1, min(limit, 10))},
-            timeout=45.0,
-        )
-        resp.raise_for_status()
-        data = resp.json().get("data", [])
+        if search.configured():
+            results, _provider, _cached = search.do_search(query, 1)
+            data = [
+                {"title": r.get("title"), "url": r.get("url"), "description": r.get("content")}
+                for r in results[:limit]
+            ]
+        elif settings.FIRECRAWL_API_URL:
+            resp = httpx.post(
+                f"{settings.FIRECRAWL_API_URL}/v1/search",
+                json={"query": query, "limit": limit},
+                headers=_firecrawl_headers(),
+                timeout=45.0,
+            )
+            resp.raise_for_status()
+            data = resp.json().get("data", [])
+        else:
+            return "Error: no search API key (Brave or Tavily) is configured."
     except Exception as exc:
         return _err("web_search", exc)
     if not data:
         return f"No results for: {query}"
     lines = []
     for i, r in enumerate(data, 1):
-        lines.append(f"{i}. {r.get('title', '(no title)')}\n   {r.get('url', '')}\n   {r.get('description', '')}")
+        lines.append(f"{i}. {r.get('title') or '(no title)'}\n   {r.get('url') or ''}\n   {r.get('description') or ''}")
     return "\n".join(lines)
 
 
 def image_search(query: str, count: int = 4) -> str:
-    if not settings.IMAGE_SEARCH_URL:
-        return "Error: IMAGE_SEARCH_URL is not configured."
+    if not search.configured():
+        return "Error: no search API key (Brave or Tavily) is configured."
     try:
-        resp = httpx.get(
-            f"{settings.IMAGE_SEARCH_URL}/images",
-            params={"q": query, "count": max(1, min(count, 10))},
-            timeout=30.0,
-        )
-        resp.raise_for_status()
-        results = resp.json().get("results", [])
+        results, _provider, _cached = search.do_image_search(query, max(1, min(count, 10)))
     except Exception as exc:
         return _err("image_search", exc)
     if not results:
@@ -96,6 +106,7 @@ def _firecrawl_scrape(url: str) -> tuple[str | None, str]:
             # Firecrawl's own per-page budget. Kept short: a page it can't
             # render by then is one CamoFox usually renders in seconds.
             json={"url": url, "formats": ["markdown"], "timeout": FIRECRAWL_TIMEOUT_MS},
+            headers=_firecrawl_headers(),
             timeout=FIRECRAWL_TIMEOUT_MS / 1000 + 30,
         )
         resp.raise_for_status()
@@ -115,7 +126,7 @@ def _firecrawl_scrape(url: str) -> tuple[str | None, str]:
     return _page(url, meta.get("title", ""), md), ""
 
 
-# CamoFox user for scrape fallbacks — separate from browser_use's tabs.
+# CamoFox user (its session and cookie jar) for scrape fallbacks.
 _CAMOFOX_USER = "scrape"
 
 
@@ -181,7 +192,10 @@ def web_map(url: str, limit: int = 100, search: str | None = None) -> str:
     if search:
         body["search"] = search
     try:
-        resp = httpx.post(f"{settings.FIRECRAWL_API_URL}/v1/map", json=body, timeout=60.0)
+        resp = httpx.post(
+            f"{settings.FIRECRAWL_API_URL}/v1/map", json=body,
+            headers=_firecrawl_headers(), timeout=60.0,
+        )
         resp.raise_for_status()
         payload = resp.json()
     except Exception as exc:
@@ -214,6 +228,7 @@ def web_crawl(url: str, limit: int = 10, max_wait: int = 90) -> str:
         resp = httpx.post(
             f"{settings.FIRECRAWL_API_URL}/v1/crawl",
             json={"url": url, "limit": max(1, min(limit, 50))},
+            headers=_firecrawl_headers(),
             timeout=30.0,
         )
         resp.raise_for_status()
@@ -225,7 +240,10 @@ def web_crawl(url: str, limit: int = 10, max_wait: int = 90) -> str:
         status = None
         while time.time() < deadline:
             time.sleep(2)
-            s = httpx.get(f"{settings.FIRECRAWL_API_URL}/v1/crawl/{job_id}", timeout=30.0)
+            s = httpx.get(
+                f"{settings.FIRECRAWL_API_URL}/v1/crawl/{job_id}",
+                headers=_firecrawl_headers(), timeout=30.0,
+            )
             s.raise_for_status()
             status = s.json()
             if status.get("status") in ("completed", "failed", "cancelled"):

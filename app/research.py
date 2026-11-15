@@ -20,7 +20,6 @@ from zoneinfo import ZoneInfo
 
 from . import storage, wiki
 from .config import resolve_default_model, settings
-from .tools.browser import browser_tools
 from .tools.clock import clock_tools
 from .tools.delegate import delegate_tools
 from .tools.registry import Registry, Tool
@@ -90,7 +89,7 @@ def configure(discord_getter: Callable[[], object | None]) -> None:
 
 
 def _research_registry() -> Registry:
-    """Research runs with the reading tools only: web + browser + clock +
+    """Research runs with the reading tools only: web + clock +
     read-only PRIVATE wiki (owner context can shape a report; a background job
     should never write memory or shell out). Research is owner-launched only —
     `research_tools` is in build_registry, not the Discord-channel registry —
@@ -100,7 +99,6 @@ def _research_registry() -> Registry:
     registry.extend(clock_tools())
     registry.extend(web_tools())
     registry.extend(delegate_tools())
-    registry.extend(browser_tools())
     registry.extend(wiki.wiki_tools(writable=False, space=wiki.PRIVATE))
     return registry
 

@@ -29,7 +29,7 @@ from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import docs, research, settings as settings_store, storage, stt, tts, wiki
+from . import docs, research, search as search_keys, settings as settings_store, storage, stt, tts, wiki
 from .agent import build_registry, resolve_for_turn, run_turn
 from .config import (
     DATA_DIR,
@@ -484,20 +484,33 @@ def _dir_size(path: Path) -> int:
     return sum(f.stat().st_size for f in path.rglob("*") if f.is_file())
 
 
+class SearchCounter(BaseModel):
+    count: int
+    provider: str | None = None
+    slot: str | None = None
+
+
+@app.post("/api/search/counter")
+def api_search_counter(body: SearchCounter):
+    """Seed a search key's monthly call count with the provider dashboard's
+    real number — Brave has no usage API, so the bot only knows the calls it
+    made itself. `slot` picks one key when a provider has several."""
+    try:
+        return search_keys.set_count(body.count, provider=body.provider, slot=body.slot)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
 @app.get("/api/status")
 async def api_status():
     """Everything the status page shows, in one round trip: provider health,
-    search-API quota (proxied from searchmw's /usage so the browser doesn't
-    need LAN access to :3003), model usage stats, storage footprint, Discord
-    and scheduler state."""
-    import httpx
-
+    search-API quota, model usage stats, storage footprint, Discord and
+    scheduler state."""
     search = None
-    if settings.IMAGE_SEARCH_URL:
+    if search_keys.configured():
         try:
-            async with httpx.AsyncClient() as hc:
-                r = await hc.get(f"{settings.IMAGE_SEARCH_URL}/usage", timeout=4)
-                search = r.json()
+            # Off the event loop: Tavily's quota is a live HTTP call per key.
+            search = await asyncio.to_thread(search_keys.usage)
         except Exception as e:
             search = {"error": f"{type(e).__name__}: {e}"}
 

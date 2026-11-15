@@ -9,7 +9,7 @@ web UI: a DM appends to the same conversation the web UI reads, so either side
 can resume the other. DM sessions are managed with slash commands:
 /new /resume /model (clickable pickers) and /rename (a modal form that renames
 the chat and sets its group; /resume filters by group). Either way, the handler
-assembles a per-message tool registry (reusing the web/browser/wiki/MCP tools
+assembles a per-message tool registry (reusing the web/wiki/MCP tools
 plus Discord-history tools), runs a non-streaming
 tool-calling loop, and posts a chunked reply.
 
@@ -61,7 +61,6 @@ from .discord_context import (
     message_text,
 )
 from .providers import client_for
-from .tools.browser import browser_tools
 from .tools.builtin import builtin_tools
 from .tools.clock import clock_tools
 from .tools.delegate import delegate_tools
@@ -87,7 +86,7 @@ When someone asks about things said in the channel ("what do you think of X's ra
 - If you can't find what they're referring to even after fetching history, say so plainly and ask — don't guess at a different conversation.
 
 ## Questions about the world
-- For current events, prices, news, or anything you're not certain about: call `web_search`, then `web_scrape` or `browser_use` instead of saying you don't know.
+- For current events, prices, news, or anything you're not certain about: call `web_search`, then `web_scrape` instead of saying you don't know.
 - Use `search_wiki` / `read_wiki_page` for facts, preferences, and decisions from past conversations.
 - Only say you lack information if a search also fails to find it.
 
@@ -111,7 +110,6 @@ _TOOL_STATUS = {
     "write_wiki_page": lambda a: f"✍️ updating wiki: {a.get('name', '')}",
     "fetch_user_messages": lambda a: f"📜 fetching messages from *{a.get('user_name', '')}*",
     "fetch_channel_history": lambda a: "📜 reading older channel history",
-    "browser_use": lambda a: f"🌐 browser: {a.get('action', '')} {a.get('url', '') or a.get('query', '')}".strip(),
     "deep_research": lambda a: f"🔬 launching deep research: *{a.get('question', '')[:120]}*",
     "schedule_job": lambda a: f"⏰ scheduling: {a.get('name', 'job')}",
     "list_scheduled_jobs": lambda a: "⏰ listing scheduled jobs",
@@ -222,7 +220,7 @@ def build_discord_registry(
     wiki_writable: bool = True,
 ) -> Registry:
     """Per-message registry for NON-owner surfaces (channel mentions, cron):
-    harness web/browser/MCP tools + one wiki space + Discord-history tools.
+    harness web/MCP tools + one wiki space + Discord-history tools.
     Shell/file tools are withheld unless enabled.
 
     Channel mentions take the defaults: the PUBLIC wiki (`wiki-public/`), read
@@ -245,7 +243,6 @@ def build_discord_registry(
         registry.extend(builtin_tools())
     registry.extend(web_tools())
     registry.extend(delegate_tools())
-    registry.extend(browser_tools())
     registry.extend(wiki.wiki_tools(writable=wiki_writable, space=wiki_space))
     # Scheduling is an OWNER capability, so it rides with the private wiki and is
     # withheld from channels. A channel user with `schedule_job` could otherwise

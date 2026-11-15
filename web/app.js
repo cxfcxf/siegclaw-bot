@@ -2463,9 +2463,9 @@ function renderStatus(data) {
 
   const search = statusSection("Search API quota");
   if (!data.search) {
-    search.appendChild(statusRows([["searchmw", "not configured (IMAGE_SEARCH_URL)", ""]]));
+    search.appendChild(statusRows([["search", "no Brave or Tavily key configured", ""]]));
   } else if (data.search.error) {
-    search.appendChild(statusRows([["searchmw", data.search.error, "bad"]]));
+    search.appendChild(statusRows([["search", data.search.error, "bad"]]));
   } else {
     const rows = (data.search.slots || []).map((s) => {
       const q = s.quota || {};
