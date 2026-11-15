@@ -74,14 +74,20 @@ Every push to `main` builds the image on GitHub Actions
 only touch markdown or `deploy/` don't rebuild.
 
 A server runs [`deploy/docker-compose.yml`](deploy/docker-compose.yml) instead
-of a checkout: the bot from the published image, and an `updater` (Docker's
-own CLI image) that pulls `latest` every five minutes and recreates the bot
-when it has moved. So shipping a change is `git push`; it is live within about
-ten minutes, and the status page's **Version** row shows the commit running. All state stays in the `data/`, `wiki/`, `wiki-public/` and
-`workspace/` folders beside the compose file.
+of a checkout: just the bot, from the published image. Nothing updates it
+automatically. To ship a change, `git push`, wait for the workflow to finish,
+then on the server:
 
-To roll back, set the image tag in that compose file to an earlier commit sha,
-`docker compose stop updater`, then `docker compose up -d siegclaw-bot`.
+```bash
+docker compose pull && docker compose up -d
+```
+
+The status page's **Version** row shows the commit running. All state stays in
+the `data/`, `wiki/`, `wiki-public/` and `workspace/` folders beside the
+compose file.
+
+To roll back, set the image tag in that compose file to an earlier commit sha
+and run `docker compose up -d`.
 
 ## Code map
 

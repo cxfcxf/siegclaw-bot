@@ -1,15 +1,14 @@
-# Runs the published image and keeps it current — no source checkout needed.
+# Runs the published image — no source checkout needed.
 #
 #   mkdir siegclaw-bot && cd siegclaw-bot      # any folder; data lives beside this file
 #   curl -O https://raw.githubusercontent.com/cxfcxf/siegclaw-bot/main/deploy/docker-compose.yml
 #   docker compose up -d
 #
-# Run compose from a shell inside that folder: the updater mounts the folder
-# at its own path (${PWD}) so the relative volumes below resolve to the same
-# host directories when it recreates the bot.
+# To update to the newest image:
 #
-# To pin a version (roll back), replace `latest` with a commit sha tag and
-# stop the updater: `docker compose stop updater`.
+#   docker compose pull && docker compose up -d
+#
+# To pin a version (roll back), replace `latest` with a commit sha tag.
 
 services:
   siegclaw-bot:
@@ -25,36 +24,3 @@ services:
       - ./data:/app/data
       - ./workspace:/app/workspace
     restart: unless-stopped
-
-  # Checks the registry every UPDATE_INTERVAL seconds and recreates the bot
-  # when `latest` has moved. It only ever names the siegclaw-bot service, so
-  # nothing else on the host is pulled, restarted or pruned.
-  updater:
-    image: docker:29-cli
-    restart: unless-stopped
-    working_dir: ${PWD}
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
-      - ${PWD}:${PWD}:ro
-    environment:
-      UPDATE_INTERVAL: ${UPDATE_INTERVAL:-300}
-    command:
-      - sh
-      - -c
-      - |
-        image=ghcr.io/cxfcxf/siegclaw-bot:latest
-        while true; do
-          before=$$(docker image inspect -f '{{.Id}}' "$$image" 2>/dev/null)
-          if docker compose pull -q siegclaw-bot; then
-            after=$$(docker image inspect -f '{{.Id}}' "$$image" 2>/dev/null)
-            if [ "$$before" != "$$after" ]; then
-              echo "$$(date -u +%FT%TZ) new image $$after, recreating the bot"
-              docker compose up -d siegclaw-bot
-              # Drop the image this one replaced; fails harmlessly if in use.
-              if [ -n "$$before" ]; then docker image rm "$$before" >/dev/null 2>&1; fi
-            fi
-          else
-            echo "$$(date -u +%FT%TZ) pull failed, will retry"
-          fi
-          sleep "$$UPDATE_INTERVAL"
-        done
